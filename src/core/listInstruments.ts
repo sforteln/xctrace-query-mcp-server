@@ -43,6 +43,7 @@ export interface ListInstrumentsResult {
    * context-switch-sample."
    */
   crossRunDiff?: string;
+  xcodeVersion: string | null;
 }
 
 export function listInstruments(sessionId: string): ListInstrumentsResult {
@@ -117,5 +118,6 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
     lastRun,
     runs,
     ...(crossRunDiff !== undefined ? { crossRunDiff } : {}),
+    xcodeVersion: session.xcodeVersion,
   };
 }

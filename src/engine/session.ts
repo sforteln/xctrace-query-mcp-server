@@ -15,6 +15,7 @@ import { exportToc, exportXPath, buildTableXPath, buildTrackDetailXPath, Xctrace
 import { parseTableXml, ParsedTable } from "./parseTable.js";
 import { parseTrackDetailXml } from "./parseTrackDetail.js";
 import { buildSchemaModel, updateSchemaCols, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
+import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -60,6 +61,8 @@ export interface TraceSession {
   tableCache: Map<string, ParsedTable>;
   /** Structured schema model: TOC metadata + lazily-populated column definitions. */
   schemaModel: SchemaModel;
+  /** Xcode version that produced this trace (e.g. "16.2"). Null if xcodebuild unavailable. */
+  xcodeVersion: string | null;
 }
 
 // ─── Session registry ─────────────────────────────────────────────────────────
@@ -87,9 +90,9 @@ const TIME_ENGINEERING_TYPES = new Set([
  */
 export async function openTrace(
   path: string
-): Promise<{ sessionId: string; runs: RunSummary[]; instruments: InstrumentSummary[]; timeRange: TimeRange | null }> {
+): Promise<{ sessionId: string; runs: RunSummary[]; instruments: InstrumentSummary[]; timeRange: TimeRange | null; xcodeVersion: string | null }> {
   const tracePath = resolve(path.replace(/^~/, process.env.HOME ?? "~"));
-  const toc = await exportToc(tracePath);
+  const [toc, xcodeVersion] = await Promise.all([exportToc(tracePath), detectXcodeVersion()]);
 
   // De-duplicate track-details per run (same as buildSchemaModel does).
   const seenTrackDetails = new Set<string>();
@@ -143,10 +146,11 @@ export async function openTrace(
     timeRange: null,
     tableCache: new Map(),
     schemaModel: buildSchemaModel(toc.runs),
+    xcodeVersion,
   };
 
   sessions.set(sessionId, session);
-  return { sessionId, runs, instruments, timeRange: null };
+  return { sessionId, runs, instruments, timeRange: null, xcodeVersion };
 }
 
 /**
@@ -224,6 +228,7 @@ export function summary(sessionId: string): {
   runs: RunSummary[];
   instruments: InstrumentSummary[];
   timeRange: TimeRange | null;
+  xcodeVersion: string | null;
 } {
   const session = getSession(sessionId);
   return {
@@ -232,6 +237,7 @@ export function summary(sessionId: string): {
     runs: session.runs,
     instruments: session.instruments,
     timeRange: session.timeRange,
+    xcodeVersion: session.xcodeVersion,
   };
 }
 
