@@ -16,12 +16,14 @@ import { XctraceError } from "./engine/xctrace.js";
 import { describeSchema } from "./core/schema.js";
 import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
+import { getRow } from "./core/getRow.js";
 import {
   envelope,
   actionsAfterOpen,
   actionsAfterListInstruments,
   actionsAfterDescribeSchema,
   actionsAfterQuery,
+  actionsAfterGetRow,
   toMcpText,
 } from "./core/response.js";
 
@@ -212,6 +214,45 @@ function createServer(): McpServer {
         const response = envelope(
           result,
           actionsAfterQuery(sessionId, schema, result.run, result.hasMore)
+        );
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── get_row ────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "get_row",
+    {
+      title: "Get Row Detail",
+      description:
+        "Fetch the full detail of one row by its raw table index (the `tableIndex` field " +
+        "returned by query). Returns every column with type, fmt, raw value, role, and " +
+        "for compound cells (thread, process) the nested child values. " +
+        "For backtrace columns (kperf-bt): surfaces the top-of-stack PC, frame count, and " +
+        "process; use call_tree for a full aggregated symbolicated call tree. " +
+        "`run` is optional and defaults to the most recent run.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schema: z.string().describe("Schema/table name."),
+        rowIndex: z
+          .number()
+          .int()
+          .min(0)
+          .describe("Raw table index (`tableIndex` from query results, 0-based)."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+      },
+    },
+    async ({ sessionId, schema, rowIndex, run }) =>
+      safeTool(async () => {
+        const result = await getRow(sessionId, schema, rowIndex, { run });
+        const hasBacktrace = Object.values(result.cells).some(
+          (c) => c?.backtrace !== undefined
+        );
+        const response = envelope(
+          result,
+          actionsAfterGetRow(
+            sessionId, schema, result.run, rowIndex, result.totalRows, hasBacktrace
+          )
         );
         return text(toMcpText(response));
       })

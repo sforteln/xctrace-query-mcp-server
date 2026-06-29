@@ -36,6 +36,11 @@ export interface QueryOptions {
 export interface QueryRow {
   /** Position in the (post-filter, post-sort) result set, 0-based. */
   index: number;
+  /**
+   * Position in the raw unfiltered/unsorted table — pass this to get_row as
+   * `rowIndex` to retrieve the full cell detail for this row.
+   */
+  tableIndex: number;
   /** Formatted display values keyed by mnemonic. */
   cells: Record<string, string | null>;
 }
@@ -145,15 +150,17 @@ export async function queryTable(
       ? columns.filter((m) => allMnemonics.includes(m))
       : allMnemonics;
 
-  // --- Filter ---
-  let filtered = table.rows;
+  // Track raw table positions through filter + sort so get_row can use them.
+  type IndexedRow = { row: NormalizedRow; tableIndex: number };
+  let filtered: IndexedRow[] = table.rows.map((row, i) => ({ row, tableIndex: i }));
 
+  // --- Filter ---
   if (filter && Object.keys(filter).length > 0) {
-    filtered = filtered.filter((row) => matchesFilter(row, filter));
+    filtered = filtered.filter(({ row }) => matchesFilter(row, filter));
   }
 
   if (timeRange && timeColumn) {
-    filtered = filtered.filter((row) =>
+    filtered = filtered.filter(({ row }) =>
       matchesTimeRange(row, timeColumn, timeRange)
     );
   }
@@ -161,20 +168,22 @@ export async function queryTable(
   // --- Sort ---
   if (sort?.by) {
     const dir = sort.dir ?? "asc";
-    filtered = [...filtered].sort((a, b) => compareRows(a, b, sort.by, dir));
+    filtered = [...filtered].sort((a, b) =>
+      compareRows(a.row, b.row, sort.by, dir)
+    );
   }
 
   const totalRows = filtered.length;
   const page = filtered.slice(offset, offset + limit);
 
   // --- Project to summary rows ---
-  const rows: QueryRow[] = page.map((row, pageIdx) => {
+  const rows: QueryRow[] = page.map(({ row, tableIndex }, pageIdx) => {
     const cells: Record<string, string | null> = {};
     for (const mnemonic of columnsShown) {
       const cell = row[mnemonic];
       cells[mnemonic] = cell === null || cell === undefined ? null : cell.fmt;
     }
-    return { index: offset + pageIdx, cells };
+    return { index: offset + pageIdx, tableIndex, cells };
   });
 
   return {

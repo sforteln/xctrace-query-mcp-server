@@ -135,6 +135,44 @@ export function actionsAfterDescribeSchema(
   return actions;
 }
 
+/** Actions available after getting full row detail. */
+export function actionsAfterGetRow(
+  sessionId: string,
+  schema: string,
+  run: number,
+  rowIndex: number,
+  totalRows: number,
+  hasBacktrace: boolean
+): NextAction[] {
+  const actions: NextAction[] = [
+    {
+      tool: "query",
+      args: { sessionId, schema, run, limit: 20 },
+      description: "Return to the paginated row list.",
+    },
+    {
+      tool: "aggregate",
+      args: { sessionId, schema, run, groupBy: "<mnemonic>", measure: "<mnemonic>", op: "sum", topN: 10 },
+      description: "Summarise the whole table — find heaviest rows by weight.",
+    },
+  ];
+  if (rowIndex + 1 < totalRows) {
+    actions.push({
+      tool: "get_row",
+      args: { sessionId, schema, run, rowIndex: rowIndex + 1 },
+      description: "Fetch the next row's full detail.",
+    });
+  }
+  if (hasBacktrace) {
+    actions.push({
+      tool: "call_tree",
+      args: { sessionId, schema, run },
+      description: "Build a folded call tree aggregating all samples in this table.",
+    });
+  }
+  return actions;
+}
+
 /** Actions available after querying or aggregating a table. */
 export function actionsAfterQuery(sessionId: string, schema: string, run: number, hasMore: boolean): NextAction[] {
   const actions: NextAction[] = [
