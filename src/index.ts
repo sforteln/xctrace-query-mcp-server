@@ -12,7 +12,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { openTrace, summary } from "./engine/session.js";
-import { XctraceError } from "./engine/xctrace.js";
 import { describeSchema } from "./core/schema.js";
 import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
@@ -22,6 +21,8 @@ import { callTree } from "./core/callTree.js";
 import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
+import { safeTool, text } from "./core/toolUtils.js";
+import fmLens from "./lenses/foundationModels/index.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -37,29 +38,9 @@ import {
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
 
-/** Wrap a tool handler so any XctraceError becomes a structured text error
- *  rather than a thrown exception (which the SDK turns into a generic error). */
-async function safeTool(
-  fn: () => Promise<{ content: Array<{ type: "text"; text: string }> }>
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (err instanceof XctraceError) {
-      return {
-        content: [{ type: "text", text: JSON.stringify(err.toStructured(), null, 2) }],
-      };
-    }
-    throw err as Error;
-  }
-}
-
-function text(str: string): { content: Array<{ type: "text"; text: string }> } {
-  return { content: [{ type: "text", text: str }] };
-}
 
 /** Lenses to register at startup. Add new lenses here. */
-const LENSES: Lens[] = [];
+const LENSES: Lens[] = [fmLens];
 
 function createServer(): McpServer {
   const server = new McpServer({
