@@ -20,6 +20,8 @@ import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
 import { callTree } from "./core/callTree.js";
 import { findRows } from "./core/find.js";
+import { registry } from "./lenses/index.js";
+import type { Lens } from "./lenses/index.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -56,11 +58,16 @@ function text(str: string): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: str }] };
 }
 
+/** Lenses to register at startup. Add new lenses here. */
+const LENSES: Lens[] = [];
+
 function createServer(): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
     version: SERVER_VERSION,
   });
+
+  registry.registerAll(LENSES, server);
 
   // ── open_trace ─────────────────────────────────────────────────────────────
   server.registerTool(
@@ -162,11 +169,14 @@ function createServer(): McpServer {
         const groupByCandidate = desc.rolesSummary.label[0] ?? desc.rolesSummary.thread[0] ?? null;
         const response = envelope(
           desc,
-          actionsAfterDescribeSchema(sessionId, schema, desc.run, {
-            primaryWeight: desc.primaryWeight,
-            groupByCandidate,
-            hasBacktrace: desc.rolesSummary.backtrace.length > 0,
-          })
+          [
+            ...actionsAfterDescribeSchema(sessionId, schema, desc.run, {
+              primaryWeight: desc.primaryWeight,
+              groupByCandidate,
+              hasBacktrace: desc.rolesSummary.backtrace.length > 0,
+            }),
+            ...registry.nextActions(sessionId, schema, desc.run),
+          ]
         );
         return text(toMcpText(response));
       })
@@ -218,7 +228,10 @@ function createServer(): McpServer {
         const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset });
         const response = envelope(
           result,
-          actionsAfterQuery(sessionId, schema, result.run, result.hasMore)
+          [
+            ...actionsAfterQuery(sessionId, schema, result.run, result.hasMore),
+            ...registry.nextActions(sessionId, schema, result.run),
+          ]
         );
         return text(toMcpText(response));
       })
@@ -277,7 +290,10 @@ function createServer(): McpServer {
         const topKey = result.groups[0]?.key ?? null;
         const response = envelope(
           result,
-          actionsAfterAggregate(sessionId, schema, result.run, groupBy, topKey, hasBacktrace)
+          [
+            ...actionsAfterAggregate(sessionId, schema, result.run, groupBy, topKey, hasBacktrace),
+            ...registry.nextActions(sessionId, schema, result.run),
+          ]
         );
         return text(toMcpText(response));
       })
@@ -341,6 +357,7 @@ function createServer(): McpServer {
             args: { sessionId, schema: schema === "time-profile" ? "time-sample" : schema, run: result.run, groupBy: "thread", op: "count", topN: 10 },
             description: "See sample count by thread to pick the busiest thread to filter on.",
           },
+          ...registry.nextActions(sessionId, schema, result.run),
         ]);
         return text(toMcpText(response));
       })
@@ -407,7 +424,10 @@ function createServer(): McpServer {
         const firstTableIndex = result.rows[0]?.tableIndex ?? null;
         const response = envelope(
           result,
-          actionsAfterFind(sessionId, schema, result.run, result.matchCount, result.hasMore, firstTableIndex)
+          [
+            ...actionsAfterFind(sessionId, schema, result.run, result.matchCount, result.hasMore, firstTableIndex),
+            ...registry.nextActions(sessionId, schema, result.run),
+          ]
         );
         return text(toMcpText(response));
       })
@@ -444,9 +464,10 @@ function createServer(): McpServer {
         );
         const response = envelope(
           result,
-          actionsAfterGetRow(
-            sessionId, schema, result.run, rowIndex, result.totalRows, hasBacktrace
-          )
+          [
+            ...actionsAfterGetRow(sessionId, schema, result.run, rowIndex, result.totalRows, hasBacktrace),
+            ...registry.nextActions(sessionId, schema, result.run),
+          ]
         );
         return text(toMcpText(response));
       })
