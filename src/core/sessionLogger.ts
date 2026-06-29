@@ -1,9 +1,9 @@
 /**
  * Session call logger for A/B testing tool navigation behaviour.
  *
- * Activated by setting INSTRUMENTS_MCP_LOG=1 in the environment before
- * starting the server. When enabled, every tool call is appended as a
- * JSON line to:
+ * Activated by passing --log on the command line when starting the server:
+ *   npx instruments-mcp-server --log
+ * When enabled, every tool call is appended as a JSON line to:
  *   ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
  *
  * Each line:
@@ -23,7 +23,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 
 const LOG_DIR = join(homedir(), "Library", "Logs", "instruments-mcp-server");
-const enabled = process.env.INSTRUMENTS_MCP_LOG === "1";
+const enabled = process.argv.includes("--log");
 
 let logPath: string | null = null;
 let seq = 0;
