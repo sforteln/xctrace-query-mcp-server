@@ -202,6 +202,17 @@ export function getSchemaModel(sessionId: string): SchemaModel {
 }
 
 /**
+ * Return the highest run number in the session — the default run for all
+ * tools that make `run` optional. Traces commonly have multiple runs (each
+ * Record→Stop cycle adds one); the last run is almost always what the user
+ * wants when they don't specify.
+ */
+export function lastRun(sessionId: string): number {
+  const session = getSession(sessionId);
+  return Math.max(...session.runs.map((r) => r.number));
+}
+
+/**
  * Close a session and free its memory. Optional — the process dying achieves
  * the same thing, but explicit close lets agents hand back resources.
  */
