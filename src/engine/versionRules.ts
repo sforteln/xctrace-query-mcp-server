@@ -95,6 +95,21 @@ export interface ResolvedRules {
   confidence: RulesConfidence;
 }
 
+export interface SchemaWarning {
+  schema: string;
+  rulesVersion: string;
+  confidence: RulesConfidence;
+}
+
+export interface VersionWarning {
+  detectedVersion: string;
+  /** All Xcode versions that have been tested and are in VERSION_BASE. */
+  knownVersions: string[];
+  /** Per-schema resolution — each schema may resolve to a different rules version. */
+  schemaWarnings: SchemaWarning[];
+  message: string;
+}
+
 // ─── Resolution ───────────────────────────────────────────────────────────────
 
 /**
@@ -132,6 +147,43 @@ export function resolveRules(xcodeVersion: string, schema: string): ResolvedRule
   // 3. Nearest known version fallback
   const nearest = findNearestVersion(xcodeVersion);
   return { rulesVersion: nearest, confidence: "nearest" };
+}
+
+/**
+ * Build a VersionWarning for open_trace when the detected Xcode version is not
+ * in VERSION_BASE. Returns null for known versions — no warning needed.
+ *
+ * Pass all unique schema names from the trace so each can be resolved
+ * independently (different schemas may fall back to different rules versions
+ * when VERSION_SCHEMA_OVERRIDES creates a split).
+ *
+ * A null xcodeVersion (detection failed) also produces a warning.
+ */
+export function buildVersionWarning(
+  xcodeVersion: string | null,
+  schemas: string[]
+): VersionWarning | null {
+  const detected = xcodeVersion ?? "unknown";
+
+  // Known version — no warning.
+  if (xcodeVersion !== null && VERSION_BASE[xcodeVersion] !== undefined) {
+    return null;
+  }
+
+  const knownVersions = Object.keys(VERSION_BASE).sort(
+    (a, b) => toVersionNumber(a) - toVersionNumber(b)
+  );
+
+  const schemaWarnings: SchemaWarning[] = schemas.map((schema) => {
+    const { rulesVersion, confidence } = resolveRules(detected, schema);
+    return { schema, rulesVersion, confidence };
+  });
+
+  const message = xcodeVersion
+    ? `Xcode ${xcodeVersion} has not been tested. Each schema is using the nearest verified rules version. Results may vary — see schemaWarnings for per-schema detail.`
+    : "Xcode version could not be detected. Each schema is using the nearest verified rules version. Results may vary — see schemaWarnings for per-schema detail.";
+
+  return { detectedVersion: detected, knownVersions, schemaWarnings, message };
 }
 
 /**

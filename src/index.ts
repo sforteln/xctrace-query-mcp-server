@@ -22,6 +22,7 @@ import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
 import { safeTool, text } from "./core/toolUtils.js";
+import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
@@ -78,7 +79,10 @@ function createServer(): McpServer {
     async ({ path }) =>
       safeTool(async () => {
         const result = await openTrace(path);
-        const response = envelope(result, actionsAfterOpen(result.sessionId));
+        const schemas = [...new Set(result.instruments.map((i) => i.schema))];
+        const versionWarning = buildVersionWarning(result.xcodeVersion, schemas);
+        const payload = versionWarning ? { ...result, versionWarning } : result;
+        const response = envelope(payload, actionsAfterOpen(result.sessionId));
         return text(toMcpText(response));
       })
   );
