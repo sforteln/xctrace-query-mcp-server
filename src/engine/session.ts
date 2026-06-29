@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { exportToc, exportXPath, buildTableXPath, XctraceError } from "./xctrace.js";
 import { parseTableXml, ParsedTable, RefCache } from "./parseTable.js";
+import { buildSchemaModel, updateSchemaCols, SchemaModel } from "./schemaModel.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -57,6 +58,8 @@ export interface TraceSession {
   tableCache: Map<string, ParsedTable>;
   /** Shared ref-id resolution cache across all tables in this session. */
   refCache: RefCache;
+  /** Structured schema model: TOC metadata + lazily-populated column definitions. */
+  schemaModel: SchemaModel;
 }
 
 // ─── Session registry ─────────────────────────────────────────────────────────
@@ -111,6 +114,7 @@ export async function openTrace(
     timeRange: null,
     tableCache: new Map(),
     refCache: new Map(),
+    schemaModel: buildSchemaModel(toc.runs),
   };
 
   sessions.set(sessionId, session);
@@ -157,6 +161,9 @@ export async function getTable(
   );
   if (entry) entry.rowCount = table.rows.length;
 
+  // Populate column definitions in the schema model.
+  updateSchemaCols(session.schemaModel, run, schema, table.cols);
+
   // Lazily update session timeRange from any time-bearing column in this table.
   if (session.timeRange === null) {
     updateTimeRange(session, table);
@@ -185,6 +192,13 @@ export function summary(sessionId: string): {
     instruments: session.instruments,
     timeRange: session.timeRange,
   };
+}
+
+/**
+ * Return the schema model for a session.
+ */
+export function getSchemaModel(sessionId: string): SchemaModel {
+  return getSession(sessionId).schemaModel;
 }
 
 /**
