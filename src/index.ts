@@ -2,17 +2,42 @@
 /**
  * instruments-mcp-server — headless stdio MCP server entry point.
  *
- * This is the runnable skeleton: it completes the MCP handshake over stdio and
- * registers a single placeholder `ping` tool. No trace logic lives here yet —
- * the universal core verbs (openTrace, listInstruments, query, aggregate, …)
- * and the per-instrument lenses are layered on in later work. See src/engine,
- * src/core, and src/lenses.
+ * Registers the universal core MCP tools. The server is schema-agnostic:
+ * it works on any Instruments .trace by introspecting column roles at runtime.
+ * Per-instrument lens verbs (Foundation Models, Time Profiler, …) are layered
+ * on in src/lenses/ and injected into each response's nextActions by the lens
+ * framework (FTR:flint-granite).
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import { openTrace, summary } from "./engine/session.js";
+import { XctraceError } from "./engine/xctrace.js";
+import { envelope, actionsAfterOpen, toMcpText } from "./core/response.js";
 
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
+
+/** Wrap a tool handler so any XctraceError becomes a structured text error
+ *  rather than a thrown exception (which the SDK turns into a generic error). */
+async function safeTool(
+  fn: () => Promise<{ content: Array<{ type: "text"; text: string }> }>
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof XctraceError) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(err.toStructured(), null, 2) }],
+      };
+    }
+    throw err as Error;
+  }
+}
+
+function text(str: string): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text", text: str }] };
+}
 
 function createServer(): McpServer {
   const server = new McpServer({
@@ -20,18 +45,47 @@ function createServer(): McpServer {
     version: SERVER_VERSION,
   });
 
-  // Placeholder tool. Confirms the handshake and tool-list round-trip end to
-  // end; replaced by the real trace tools in subsequent prompts.
+  // ── open_trace ─────────────────────────────────────────────────────────────
   server.registerTool(
-    "ping",
+    "open_trace",
     {
-      title: "Ping",
+      title: "Open Trace",
       description:
-        "Health check. Returns 'pong' to confirm the server is connected and responding over stdio.",
+        "Load an Instruments .trace file and return a sessionId for subsequent calls. " +
+        "The trace is loaded once and cached — all later tools reuse this session. " +
+        "Returns the list of runs, instruments (schemas), and a coarse timeRange once " +
+        "data is fetched. Always call this first.",
+      inputSchema: {
+        path: z.string().describe("Absolute or ~ path to the .trace bundle."),
+      },
     },
-    async () => ({
-      content: [{ type: "text", text: "pong" }],
-    })
+    async ({ path }) =>
+      safeTool(async () => {
+        const result = await openTrace(path);
+        const response = envelope(result, actionsAfterOpen(result.sessionId));
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── get_summary ────────────────────────────────────────────────────────────
+  server.registerTool(
+    "get_summary",
+    {
+      title: "Get Trace Summary",
+      description:
+        "Return a summary of an open trace session: runs, instruments (with row counts " +
+        "for tables already fetched), and the time range discovered so far. " +
+        "Lightweight — no xctrace calls.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+      },
+    },
+    async ({ sessionId }) =>
+      safeTool(async () => {
+        const result = summary(sessionId);
+        const response = envelope(result, actionsAfterOpen(sessionId));
+        return text(toMcpText(response));
+      })
   );
 
   return server;
@@ -41,8 +95,6 @@ async function main(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // stdio transport keeps the process alive; nothing else to do here. Logging
-  // must go to stderr so it never corrupts the stdio JSON-RPC stream on stdout.
   console.error(`${SERVER_NAME} v${SERVER_VERSION} ready (stdio)`);
 }
 
