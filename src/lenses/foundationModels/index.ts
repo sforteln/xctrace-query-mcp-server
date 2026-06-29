@@ -5,6 +5,7 @@ import type { NextAction } from "../../core/response.js";
 import { envelope, toMcpText } from "../../core/response.js";
 import { safeTool, text } from "../../core/toolUtils.js";
 import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
+import { getFmRequest, getFmResponse, getFmEvents } from "./getRequest.js";
 
 const fmLens: Lens = {
   instruments: [FM_SCHEMA],
@@ -58,6 +59,123 @@ const fmLens: Lens = {
               description: "Fetch the next page of requests.",
             });
           }
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
+    // ── get_fm_request ──────────────────────────────────────────────────────
+    server.registerTool(
+      "get_fm_request",
+      {
+        title: "Get FM Request Detail",
+        description:
+          "Full detail for one FM inference row by its tableIndex (from list_fm_requests). " +
+          "Returns timing, agent, full prompt, parsed response JSON, token breakdown, " +
+          "resolve phase, error info. " +
+          "instruction/instructions columns are intentionally omitted — they contain the " +
+          "full system prompt which can be several KB. Use get_fm_prompt when you need it explicitly. " +
+          "`run` defaults to the most recent run.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, rowIndex, run }) =>
+        safeTool(async () => {
+          const result = await getFmRequest(sessionId, rowIndex, { run });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_response",
+              args: { sessionId, rowIndex, run: result.resolve ? undefined : run },
+              description: "Read the parsed response JSON for this row.",
+            },
+            {
+              tool: "get_fm_events",
+              args: { sessionId, rowIndex, run: result.resolve ? undefined : run },
+              description: "See all phases (Prompt → Resolve) for this request.",
+            },
+            {
+              tool: "get_fm_prompt",
+              args: { sessionId, rowIndex, run: result.resolve ? undefined : run },
+              description: "Read the full system prompt/instructions for this row (large — only when needed).",
+            },
+            {
+              tool: "list_fm_requests",
+              args: { sessionId, run },
+              description: "Return to the request list.",
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
+    // ── get_fm_response ─────────────────────────────────────────────────────
+    server.registerTool(
+      "get_fm_response",
+      {
+        title: "Get FM Response",
+        description:
+          "Return the parsed response body for one FM inference row. " +
+          "The response column contains JSON (body, needsReformulation, referencedSections, …); " +
+          "this tool parses it so the agent reads structured data instead of an escaped JSON string. " +
+          "`run` defaults to the most recent run.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, rowIndex, run }) =>
+        safeTool(async () => {
+          const result = await getFmResponse(sessionId, rowIndex, { run });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_request",
+              args: { sessionId, rowIndex, run },
+              description: "Full request detail (timing, tokens, error info).",
+            },
+            {
+              tool: "get_fm_events",
+              args: { sessionId, rowIndex, run },
+              description: "All phases for this request.",
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
+    // ── get_fm_events ───────────────────────────────────────────────────────
+    server.registerTool(
+      "get_fm_events",
+      {
+        title: "Get FM Request Events",
+        description:
+          "Return the ordered event timeline for one FM request — all rows sharing the " +
+          "same model-request-id (Prompt phase, Resolve phase, …) with timing, resolve phase, " +
+          "and content summary. Useful for understanding multi-step request flow. " +
+          "`run` defaults to the most recent run.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          rowIndex: z.number().int().min(0).describe("tableIndex of any row in the request."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, rowIndex, run }) =>
+        safeTool(async () => {
+          const result = await getFmEvents(sessionId, rowIndex, { run });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_request",
+              args: { sessionId, rowIndex, run },
+              description: "Full detail for the anchor row.",
+            },
+            {
+              tool: "list_fm_requests",
+              args: { sessionId, run },
+              description: "Return to the full request list.",
+            },
+          ];
           return text(toMcpText(envelope(result, actions)));
         })
     );
