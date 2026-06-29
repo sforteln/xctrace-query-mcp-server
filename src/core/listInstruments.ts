@@ -11,6 +11,7 @@
  */
 import { getSession, lastRun as sessionLastRun } from "../engine/session.js";
 import { findOne } from "../engine/schemaModel.js";
+import { resolveRules, type RulesConfidence } from "../engine/versionRules.js";
 
 export interface SchemaInfo {
   schema: string;
@@ -25,6 +26,13 @@ export interface SchemaInfo {
    * that picking the right run matters for this table.
    */
   presentInAllRuns: boolean;
+  /** The rules-version governing parsing for this schema (e.g. "27.0"). */
+  rulesVersion: string;
+  /**
+   * "verified" — this (rulesVersion, schema) has a fixture and is known good.
+   * "nearest"  — fell back to an adjacent Xcode version; behaviour may differ.
+   */
+  confidence: RulesConfidence;
 }
 
 export interface RunGroup {
@@ -72,12 +80,15 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
   }, firstRunSchemas);
 
   // Build per-run groups, enriching from schemaModel TOC metadata.
+  const xcodeVersion = session.xcodeVersion ?? "";
+
   const runs: RunGroup[] = runNumbers.map((run) => {
     const runInstruments = session.instruments.filter((i) => i.run === run);
     return {
       run,
       schemas: runInstruments.map((inst) => {
         const entry = findOne(session.schemaModel, run, inst.schema);
+        const { rulesVersion, confidence } = resolveRules(xcodeVersion, inst.schema);
         return {
           schema: inst.schema,
           source: entry?.source ?? "schema-table",
@@ -86,6 +97,8 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
           hasCallstack: (entry?.toc.callstack ?? null) !== null,
           isFoundationModels: (entry?.toc.swiftTable ?? null) !== null,
           presentInAllRuns: commonSchemas.has(inst.schema),
+          rulesVersion,
+          confidence,
         };
       }),
     };
