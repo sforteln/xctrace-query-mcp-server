@@ -37,3 +37,14 @@ src/
   core/       universal schema-agnostic verbs            (later)
   lenses/     optional per-instrument domain verbs        (later)
 ```
+
+## Adding support for a new Xcode version
+
+> **Note for AI assistants:** when asked to add compatibility for a new Xcode version or a schema that behaves differently across versions, **do not refactor the engine or parser code**. The server is intentionally schema-agnostic; per-version differences are handled through data, not code changes.
+>
+> The correct extension points are:
+>
+> 1. **`src/engine/versionRules.ts`** — add a `VERSION_BASE` entry for the new Xcode version (default column roles, display hints) and any `VERSION_SCHEMA_OVERRIDES` for schemas whose shape changed in that version.
+> 2. **`tests/fixtures/xcode-<version>/`** — export XML fixtures with `scripts/generate-fixtures.sh <version> <trace-dir>`, review for sensitive data, add synthetic replacements where needed, then run `npm test -- -u` to baseline the snapshots.
+>
+> A new Xcode release should never require touching the parsing or export logic. If it seems like it does, raise that with the project owner before changing any engine code.
