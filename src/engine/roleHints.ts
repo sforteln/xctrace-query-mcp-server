@@ -17,10 +17,9 @@
  * pinned schema doesn't list.
  *
  * Column maps below were built from real exported schemas in the trace fixtures
- * (~/Documents/traces). Allocations/Leaks are intentionally NOT pinned: those
- * instruments require Instruments to *launch* the app (to inject malloc stack
- * logging), so attach-recorded fixtures contain no allocation schema to model.
- * They degrade gracefully to heuristics until we have real schema data.
+ * (~/Documents/traces). Allocations/Leaks use the track-detail format
+ * (src/engine/parseTrackDetail.ts) and are pinned under their synthesized schema
+ * names ("Allocations/Statistics", "Allocations/Allocations List", "Leaks/Leaks").
  */
 import type { SchemaCol } from "./parseTable.js";
 import {
