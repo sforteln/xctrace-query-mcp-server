@@ -23,6 +23,7 @@ import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
 import { safeTool, text } from "./core/toolUtils.js";
 import fmLens from "./lenses/foundationModels/index.js";
+import { getConfig, updateConfig, configPath } from "./config.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -454,12 +455,153 @@ function createServer(): McpServer {
       })
   );
 
+  // ── add_search_root ───────────────────────────────────────────────────────
+  server.registerTool(
+    "add_search_root",
+    {
+      title: "Add Search Root",
+      description:
+        "Add a directory to scan when searching for .trace files. " +
+        "The path is validated (must exist and be a directory), resolved to absolute, " +
+        "and de-duplicated before saving. Persists to the server config file so it " +
+        "survives subprocess restarts. Use list_search_roots to see current roots.",
+      inputSchema: {
+        path: z.string().describe("Absolute or ~ path to a directory containing .trace files."),
+      },
+    },
+    async ({ path: rawPath }) =>
+      safeTool(async () => {
+        const { resolve } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const { stat } = await import("node:fs/promises");
+
+        const expanded = rawPath.startsWith("~")
+          ? rawPath.replace("~", homedir())
+          : rawPath;
+        const absPath = resolve(expanded);
+
+        let isDir = false;
+        try {
+          const s = await stat(absPath);
+          isDir = s.isDirectory();
+        } catch {
+          return text(JSON.stringify({
+            error: "path_not_found",
+            path: absPath,
+            hint: "The path does not exist. Check the path and try again.",
+          }, null, 2));
+        }
+
+        if (!isDir) {
+          return text(JSON.stringify({
+            error: "not_a_directory",
+            path: absPath,
+            hint: "Path exists but is not a directory.",
+          }, null, 2));
+        }
+
+        const config = await updateConfig((c) => ({
+          ...c,
+          searchRoots: c.searchRoots.includes(absPath)
+            ? c.searchRoots
+            : [...c.searchRoots, absPath],
+        }));
+
+        return text(JSON.stringify({
+          added: absPath,
+          searchRoots: config.searchRoots,
+          configPath: configPath(),
+        }, null, 2));
+      })
+  );
+
+  // ── remove_search_root ────────────────────────────────────────────────────
+  server.registerTool(
+    "remove_search_root",
+    {
+      title: "Remove Search Root",
+      description:
+        "Remove a directory from the search roots. Silently succeeds if the " +
+        "path is not currently a root. Use list_search_roots to confirm.",
+      inputSchema: {
+        path: z.string().describe("Path to remove (must match exactly as stored — use list_search_roots to see stored values)."),
+      },
+    },
+    async ({ path: rawPath }) =>
+      safeTool(async () => {
+        const { resolve } = await import("node:path");
+        const { homedir } = await import("node:os");
+
+        const expanded = rawPath.startsWith("~")
+          ? rawPath.replace("~", homedir())
+          : rawPath;
+        const absPath = resolve(expanded);
+
+        const config = await updateConfig((c) => ({
+          ...c,
+          searchRoots: c.searchRoots.filter((r) => r !== absPath),
+        }));
+
+        return text(JSON.stringify({
+          removed: absPath,
+          searchRoots: config.searchRoots,
+        }, null, 2));
+      })
+  );
+
+  // ── list_search_roots ─────────────────────────────────────────────────────
+  server.registerTool(
+    "list_search_roots",
+    {
+      title: "List Search Roots",
+      description:
+        "List all configured search root directories and whether they currently exist on disk. " +
+        "Also shows the built-in roots that are always scanned (Xcode autosave, DerivedData). " +
+        "Use add_search_root to add a directory.",
+      inputSchema: {},
+    },
+    async () =>
+      safeTool(async () => {
+        const { homedir } = await import("node:os");
+        const { stat } = await import("node:fs/promises");
+        const { join } = await import("node:path");
+
+        const home = homedir();
+        const builtInRoots = [
+          join(home, "Library", "Developer", "Xcode", "Instruments"),
+          join(home, "Library", "Caches", "com.apple.dt.instruments"),
+        ];
+
+        const config = await getConfig();
+
+        async function checkExists(p: string): Promise<boolean> {
+          try { await stat(p); return true; } catch { return false; }
+        }
+
+        const userRoots = await Promise.all(
+          config.searchRoots.map(async (r) => ({ path: r, exists: await checkExists(r), type: "user" as const }))
+        );
+        const builtIn = await Promise.all(
+          builtInRoots.map(async (r) => ({ path: r, exists: await checkExists(r), type: "built-in" as const }))
+        );
+
+        return text(JSON.stringify({
+          configPath: configPath(),
+          builtInRoots: builtIn,
+          userRoots,
+          totalRoots: builtIn.length + userRoots.length,
+        }, null, 2));
+      })
+  );
+
   return server;
 }
 
 async function main(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
+  // Load config eagerly at startup so the first tool call doesn't pay the I/O cost.
+  await getConfig();
   await server.connect(transport);
   console.error(`${SERVER_NAME} v${SERVER_VERSION} ready (stdio)`);
 }
