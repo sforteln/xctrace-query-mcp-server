@@ -1,0 +1,39 @@
+# instruments-mcp-server
+
+A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode **Instruments `.trace`** files — Time Profiler, Allocations, Leaks, System Trace, Points of Interest, Foundation Models, and more — without dumping raw `xctrace` XML into the model's context.
+
+It introspects each trace's schema, classifies columns into a small set of roles (time, weight, backtrace, thread, label, detail), and exposes a handful of schema-agnostic verbs that work on **any** instrument, plus optional per-instrument "lens" verbs for ergonomic domain queries.
+
+> **Status:** early scaffold. The server runs over stdio and currently exposes a single placeholder `ping` tool. Trace loading and the universal core verbs are in progress.
+
+## Requirements
+
+- **Node.js ≥ 18**
+- **Xcode** installed (the server shells out to `xcrun xctrace` to export traces). Xcode is only a runtime CLI dependency — it is *not* the build/authoring environment.
+
+## Install / register with an MCP client
+
+```sh
+claude mcp add instruments -- npx instruments-mcp-server
+```
+
+`instruments` is the label shown in the client; `instruments-mcp-server` is the npm package that gets spawned.
+
+## Develop
+
+```sh
+npm install
+npm run build     # tsc -> dist/, makes dist/index.js executable
+npm start         # run the built server over stdio
+npm run watch     # incremental rebuilds
+```
+
+## Layout
+
+```
+src/
+  index.ts    stdio entry point + MCP handshake
+  engine/     xctrace export wrapper, parsing, caching   (later)
+  core/       universal schema-agnostic verbs            (later)
+  lenses/     optional per-instrument domain verbs        (later)
+```

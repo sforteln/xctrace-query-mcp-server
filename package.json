@@ -1,0 +1,38 @@
+{
+  "name": "instruments-mcp-server",
+  "version": "0.1.0",
+  "description": "Headless stdio MCP server that lets an AI navigate Xcode Instruments .trace files without dumping raw xctrace XML into context.",
+  "type": "module",
+  "bin": {
+    "instruments-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "xcode",
+    "instruments",
+    "xctrace",
+    "trace",
+    "profiling"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.5.0"
+  }
+}
