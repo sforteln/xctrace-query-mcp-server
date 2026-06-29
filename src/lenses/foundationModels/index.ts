@@ -5,7 +5,7 @@ import type { NextAction } from "../../core/response.js";
 import { envelope, toMcpText } from "../../core/response.js";
 import { safeTool, text } from "../../core/toolUtils.js";
 import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
-import { getFmRequest, getFmResponse, getFmEvents } from "./getRequest.js";
+import { getFmRequest, getFmResponse, getFmEvents, getFmPrompt } from "./getRequest.js";
 
 const fmLens: Lens = {
   instruments: [FM_SCHEMA],
@@ -174,6 +174,39 @@ const fmLens: Lens = {
               tool: "list_fm_requests",
               args: { sessionId, run },
               description: "Return to the full request list.",
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
+    // ── get_fm_prompt ───────────────────────────────────────────────────────
+    server.registerTool(
+      "get_fm_prompt",
+      {
+        title: "Get FM System Prompt",
+        description:
+          "Return the full system prompt (instruction/instructions columns) for one FM inference row. " +
+          "This is a deliberate, explicit-only call — the instructions blob can be several KB " +
+          "and is excluded from all other FM tools to preserve token efficiency. " +
+          "Only call this when you specifically need to read the system prompt. " +
+          "Returns both `instruction` (with header line) and `instructions` (text only) " +
+          "plus character counts so you can decide how much context you need. " +
+          "`run` defaults to the most recent run.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, rowIndex, run }) =>
+        safeTool(async () => {
+          const result = await getFmPrompt(sessionId, rowIndex, { run });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_request",
+              args: { sessionId, rowIndex, run },
+              description: "Full request detail (timing, tokens, response — without the prompt).",
             },
           ];
           return text(toMcpText(envelope(result, actions)));

@@ -188,5 +188,54 @@ export async function getFmEvents(
   return { requestId, totalEvents: events.length, events };
 }
 
+// ─── getPrompt ────────────────────────────────────────────────────────────────
+
+export interface FmPromptDetail {
+  rowIndex: number;
+  requestId: string | null;
+  resolve: string | null;
+  /** The instruction column — includes header line ("Instructions:\n…"). */
+  instruction: string | null;
+  /** The instructions column — system prompt text only, no header. */
+  instructions: string | null;
+  /** Character counts so the agent can decide how much to read. */
+  instructionLength: number | null;
+  instructionsLength: number | null;
+}
+
+/**
+ * Return the full system prompt for one FM inference row.
+ *
+ * Deliberately a separate call — the instructions blob can be several KB and
+ * is excluded from getRequest/listRequests to preserve token efficiency. Call
+ * this only when the agent explicitly needs to read the prompt.
+ */
+export async function getFmPrompt(
+  sessionId: string,
+  rowIndex: number,
+  opts: { run?: number } = {}
+): Promise<FmPromptDetail> {
+  const run = opts.run ?? sessionLastRun(sessionId);
+  const table = await getTable(sessionId, run, FM_SCHEMA);
+
+  if (rowIndex < 0 || rowIndex >= table.rows.length) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${table.rows.length - 1})`);
+  }
+
+  const row = table.rows[rowIndex];
+  const instruction = row["instruction"]?.fmt ?? null;
+  const instructions = row["instructions"]?.fmt ?? null;
+
+  return {
+    rowIndex,
+    requestId: row["model-request-id"]?.fmt ?? null,
+    resolve: row["resolve"]?.fmt ?? null,
+    instruction,
+    instructions,
+    instructionLength: instruction !== null ? instruction.length : null,
+    instructionsLength: instructions !== null ? instructions.length : null,
+  };
+}
+
 // Re-export for external use
 export { EXCLUDED_FROM_REQUEST };
