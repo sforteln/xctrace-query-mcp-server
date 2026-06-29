@@ -18,6 +18,7 @@ import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
+import { callTree } from "./core/callTree.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -276,6 +277,69 @@ function createServer(): McpServer {
           result,
           actionsAfterAggregate(sessionId, schema, result.run, groupBy, topKey, hasBacktrace)
         );
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── call_tree ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "call_tree",
+    {
+      title: "Call Tree",
+      description:
+        "Build a folded call tree from inline symbolicated backtraces, weighted by sample duration. " +
+        "Use schema 'time-profile' for Time Profiler — it carries pre-symbolicated <frame> elements. " +
+        "Frames are grouped root-to-leaf; each node shows total/self weight, sample count, and % of total. " +
+        "Filter by thread name/id substring to focus on one thread. " +
+        "`run` defaults to the most recent run.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schema: z
+          .string()
+          .describe("Schema with tagged-backtrace column. Use 'time-profile' for Time Profiler."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        thread: z
+          .string()
+          .optional()
+          .describe("Substring filter on thread fmt (e.g. 'PromptManager' or '0x25cc66') to scope to one thread."),
+        timeRange: z
+          .object({
+            startNs: z.number().optional(),
+            endNs: z.number().optional(),
+          })
+          .optional()
+          .describe("Restrict samples to a time window (nanoseconds)."),
+        maxDepth: z
+          .number()
+          .int()
+          .min(1)
+          .max(15)
+          .optional()
+          .describe("Max tree depth (default 6)."),
+        topN: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("Max children shown per node (default 8)."),
+      },
+    },
+    async ({ sessionId, schema, run, thread, timeRange, maxDepth, topN }) =>
+      safeTool(async () => {
+        const result = await callTree(sessionId, schema, { run, thread, timeRange, maxDepth, topN });
+        const response = envelope(result, [
+          {
+            tool: "call_tree",
+            args: { sessionId, schema, run: result.run, thread: "<thread-substring>", topN: 8 },
+            description: "Narrow to a specific thread or increase topN for broader coverage.",
+          },
+          {
+            tool: "aggregate",
+            args: { sessionId, schema: schema === "time-profile" ? "time-sample" : schema, run: result.run, groupBy: "thread", op: "count", topN: 10 },
+            description: "See sample count by thread to pick the busiest thread to filter on.",
+          },
+        ]);
         return text(toMcpText(response));
       })
   );
