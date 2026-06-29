@@ -14,7 +14,7 @@
  */
 import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints } from "../engine/roleHints.js";
-import type { Cell } from "../engine/parseTable.js";
+import type { Cell, ResolvedFrame } from "../engine/parseTable.js";
 import type { ColumnRole, WeightUnit } from "../engine/roleInference.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -36,14 +36,17 @@ export interface CellDetail {
    */
   childValues?: Record<string, string | null>;
   /**
-   * Parsed kperf-bt summary for backtrace columns. Full symbolicated stacks
-   * require the call_tree tool which aggregates across samples.
+   * Backtrace summary. For schema-table (kperf-bt) columns this is address-only
+   * — use call_tree for full symbolicated stacks. For track-detail (Allocations/
+   * Leaks) columns the frames are already symbolicated and included directly.
    */
   backtrace?: {
     topPc: string | null;
     frameCount: number | null;
     process: string | null;
     note: string;
+    /** Resolved frames (present only for track-detail backtraces). */
+    resolvedFrames?: ResolvedFrame[];
   };
 }
 
@@ -105,7 +108,22 @@ function buildCellDetail(
     return base;
   }
 
-  // Backtrace compound cell.
+  // Track-detail backtrace: already symbolicated, show frames directly.
+  if (cell.resolvedFrames) {
+    const frames = cell.resolvedFrames;
+    return {
+      ...base,
+      backtrace: {
+        topPc: frames[0]?.name ?? null,
+        frameCount: frames.length,
+        process: null,
+        note: "Symbolicated inline backtrace from Instruments track-detail.",
+        resolvedFrames: frames,
+      },
+    };
+  }
+
+  // Schema-table backtrace compound cell (kperf-bt / text-backtrace).
   if (cell.type === "kperf-bt" || cell.type === "text-backtrace" || cell.type === "backtrace") {
     return { ...base, backtrace: extractKperfBt(cell) };
   }

@@ -13,6 +13,15 @@
  */
 import { XMLParser } from "fast-xml-parser";
 
+/** A resolved call frame from a track-detail inline backtrace. */
+export interface ResolvedFrame {
+  /** Function name (already symbolicated) or hex address when unknown. */
+  name: string;
+  addr: string;
+  binaryName: string | null;
+  binaryPath: string | null;
+}
+
 /** A single typed cell value in a normalized row. */
 export interface Cell {
   /** The engineering-type tag name from the XML (e.g. "string", "duration", "thread"). */
@@ -23,6 +32,12 @@ export interface Cell {
   raw: number | string;
   /** Nested child cells, keyed by their tag name (for compound types like thread, process). */
   children?: Record<string, Cell | null>;
+  /**
+   * Resolved call frames from a track-detail inline backtrace (already
+   * symbolicated — no separate symbolicate step needed).
+   * Present only on backtrace cells in track-detail rows.
+   */
+  resolvedFrames?: ResolvedFrame[];
 }
 
 /** One normalized row: mnemonic → cell (or null for sentinel / missing columns). */

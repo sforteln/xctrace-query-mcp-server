@@ -11,8 +11,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { exportToc, exportXPath, buildTableXPath, XctraceError } from "./xctrace.js";
+import { exportToc, exportXPath, buildTableXPath, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
 import { parseTableXml, ParsedTable } from "./parseTable.js";
+import { parseTrackDetailXml } from "./parseTrackDetail.js";
 import { buildSchemaModel, updateSchemaCols, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
@@ -178,9 +179,22 @@ export async function getTable(
   const cached = session.tableCache.get(cacheKey);
   if (cached) return cached;
 
-  const xpath = buildTableXPath(run, schema);
-  const xml = await exportXPath(session.tracePath, xpath);
-  const table = parseTableXml(xml);
+  // Look up the schema model entry to decide which fetch+parse path to use.
+  const modelEntry = session.schemaModel.find(
+    (e) => e.run === run && e.toc.schema === schema
+  );
+
+  let table: ParsedTable;
+  if (modelEntry?.source === "track-detail" && modelEntry.trackDetail) {
+    const { trackName, detailName } = modelEntry.trackDetail;
+    const xpath = buildTrackDetailXPath(run, trackName, detailName);
+    const xml = await exportXPath(session.tracePath, xpath);
+    table = parseTrackDetailXml(xml, schema);
+  } else {
+    const xpath = buildTableXPath(run, schema);
+    const xml = await exportXPath(session.tracePath, xpath);
+    table = parseTableXml(xml);
+  }
 
   // Update row count on the instruments summary entry.
   const entry = session.instruments.find(
