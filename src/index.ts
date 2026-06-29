@@ -14,10 +14,14 @@ import { z } from "zod";
 import { openTrace, summary } from "./engine/session.js";
 import { XctraceError } from "./engine/xctrace.js";
 import { describeSchema } from "./core/schema.js";
+import { listInstruments } from "./core/listInstruments.js";
+import { queryTable } from "./core/query.js";
 import {
   envelope,
   actionsAfterOpen,
+  actionsAfterListInstruments,
   actionsAfterDescribeSchema,
+  actionsAfterQuery,
   toMcpText,
 } from "./core/response.js";
 
@@ -94,6 +98,34 @@ function createServer(): McpServer {
       })
   );
 
+  // ── list_instruments ───────────────────────────────────────────────────────
+  server.registerTool(
+    "list_instruments",
+    {
+      title: "List Instruments",
+      description:
+        "List every instrument (schema/table) in a trace, grouped by run. " +
+        "Returns schema names, row counts (if already fetched), documentation, " +
+        "and whether each schema is present in all runs. Includes a crossRunDiff " +
+        "note when runs differ — e.g. 'run 3 adds: time-sample, context-switch-sample'. " +
+        "Cheap: no xctrace calls. Call this right after open_trace to pick an instrument.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+      },
+    },
+    async ({ sessionId }) =>
+      safeTool(async () => {
+        const result = listInstruments(sessionId);
+        const lastRunSchemas =
+          result.runs.find((r) => r.run === result.lastRun)?.schemas.map((s) => s.schema) ?? [];
+        const response = envelope(
+          result,
+          actionsAfterListInstruments(sessionId, lastRunSchemas, result.lastRun)
+        );
+        return text(toMcpText(response));
+      })
+  );
+
   // ── describe_schema ──────────────────────────────────────────────────────────
   server.registerTool(
     "describe_schema",
@@ -128,6 +160,58 @@ function createServer(): McpServer {
             groupByCandidate,
             hasBacktrace: desc.rolesSummary.backtrace.length > 0,
           })
+        );
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── query ──────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "query",
+    {
+      title: "Query Table",
+      description:
+        "Fetch rows from any instrument table with optional filter, column projection, " +
+        "timeRange window, sort, and pagination. Returns summary rows (formatted display " +
+        "values — no raw numbers or backtrace frames). Use get_row for full detail on a " +
+        "specific row. Defaults to the first 20 rows of the most recent run. " +
+        "Always call describe_schema first to know which columns/mnemonics exist.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        filter: z
+          .record(z.union([z.string(), z.number()]))
+          .optional()
+          .describe("Equality filter: { mnemonic: value }. Rows must match ALL entries. Values compared against fmt (display) and raw."),
+        columns: z
+          .array(z.string())
+          .optional()
+          .describe("Column mnemonics to include. Omit for all columns."),
+        timeRange: z
+          .object({
+            startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
+            endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
+          })
+          .optional()
+          .describe("Restrict rows to a time window. Applied to the primary time column for this schema."),
+        sort: z
+          .object({
+            by: z.string().describe("Column mnemonic to sort by."),
+            dir: z.enum(["asc", "desc"]).optional().describe("Sort direction. Default: asc."),
+          })
+          .optional()
+          .describe("Sort rows by a column value."),
+        limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 20, max 500)."),
+        offset: z.number().int().min(0).optional().describe("Rows to skip for pagination (default 0)."),
+      },
+    },
+    async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset }) =>
+      safeTool(async () => {
+        const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset });
+        const response = envelope(
+          result,
+          actionsAfterQuery(sessionId, schema, result.run, result.hasMore)
         );
         return text(toMcpText(response));
       })
