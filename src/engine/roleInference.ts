@@ -31,7 +31,7 @@ export type ColumnRole = "time" | "weight" | "backtrace" | "thread" | "label" | 
 /** Unit hint for weight columns — lets aggregate format/label measures sensibly. */
 export type WeightUnit = "nanoseconds" | "bytes" | "count" | "cycles" | "unknown";
 
-export type RoleSource = "engineering-type" | "mnemonic" | "default";
+export type RoleSource = "override" | "engineering-type" | "mnemonic" | "default";
 
 export interface RoleInfo {
   role: ColumnRole;
