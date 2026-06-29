@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { exportToc, exportXPath, buildTableXPath, XctraceError } from "./xctrace.js";
 import { parseTableXml, ParsedTable } from "./parseTable.js";
-import { buildSchemaModel, updateSchemaCols, SchemaModel } from "./schemaModel.js";
+import { buildSchemaModel, updateSchemaCols, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -90,18 +90,47 @@ export async function openTrace(
   const tracePath = resolve(path.replace(/^~/, process.env.HOME ?? "~"));
   const toc = await exportToc(tracePath);
 
-  const runs: RunSummary[] = toc.runs.map((r) => ({
-    number: r.number,
-    schemas: r.tables.map((t) => t.schema),
-  }));
+  // De-duplicate track-details per run (same as buildSchemaModel does).
+  const seenTrackDetails = new Set<string>();
 
-  const instruments: InstrumentSummary[] = toc.runs.flatMap((r) =>
-    r.tables.map((t) => ({
+  const runs: RunSummary[] = toc.runs.map((r) => {
+    const tableSchemas = r.tables.map((t) => t.schema);
+    const trackSchemas: string[] = [];
+    for (const track of r.tracks) {
+      for (const detail of track.details) {
+        const name = trackDetailSchemaName(track.name, detail.name);
+        const key = `${r.number}:${name}`;
+        if (!seenTrackDetails.has(key)) {
+          seenTrackDetails.add(key);
+          trackSchemas.push(name);
+        }
+      }
+    }
+    return { number: r.number, schemas: [...tableSchemas, ...trackSchemas] };
+  });
+
+  // Reset for instruments loop.
+  seenTrackDetails.clear();
+
+  const instruments: InstrumentSummary[] = toc.runs.flatMap((r) => {
+    const tableEntries: InstrumentSummary[] = r.tables.map((t) => ({
       schema: t.schema,
       run: r.number,
       rowCount: null,
-    }))
-  );
+    }));
+    const trackEntries: InstrumentSummary[] = [];
+    for (const track of r.tracks) {
+      for (const detail of track.details) {
+        const name = trackDetailSchemaName(track.name, detail.name);
+        const key = `${r.number}:${name}`;
+        if (!seenTrackDetails.has(key)) {
+          seenTrackDetails.add(key);
+          trackEntries.push({ schema: name, run: r.number, rowCount: null });
+        }
+      }
+    }
+    return [...tableEntries, ...trackEntries];
+  });
 
   const sessionId = randomUUID();
   const session: TraceSession = {

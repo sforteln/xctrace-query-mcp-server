@@ -13,7 +13,7 @@
  * layer and lives in src/engine/roleInference.ts (FTR:silver-mica prompts 2-3).
  * This module just captures what the raw xctrace output tells us.
  */
-import type { TocTable } from "./xctrace.js";
+import type { TocTable, TocRun } from "./xctrace.js";
 import type { SchemaCol } from "./parseTable.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,12 +42,26 @@ export interface TableTocMeta {
   extra: Record<string, string>;
 }
 
+/** Addressing coords for a track-detail entry (null on schema-tables). */
+export interface TrackDetailAddress {
+  trackName: string;
+  detailName: string;
+  detailKind: string;
+}
+
 /** A table entry in the schema model — TOC metadata plus lazily-loaded columns. */
 export interface TableSchema {
   /** Which run this table entry belongs to. */
   run: number;
+  /** Whether this came from /data/table or /tracks/track/details/detail. */
+  source: "schema-table" | "track-detail";
   /** TOC-level metadata, available immediately after openTrace. */
   toc: TableTocMeta;
+  /**
+   * Track-detail addressing (trackName + detailName). Null for schema-tables.
+   * Used by the fetch layer to build the correct XPath for track-details.
+   */
+  trackDetail: TrackDetailAddress | null;
   /**
    * Column definitions from the --xpath <schema><col> elements.
    * Null until the table is first fetched via getTable().
@@ -99,19 +113,71 @@ export function parseTocMeta(table: TocTable): TableTocMeta {
 }
 
 /**
+ * Synthetic schema name for a track-detail entry.
+ * Format: "TrackName/DetailName" — the "/" never appears in real schema names.
+ */
+export function trackDetailSchemaName(trackName: string, detailName: string): string {
+  return `${trackName}/${detailName}`;
+}
+
+/**
  * Build the initial SchemaModel from the TOC — columns are null until fetched.
+ * Covers both /data/table (schema-tables) and /tracks/track/details/detail
+ * (track-details). Duplicate (run, trackName, detailName) entries are
+ * de-duplicated — first occurrence wins.
  * Called once per session during openTrace.
  */
-export function buildSchemaModel(
-  runs: Array<{ number: number; tables: TocTable[] }>
-): SchemaModel {
-  return runs.flatMap((run) =>
-    run.tables.map((table) => ({
-      run: run.number,
-      toc: parseTocMeta(table),
-      cols: null,
-    }))
-  );
+export function buildSchemaModel(runs: TocRun[]): SchemaModel {
+  const result: TableSchema[] = [];
+  const seenTrackDetails = new Set<string>();
+
+  for (const run of runs) {
+    // Schema-tables from /data/table.
+    for (const table of run.tables) {
+      result.push({
+        run: run.number,
+        source: "schema-table",
+        toc: parseTocMeta(table),
+        trackDetail: null,
+        cols: null,
+      });
+    }
+
+    // Track-details from /tracks/track/details/detail.
+    for (const track of run.tracks) {
+      for (const detail of track.details) {
+        const schemaName = trackDetailSchemaName(track.name, detail.name);
+        const dedupKey = `${run.number}:${schemaName}`;
+        if (seenTrackDetails.has(dedupKey)) continue;
+        seenTrackDetails.add(dedupKey);
+
+        result.push({
+          run: run.number,
+          source: "track-detail",
+          toc: {
+            schema: schemaName,
+            documentation: null,
+            callstack: null,
+            sampleRateMicros: null,
+            swiftTable: null,
+            subsystem: null,
+            category: null,
+            codes: null,
+            target: null,
+            extra: {},
+          },
+          trackDetail: {
+            trackName: track.name,
+            detailName: detail.name,
+            detailKind: detail.kind,
+          },
+          cols: null,
+        });
+      }
+    }
+  }
+
+  return result;
 }
 
 /**

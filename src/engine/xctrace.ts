@@ -71,12 +71,26 @@ export interface TocTable {
   attributes: Record<string, string>;
 }
 
+/** One <detail> inside a track — carries name and kind (always "table" so far). */
+export interface TocTrackDetail {
+  name: string;
+  kind: string;
+}
+
+/** One <track> inside /trace-toc/run/tracks. */
+export interface TocTrack {
+  name: string;
+  details: TocTrackDetail[];
+}
+
 /** One run from the trace's table of contents. */
 export interface TocRun {
   /** The run number, used in XPath addressing (`run[@number="N"]`). */
   number: number;
-  /** Tables exported by this run. */
+  /** Tables exported by this run (the /data/table schema-table format). */
   tables: TocTable[];
+  /** Tracks exported by this run (the /tracks/track/details/detail format). */
+  tracks: TocTrack[];
 }
 
 /** Parsed table of contents for a `.trace`. */
@@ -204,6 +218,21 @@ export function buildTableXPath(run: number, schema: string): string {
   return `/trace-toc/run[@number="${run}"]/data/table[@schema="${schema}"]`;
 }
 
+/**
+ * Build the XPath that addresses a track-detail, e.g.
+ * `/trace-toc/run[@number="1"]/tracks/track[@name="Allocations"]/details/detail[@name="Allocations List"]`.
+ */
+export function buildTrackDetailXPath(
+  run: number,
+  trackName: string,
+  detailName: string
+): string {
+  return (
+    `/trace-toc/run[@number="${run}"]/tracks/` +
+    `track[@name="${trackName}"]/details/detail[@name="${detailName}"]`
+  );
+}
+
 const tocParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
@@ -237,6 +266,8 @@ function parseToc(xml: string, tracePath: string): Toc {
 
   const runs: TocRun[] = asArray<Record<string, any>>(toc.run).map((run) => {
     const number = Number(run["@_number"] ?? 0);
+
+    // /data/table — the schema-table format.
     const tables: TocTable[] = asArray<Record<string, any>>(
       run?.data?.table
     ).map((table) => {
@@ -246,7 +277,25 @@ function parseToc(xml: string, tracePath: string): Toc {
       }
       return { schema: attributes.schema ?? "", attributes };
     });
-    return { number, tables };
+
+    // /tracks/track/details/detail — the track-detail format.
+    // <detail> attributes can appear in any order (kind-before-name OR
+    // name-before-kind) — fast-xml-parser normalises them into the same object,
+    // so we always access by key, never by position.
+    const tracks: TocTrack[] = asArray<Record<string, any>>(
+      run?.tracks?.track
+    ).map((track) => {
+      const trackName = String(track["@_name"] ?? "");
+      const details: TocTrackDetail[] = asArray<Record<string, any>>(
+        track?.details?.detail
+      ).map((detail) => ({
+        name: String(detail["@_name"] ?? ""),
+        kind: String(detail["@_kind"] ?? "table"),
+      }));
+      return { name: trackName, details };
+    });
+
+    return { number, tables, tracks };
   });
 
   return { runs };

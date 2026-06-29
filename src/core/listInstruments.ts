@@ -14,6 +14,8 @@ import { findOne } from "../engine/schemaModel.js";
 
 export interface SchemaInfo {
   schema: string;
+  /** "schema-table" = /data/table format; "track-detail" = /tracks/track/details/detail format. */
+  source: "schema-table" | "track-detail";
   rowCount: number | null;
   documentation: string | null;
   hasCallstack: boolean;
@@ -77,6 +79,7 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
         const entry = findOne(session.schemaModel, run, inst.schema);
         return {
           schema: inst.schema,
+          source: entry?.source ?? "schema-table",
           rowCount: inst.rowCount,
           documentation: entry?.toc.documentation ?? null,
           hasCallstack: (entry?.toc.callstack ?? null) !== null,
