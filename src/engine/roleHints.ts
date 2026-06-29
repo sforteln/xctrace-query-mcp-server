@@ -274,6 +274,241 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
     },
   },
 
+  // ── Hangs & Hitches ───────────────────────────────────────────────────────────
+  // From HangsAndHitches.trace (Activity Monitor template).
+  // Hitches = frame rendering delays; potential-hangs = main-thread unresponsiveness.
+  "potential-hangs": {
+    instrument: "Hangs",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      // hang-type classifies the unresponsiveness: "Brief Unresponsiveness" vs
+      // "Potential Interaction Delay" — heuristics would mark it detail.
+      "hang-type": label,
+      thread: thread,
+      process: thread,
+    },
+  },
+  hitches: {
+    instrument: "Hitches",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      process: thread,
+      // is-system flags system-caused hitches vs. app-caused ones.
+      "is-system": detail,
+      // swap-id is an internal frame-swap identifier.
+      "swap-id": detail,
+      // label holds an address — heuristics would call it label due to the name.
+      label: detail,
+      // display is the display/screen identifier.
+      display: label,
+      // narrative-description explains the hitch cause.
+      "narrative-description": detail,
+    },
+  },
+  "hang-risks": {
+    instrument: "Hang Risks",
+    primaryTime: "time",
+    columns: {
+      time: t,
+      process: thread,
+      thread: thread,
+      message: detail,
+      severity: label,
+      "event-type": label,
+      backtrace: bt,
+    },
+  },
+
+  // ── SwiftData / Core Data ─────────────────────────────────────────────────────
+  // fault, relationship-fault, fetch, save — all from the SwiftData template.
+  "core-data-fault": {
+    instrument: "Data Faults (object)",
+    primaryTime: "start",
+    primaryWeight: "fault-duration",
+    columns: {
+      start: t,
+      "fault-duration": ns,
+      // fault-object is a CoreData/SwiftData object URI — groupable by entity.
+      "fault-object": detail,
+      backtrace: bt,
+      thread: thread,
+      narrative: detail,
+    },
+  },
+  "core-data-relationship-fault": {
+    instrument: "Data Faults (relationship)",
+    primaryTime: "start",
+    primaryWeight: "fault-duration",
+    columns: {
+      start: t,
+      "fault-duration": ns,
+      "relationship-fault-source": detail,
+      // relationship is the property name — groupable to find hot relationships.
+      relationship: label,
+      backtrace: bt,
+      thread: thread,
+      narrative: detail,
+    },
+  },
+  "core-data-fetch": {
+    instrument: "Data Fetches",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      // fetch-entity is the entity class name — groupable to find slow entity fetches.
+      "fetch-entity": label,
+      "fetch-count": count,
+      backtrace: bt,
+      // spid is the signpost identifier — opaque.
+      spid: detail,
+      thread: thread,
+    },
+  },
+  "core-data-save": {
+    instrument: "Data Saves",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      thread: thread,
+      backtrace: bt,
+    },
+  },
+
+  // ── Swift Concurrency ──────────────────────────────────────────────────────────
+  // From the Swift Concurrency template (swift.trace).
+  // SwiftTaskLifetime: one row per async task, spanning its full lifetime.
+  SwiftTaskLifetime: {
+    instrument: "Swift Tasks (lifetime)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      // task is an opaque analysis-core-swift-task reference.
+      task: detail,
+      process: thread,
+    },
+  },
+  // SwiftActorLifetime: one row per actor instance.
+  SwiftActorLifetime: {
+    instrument: "Swift Actors (lifetime)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      // actor-class is the Swift actor class name — groupable to find hot actor types.
+      "actor-class": label,
+      actor: detail,
+      "enqueued-actor": detail,
+    },
+  },
+  // SwiftActorQueueSize: time-series of tasks waiting on each actor (Swift Executors).
+  SwiftActorQueueSize: {
+    instrument: "Swift Executors (queue depth)",
+    primaryTime: "start",
+    primaryWeight: "count",
+    columns: {
+      start: t,
+      duration: ns,
+      actor: detail,
+      count: count,
+      tasks: detail,
+      process: thread,
+    },
+  },
+  // SwiftTaskCreationEvent: one row per task creation.
+  SwiftTaskCreationEvent: {
+    instrument: "Swift Tasks (creation events)",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      task: detail,
+      thread: thread,
+      backtrace: bt,
+      process: thread,
+    },
+  },
+  // SwiftTaskStateTable: one row per task state interval (running/suspended/waiting).
+  SwiftTaskStateTable: {
+    instrument: "Swift Tasks (state)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      task: detail,
+      "enqueued-actor": detail,
+      actor: detail,
+      // state is "Running", "Suspended", "Waiting" etc.
+      state: label,
+      priority: label,
+      "resume-function": detail,
+      "waiting-for": detail,
+      backtrace: bt,
+      "suspend-backtrace": bt,
+      process: thread,
+      thread: thread,
+      narrative: detail,
+    },
+  },
+
+  // ── SwiftUI ────────────────────────────────────────────────────────────────────
+  // swiftui-updates: one row per view body re-evaluation or representable update.
+  "swiftui-updates": {
+    instrument: "SwiftUI (view updates)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      id: detail,
+      // update-type is "View Body Update", "Representable Update", etc.
+      "update-type": label,
+      allocations: count,
+      description: detail,
+      // category is the SwiftUI update category (body, layout, draw…).
+      category: label,
+      "view-hierarchy": detail,
+      module: label,
+      // view-name is the Swift type name of the view — key for grouping.
+      "view-name": label,
+      process: thread,
+      thread: thread,
+      "root-causes": detail,
+      // severity is "Warning", "Critical" — heuristics would call it detail.
+      severity: label,
+      // downstream-cost: total time spent in views triggered by this update.
+      "downstream-cost": ns,
+      "downstream-events": detail,
+      "cause-graph-node": detail,
+      "full-cause-graph-node": detail,
+    },
+  },
+  // swiftui-changes: state mutations that triggered view updates.
+  "swiftui-changes": {
+    instrument: "SwiftUI (state changes)",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      id: detail,
+      description: detail,
+      backtrace: bt,
+      process: thread,
+      thread: thread,
+    },
+  },
+
   // ── Network ───────────────────────────────────────────────────────────────────
   NetworkConnectionStats: {
     instrument: "Network (connection stats)",

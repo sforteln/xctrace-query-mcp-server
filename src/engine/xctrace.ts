@@ -16,13 +16,17 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { XMLParser } from "fast-xml-parser";
 
-/** Discriminates the ways an xctrace export can fail. */
+/** Discriminates the ways an xctrace export or record can fail. */
 export type XctraceErrorKind =
-  | "xctrace-not-found" // xcrun/xctrace binary unavailable (Xcode not installed)
-  | "trace-not-found" // the .trace path does not exist
-  | "export-failed" // xctrace exited non-zero
-  | "empty-result" // the command succeeded but produced no output
-  | "parse-error"; // output could not be parsed as expected
+  | "xctrace-not-found"  // xcrun/xctrace binary unavailable (Xcode not installed)
+  | "trace-not-found"    // the .trace path does not exist
+  | "export-failed"      // xctrace export exited non-zero
+  | "empty-result"       // the command succeeded but produced no output
+  | "parse-error"        // output could not be parsed as expected
+  | "record-failed"      // xctrace record exited non-zero (general failure)
+  | "target-not-found"   // --attach target process/app not found
+  | "bad-template"       // --template name does not exist
+  | "permission-denied"; // Instruments/DTServiceHub authorization not granted
 
 export interface XctraceErrorDetails {
   /** The argv passed to xcrun, for diagnostics (no secrets — just paths/flags). */

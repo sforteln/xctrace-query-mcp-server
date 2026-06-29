@@ -26,6 +26,15 @@ import fmLens from "./lenses/foundationModels/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
+  RECORDING_INTENTS,
+  tryOpenTrace,
+} from "./core/recording.js";
+import {
+  startSession,
+  stopSession,
+  getRecordingStatus,
+} from "./core/recordingSession.js";
+import {
   envelope,
   actionsAfterOpen,
   actionsAfterListInstruments,
@@ -636,6 +645,244 @@ function createServer(): McpServer {
           userRoots,
           totalRoots: builtIn.length + userRoots.length,
         }, null, 2));
+      })
+  );
+
+  // ── list_processes ────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_processes",
+    {
+      title: "List Processes",
+      description:
+        "Find running processes to attach a recording to. " +
+        "Pass a search term (app name, bundle ID substring, or path fragment) to filter results. " +
+        "Omit search to list all user-owned non-system processes. " +
+        "Returns PID and command path — pass the PID or bare app name to the attach parameter of start_recording.",
+      inputSchema: {
+        search: z
+          .string()
+          .optional()
+          .describe(
+            "Filter by name or path substring, e.g. \"MyApp\", \"com.example\", \"PromptManager\". " +
+            "Omit to list all user processes."
+          ),
+      },
+    },
+    async ({ search }) =>
+      safeTool(async () => {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const { userInfo } = await import("node:os");
+        const execFileAsync = promisify(execFile);
+
+        let lines: string[];
+
+        if (search) {
+          // pgrep -f matches against the full command line; -l lists PID + command.
+          // Exit code 1 means no matches — not an error.
+          let raw = "";
+          try {
+            const out = await execFileAsync("pgrep", ["-fl", search]);
+            raw = out.stdout;
+          } catch (err: unknown) {
+            const e = err as { code?: number; stdout?: string };
+            if (e.code === 1) raw = ""; // no matches
+            else throw err;
+          }
+          lines = raw
+            .split("\n")
+            .map((l) => l.trim())
+            .filter(Boolean)
+            // strip xctrace and this server process from results
+            .filter((l) => !l.includes("xctrace") && !l.includes("instruments-mcp-server"));
+        } else {
+          // List all processes owned by the current user, skipping OS internals.
+          const me = userInfo().username;
+          const { stdout } = await execFileAsync("ps", ["-axo", "pid,user,args"]);
+          const SYSTEM_PREFIXES = ["/System/", "/usr/", "/sbin/", "/bin/", "sysmond", "launchd"];
+          lines = stdout
+            .split("\n")
+            .slice(1) // skip header
+            .filter((l) => {
+              const cols = l.trim().split(/\s+/);
+              const user = cols[1];
+              const cmd = cols.slice(2).join(" ");
+              return (
+                user === me &&
+                !SYSTEM_PREFIXES.some((p) => cmd.startsWith(p)) &&
+                !cmd.includes("xctrace") &&
+                !cmd.includes("instruments-mcp-server")
+              );
+            })
+            .map((l) => l.trim())
+            .filter(Boolean);
+        }
+
+        const processes = lines.map((l) => {
+          const spaceIdx = l.indexOf(" ");
+          const pid = l.slice(0, spaceIdx).trim();
+          const command = l.slice(spaceIdx + 1).trim();
+          // Extract the bare executable name for easy use as an attach value.
+          const name = command.split("/").pop()?.split(" ")[0] ?? command;
+          return { pid: Number(pid), name, command };
+        });
+
+        return text(
+          JSON.stringify(
+            {
+              count: processes.length,
+              processes,
+              hint: processes.length > 0
+                ? "Pass pid (number) or name (string) to the attach parameter of start_recording."
+                : search
+                ? `No processes matched "${search}". Try a shorter search term.`
+                : "No user processes found.",
+            },
+            null,
+            2
+          )
+        );
+      })
+  );
+
+  // ── Recording lifecycle ───────────────────────────────────────────────────
+  //
+  // start_recording spawns xctrace in the background and returns a recordingId
+  // immediately. Interact with the app, then call stop_recording to finalize.
+  // stop_recording sends SIGINT for graceful finalization and auto-opens the
+  // resulting trace so the next action is list_instruments.
+
+  // Derive the type enum directly from RECORDING_INTENTS so adding a new intent
+  // there is the only change needed — this file never needs to be updated.
+  const intentKeys = Object.keys(RECORDING_INTENTS) as [string, ...string[]];
+  const intentDescriptions = Object.entries(RECORDING_INTENTS)
+    .map(([k, v]) => `"${k}" → ${v.label}`)
+    .join(", ");
+
+  const INTERACTIVE_RECORD_INPUTS = {
+    type: z
+      .enum(intentKeys)
+      .describe(`Which Instruments template to record with. Options: ${intentDescriptions}.`),
+    attach: z
+      .string()
+      .optional()
+      .describe("PID or process name of a running process to attach to."),
+    launch: z
+      .string()
+      .optional()
+      .describe("Absolute path to the app bundle (.app) to launch and profile."),
+    timeLimit: z
+      .string()
+      .optional()
+      .describe('Optional cap, e.g. "30s", "2m". Omit for open-ended (stop via stop_recording).'),
+    device: z
+      .string()
+      .optional()
+      .describe("Target device name or UDID. Omit for host Mac."),
+  };
+
+  // ── start_recording ─────────────────────────────────────────────────────────
+  server.registerTool(
+    "start_recording",
+    {
+      title: "Start Recording (interactive)",
+      description:
+        "Spawn an Instruments recording in the background and return a recordingId. " +
+        "Use stop_recording(recordingId) to finalize — xctrace receives SIGINT so it " +
+        "flushes data and writes a valid .trace. Then pass the tracePath to open_trace.\n\n" +
+        "For time-limited recordings, set timeLimit and the process auto-stops; " +
+        "stop_recording still works (it will see the recording is already done).\n\n" +
+        'Use list_instruments after opening to see which schemas are available, ' +
+        "then describe_schema on any schema to learn its columns before querying.",
+      inputSchema: INTERACTIVE_RECORD_INPUTS,
+    },
+    async ({ type, attach, launch, timeLimit, device }) =>
+      safeTool(async () => {
+        const intent = RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS];
+        const result = await startSession({ intent, attach, launch, device, timeLimit });
+        return text(
+          JSON.stringify(
+            {
+              ...result,
+              nextAction: "stop_recording",
+              nextArgs: { recordingId: result.recordingId },
+              hint: "Interact with the app, then call stop_recording to finalize and get the .trace path.",
+            },
+            null,
+            2
+          )
+        );
+      })
+  );
+
+  // ── stop_recording ──────────────────────────────────────────────────────────
+  server.registerTool(
+    "stop_recording",
+    {
+      title: "Stop Recording",
+      description:
+        "Finalize an interactive recording by sending SIGINT to xctrace. " +
+        "xctrace flushes buffered data and exits cleanly before this call returns. " +
+        "Returns the .trace path — pass it to open_trace to start navigating results. " +
+        "Safe to call on a time-limited recording that has already auto-stopped.",
+      inputSchema: {
+        recordingId: z
+          .string()
+          .describe("The recordingId returned by start_recording."),
+      },
+    },
+    async ({ recordingId }) =>
+      safeTool(async () => {
+        const result = await stopSession(recordingId);
+        const opened = await tryOpenTrace(result.tracePath);
+        const sessionId = "session" in opened ? opened.session.sessionId : undefined;
+        return text(
+          JSON.stringify(
+            {
+              ...result,
+              ...opened,
+              nextAction: sessionId ? "list_instruments" : "open_trace",
+              nextArgs: sessionId ? { sessionId } : { path: result.tracePath },
+            },
+            null,
+            2
+          )
+        );
+      })
+  );
+
+  // ── get_recording_status ────────────────────────────────────────────────────
+  server.registerTool(
+    "get_recording_status",
+    {
+      title: "Get Recording Status",
+      description:
+        "Check the current status of an interactive recording without stopping it. " +
+        'Status values: "recording" (in progress), "finalizing" (SIGINT sent, flushing), ' +
+        '"done" (finished cleanly — call open_trace), "failed" (non-zero exit). ' +
+        "Useful for polling time-limited recordings to know when they auto-complete.",
+      inputSchema: {
+        recordingId: z
+          .string()
+          .describe("The recordingId returned by start_recording."),
+      },
+    },
+    async ({ recordingId }) =>
+      safeTool(async () => {
+        const result = getRecordingStatus(recordingId);
+        const isDone = result.status === "done" || result.status === "failed";
+        return text(
+          JSON.stringify(
+            {
+              ...result,
+              ...(isDone
+                ? { nextAction: "open_trace", nextArgs: { path: result.tracePath } }
+                : { nextAction: "stop_recording", nextArgs: { recordingId } }),
+            },
+            null,
+            2
+          )
+        );
       })
   );
 
