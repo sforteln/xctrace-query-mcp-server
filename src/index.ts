@@ -17,6 +17,7 @@ import { describeSchema } from "./core/schema.js";
 import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
+import { aggregateTable } from "./core/aggregate.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -24,6 +25,7 @@ import {
   actionsAfterDescribeSchema,
   actionsAfterQuery,
   actionsAfterGetRow,
+  actionsAfterAggregate,
   toMcpText,
 } from "./core/response.js";
 
@@ -214,6 +216,65 @@ function createServer(): McpServer {
         const response = envelope(
           result,
           actionsAfterQuery(sessionId, schema, result.run, result.hasMore)
+        );
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── aggregate ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "aggregate",
+    {
+      title: "Aggregate Table",
+      description:
+        "The workhorse for profiling questions: group rows by any label/thread column " +
+        "and aggregate a weight column by sum, count, or avg. Returns the top N groups " +
+        "sorted heaviest-first with values formatted in the correct unit (s/ms/µs, MB/KB/B, count). " +
+        "Examples: top threads by sample count (Time Profiler), total duration per agent " +
+        "(Foundation Models), largest allocation groups. `run` defaults to the most recent run.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schema: z.string().describe("Schema/table name."),
+        groupBy: z.string().describe("Mnemonic of the column to group by (typically a label or thread column)."),
+        measure: z
+          .string()
+          .optional()
+          .describe("Mnemonic of the weight column to aggregate. Required for sum/avg; ignored for count."),
+        op: z
+          .enum(["sum", "count", "avg"])
+          .optional()
+          .describe("Aggregation operation (default: sum)."),
+        topN: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Max groups to return, heaviest first (default 10)."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        filter: z
+          .record(z.union([z.string(), z.number()]))
+          .optional()
+          .describe("Pre-filter rows before grouping: { mnemonic: value }."),
+        timeRange: z
+          .object({
+            startNs: z.number().optional(),
+            endNs: z.number().optional(),
+          })
+          .optional()
+          .describe("Restrict to a time window (nanoseconds) before grouping."),
+      },
+    },
+    async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange }) =>
+      safeTool(async () => {
+        const result = await aggregateTable(sessionId, schema, {
+          run, groupBy, measure, op, topN, filter, timeRange,
+        });
+        const hasBacktrace = false; // aggregate doesn't resolve backtraces
+        const topKey = result.groups[0]?.key ?? null;
+        const response = envelope(
+          result,
+          actionsAfterAggregate(sessionId, schema, result.run, groupBy, topKey, hasBacktrace)
         );
         return text(toMcpText(response));
       })

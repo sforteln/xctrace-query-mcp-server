@@ -135,6 +135,45 @@ export function actionsAfterDescribeSchema(
   return actions;
 }
 
+/** Actions available after an aggregate call — drill into a specific group. */
+export function actionsAfterAggregate(
+  sessionId: string,
+  schema: string,
+  run: number,
+  groupBy: string,
+  topKey: string | null,
+  hasBacktrace: boolean
+): NextAction[] {
+  const actions: NextAction[] = [
+    {
+      tool: "query",
+      args: {
+        sessionId,
+        schema,
+        run,
+        ...(topKey ? { filter: { [groupBy]: topKey } } : {}),
+        limit: 20,
+      },
+      description: topKey
+        ? `Query rows for the top group "${topKey}" to see individual samples.`
+        : "Query all rows in this table.",
+    },
+    {
+      tool: "aggregate",
+      args: { sessionId, schema, run, groupBy: "<different-mnemonic>", measure: "<mnemonic>", op: "sum", topN: 10 },
+      description: "Re-aggregate by a different column to slice the data another way.",
+    },
+  ];
+  if (hasBacktrace) {
+    actions.push({
+      tool: "call_tree",
+      args: { sessionId, schema, run },
+      description: "Build a folded call tree aggregating all samples.",
+    });
+  }
+  return actions;
+}
+
 /** Actions available after getting full row detail. */
 export function actionsAfterGetRow(
   sessionId: string,
