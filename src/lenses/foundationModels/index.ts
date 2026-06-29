@@ -6,6 +6,7 @@ import { envelope, toMcpText } from "../../core/response.js";
 import { safeTool, text } from "../../core/toolUtils.js";
 import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
 import { getFmRequest, getFmResponse, getFmEvents, getFmPrompt } from "./getRequest.js";
+import { findFmRequests } from "./findRequests.js";
 
 const fmLens: Lens = {
   instruments: [FM_SCHEMA],
@@ -212,6 +213,73 @@ const fmLens: Lens = {
           return text(toMcpText(envelope(result, actions)));
         })
     );
+
+    // ── find_fm_requests ─────────────────────────────────────────────────────
+    server.registerTool(
+      "find_fm_requests",
+      {
+        title: "Find FM Requests",
+        description:
+          "Filter FM inference requests by named predicates — each predicate compiles to " +
+          "conditions over the generic find() verb, proving lens finders are preset predicates. " +
+          "Predicates (all optional, AND'd together): " +
+          "minDuration (nanoseconds, inclusive), " +
+          "hasError (true = error-count > 0), " +
+          "needsReformulation (true = response contains needsReformulation:true), " +
+          "emptyContext (true = no help sections retrieved — referencedSections is empty; " +
+          "this is the flagship predicate that surfaces the Help-AI context bug in one call). " +
+          "Returns compact one-liners with tableIndex for get_fm_request drill-down. " +
+          "`run` defaults to the most recent run.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+          minDuration: z
+            .number()
+            .optional()
+            .describe("Minimum request duration in nanoseconds (inclusive). E.g. 2000000000 for >2 s."),
+          hasError: z
+            .boolean()
+            .optional()
+            .describe("true: only requests with error-count > 0. false: only clean requests."),
+          needsReformulation: z
+            .boolean()
+            .optional()
+            .describe("true: response JSON contains needsReformulation:true."),
+          emptyContext: z
+            .boolean()
+            .optional()
+            .describe("true: response.referencedSections is empty — no context was retrieved for the request."),
+          limit: z.number().int().min(1).max(200).optional().describe("Max results (default 50)."),
+          offset: z.number().int().min(0).optional().describe("Pagination offset (default 0)."),
+        },
+      },
+      async ({ sessionId, run, minDuration, hasError, needsReformulation, emptyContext, limit, offset }) =>
+        safeTool(async () => {
+          const result = await findFmRequests(sessionId, {
+            run, minDuration, hasError, needsReformulation, emptyContext, limit, offset,
+          });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_request",
+              args: { sessionId, rowIndex: result.requests[0]?.tableIndex ?? 0, run: result.run },
+              description: "Drill into the first matching request for full detail.",
+            },
+            {
+              tool: "list_fm_requests",
+              args: { sessionId, run: result.run },
+              description: "Return to the unfiltered request list.",
+            },
+          ];
+          if (result.hasMore) {
+            actions.unshift({
+              tool: "find_fm_requests",
+              args: { sessionId, run: result.run, minDuration, hasError, needsReformulation, emptyContext, offset: result.offset + result.returnedRows, limit: result.limit },
+              description: "Fetch the next page of matching requests.",
+            });
+          }
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
   },
 
   nextActions(sessionId: string, schema: string, run: number): NextAction[] {
@@ -221,6 +289,11 @@ const fmLens: Lens = {
         tool: "list_fm_requests",
         args: { sessionId, run },
         description: "List all FM inference requests as compact one-liners (prompt, duration, tokens, errors).",
+      },
+      {
+        tool: "find_fm_requests",
+        args: { sessionId, run, emptyContext: true },
+        description: "Find requests with no context retrieved (emptyContext bug) — or filter by hasError, needsReformulation, minDuration.",
       },
     ];
   },
