@@ -21,7 +21,7 @@ import { callTree } from "./core/callTree.js";
 import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
-import { safeTool, text } from "./core/toolUtils.js";
+import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
@@ -77,7 +77,7 @@ function createServer(): McpServer {
       },
     },
     async ({ path }) =>
-      safeTool(async () => {
+      safeToolWithLog("open_trace", { path }, async () => {
         const result = await openTrace(path);
         const schemas = [...new Set(result.instruments.map((i) => i.schema))];
         const versionWarning = buildVersionWarning(result.xcodeVersion, schemas);
@@ -101,7 +101,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId }) =>
-      safeTool(async () => {
+      safeToolWithLog("get_summary", { sessionId }, async () => {
         const result = summary(sessionId);
         const response = envelope(result, actionsAfterOpen(sessionId));
         return text(toMcpText(response));
@@ -124,7 +124,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId }) =>
-      safeTool(async () => {
+      safeToolWithLog("list_instruments", { sessionId }, async () => {
         const result = listInstruments(sessionId);
         const lastRunSchemas =
           result.runs.find((r) => r.run === result.lastRun)?.schemas.map((s) => s.schema) ?? [];
@@ -160,7 +160,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, run }) =>
-      safeTool(async () => {
+      safeToolWithLog("describe_schema", { sessionId, schema, run }, async () => {
         const desc = await describeSchema(sessionId, schema, run);
         const groupByCandidate = desc.rolesSummary.label[0] ?? desc.rolesSummary.thread[0] ?? null;
         const response = envelope(
@@ -220,7 +220,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset }) =>
-      safeTool(async () => {
+      safeToolWithLog("query", { sessionId, schema, run, filter, columns, timeRange, sort, limit, offset }, async () => {
         const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset });
         const response = envelope(
           result,
@@ -278,7 +278,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange }) =>
-      safeTool(async () => {
+      safeToolWithLog("aggregate", { sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange }, async () => {
         const result = await aggregateTable(sessionId, schema, {
           run, groupBy, measure, op, topN, filter, timeRange,
         });
@@ -340,7 +340,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, run, thread, timeRange, maxDepth, topN }) =>
-      safeTool(async () => {
+      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, maxDepth, topN }, async () => {
         const result = await callTree(sessionId, schema, { run, thread, timeRange, maxDepth, topN });
         const response = envelope(result, [
           {
@@ -413,7 +413,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, run, where, columns, sort, timeRange, limit, offset }) =>
-      safeTool(async () => {
+      safeToolWithLog("find", { sessionId, schema, run, where, columns, sort, timeRange, limit, offset }, async () => {
         const result = await findRows(sessionId, schema, {
           run, where, columns, sort, timeRange, limit, offset,
         });
@@ -453,7 +453,7 @@ function createServer(): McpServer {
       },
     },
     async ({ sessionId, schema, rowIndex, run }) =>
-      safeTool(async () => {
+      safeToolWithLog("get_row", { sessionId, schema, rowIndex, run }, async () => {
         const result = await getRow(sessionId, schema, rowIndex, { run });
         const hasBacktrace = Object.values(result.cells).some(
           (c) => c?.backtrace !== undefined
@@ -483,7 +483,7 @@ function createServer(): McpServer {
       inputSchema: {},
     },
     async () =>
-      safeTool(async () => {
+      safeToolWithLog("list_traces", {}, async () => {
         const result = await listTraces();
         return text(JSON.stringify(result, null, 2));
       })
@@ -507,7 +507,7 @@ function createServer(): McpServer {
       },
     },
     async ({ query }) =>
-      safeTool(async () => {
+      safeToolWithLog("find_trace", { query }, async () => {
         const result = await findTrace(query);
         return text(JSON.stringify(result, null, 2));
       })
@@ -528,7 +528,7 @@ function createServer(): McpServer {
       },
     },
     async ({ path: rawPath }) =>
-      safeTool(async () => {
+      safeToolWithLog("add_search_root", { path: rawPath }, async () => {
         const { resolve } = await import("node:path");
         const { homedir } = await import("node:os");
         const { stat } = await import("node:fs/promises");
@@ -586,7 +586,7 @@ function createServer(): McpServer {
       },
     },
     async ({ path: rawPath }) =>
-      safeTool(async () => {
+      safeToolWithLog("remove_search_root", { path: rawPath }, async () => {
         const { resolve } = await import("node:path");
         const { homedir } = await import("node:os");
 
@@ -619,7 +619,7 @@ function createServer(): McpServer {
       inputSchema: {},
     },
     async () =>
-      safeTool(async () => {
+      safeToolWithLog("list_search_roots", {}, async () => {
         const { homedir } = await import("node:os");
         const { stat } = await import("node:fs/promises");
         const { join } = await import("node:path");
@@ -673,7 +673,7 @@ function createServer(): McpServer {
       },
     },
     async ({ search }) =>
-      safeTool(async () => {
+      safeToolWithLog("list_processes", { search }, async () => {
         const { execFile } = await import("node:child_process");
         const { promisify } = await import("node:util");
         const { userInfo } = await import("node:os");
@@ -801,7 +801,7 @@ function createServer(): McpServer {
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
     async ({ type, attach, launch, timeLimit, device }) =>
-      safeTool(async () => {
+      safeToolWithLog("start_recording", { type, attach, launch, timeLimit, device }, async () => {
         const intent = RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS];
         const result = await startSession({ intent, attach, launch, device, timeLimit });
         return text(
@@ -836,7 +836,7 @@ function createServer(): McpServer {
       },
     },
     async ({ recordingId }) =>
-      safeTool(async () => {
+      safeToolWithLog("stop_recording", { recordingId }, async () => {
         const result = await stopSession(recordingId);
         const opened = await tryOpenTrace(result.tracePath);
         const sessionId = "session" in opened ? opened.session.sessionId : undefined;
@@ -872,7 +872,7 @@ function createServer(): McpServer {
       },
     },
     async ({ recordingId }) =>
-      safeTool(async () => {
+      safeToolWithLog("get_recording_status", { recordingId }, async () => {
         const result = getRecordingStatus(recordingId);
         const isDone = result.status === "done" || result.status === "failed";
         return text(
