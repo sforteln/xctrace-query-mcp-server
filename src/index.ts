@@ -24,6 +24,7 @@ import type { Lens } from "./lenses/index.js";
 import { safeTool, text } from "./core/toolUtils.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
+import { listTraces, findTrace } from "./core/discovery.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -452,6 +453,50 @@ function createServer(): McpServer {
           ]
         );
         return text(toMcpText(response));
+      })
+  );
+
+  // ── list_traces ───────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_traces",
+    {
+      title: "List Traces",
+      description:
+        "List all .trace bundles found across built-in Xcode directories and " +
+        "user-configured search roots, sorted newest first. " +
+        "Use this to discover available traces before opening one. " +
+        "Returns path, name, modification time, and which root each trace was found in. " +
+        "If no traces are found, the response includes a hint to add a search root.",
+      inputSchema: {},
+    },
+    async () =>
+      safeTool(async () => {
+        const result = await listTraces();
+        return text(JSON.stringify(result, null, 2));
+      })
+  );
+
+  // ── find_trace ────────────────────────────────────────────────────────────
+  server.registerTool(
+    "find_trace",
+    {
+      title: "Find Trace",
+      description:
+        "Find a .trace bundle by natural-language description — e.g. " +
+        '"my last Foundation Models run", "the time profile from this morning", ' +
+        '"newest trace". ' +
+        "Scans the same roots as list_traces, ranks by keyword overlap with the " +
+        "bundle name, tiebroken by recency. Words like last/latest/recent rank " +
+        "purely by modification time. Returns up to 10 matches with paths ready " +
+        "to pass to open_trace.",
+      inputSchema: {
+        query: z.string().describe('Natural-language description of the trace, e.g. "Foundation Models" or "last recording".'),
+      },
+    },
+    async ({ query }) =>
+      safeTool(async () => {
+        const result = await findTrace(query);
+        return text(JSON.stringify(result, null, 2));
       })
   );
 
