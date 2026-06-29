@@ -19,6 +19,7 @@ import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
 import { callTree } from "./core/callTree.js";
+import { findRows } from "./core/find.js";
 import {
   envelope,
   actionsAfterOpen,
@@ -27,6 +28,7 @@ import {
   actionsAfterQuery,
   actionsAfterGetRow,
   actionsAfterAggregate,
+  actionsAfterFind,
   toMcpText,
 } from "./core/response.js";
 
@@ -340,6 +342,73 @@ function createServer(): McpServer {
             description: "See sample count by thread to pick the busiest thread to filter on.",
           },
         ]);
+        return text(toMcpText(response));
+      })
+  );
+
+  // ── find ──────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "find",
+    {
+      title: "Find Rows",
+      description:
+        "Filter rows in any instrument table by a compound predicate (AND of per-column conditions). " +
+        "Supports richer operators than query's equality filter: eq, ne, gt, gte, lt, lte, " +
+        "contains, not-contains, regex, is-null, not-null. All conditions are AND'd — a row must " +
+        "match every condition to be included. Returns summary rows (fmt values) with tableIndex for " +
+        "follow-up get_row calls. This is the substrate for lens-specific finders: e.g. " +
+        "[{col:'error-count',op:'gt',val:0}] implements hasError; [{col:'resolve',op:'contains',val:'emptyContext'}] " +
+        "implements emptyContext. `run` defaults to the most recent run.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        where: z
+          .array(
+            z.object({
+              col: z.string().describe("Column mnemonic to test."),
+              op: z
+                .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null"])
+                .describe("Comparison operator."),
+              val: z
+                .union([z.string(), z.number()])
+                .optional()
+                .describe("Value to compare against. Not needed for is-null / not-null."),
+            })
+          )
+          .describe("AND'd conditions. All must pass for a row to match."),
+        columns: z
+          .array(z.string())
+          .optional()
+          .describe("Column mnemonics to include in results. Omit for all columns."),
+        sort: z
+          .object({
+            by: z.string().describe("Column mnemonic to sort by."),
+            dir: z.enum(["asc", "desc"]).optional().describe("Sort direction. Default: asc."),
+          })
+          .optional()
+          .describe("Sort matching rows by a column value."),
+        timeRange: z
+          .object({
+            startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
+            endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
+          })
+          .optional()
+          .describe("Restrict to a time window before evaluating predicates."),
+        limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 50, max 500)."),
+        offset: z.number().int().min(0).optional().describe("Rows to skip for pagination (default 0)."),
+      },
+    },
+    async ({ sessionId, schema, run, where, columns, sort, timeRange, limit, offset }) =>
+      safeTool(async () => {
+        const result = await findRows(sessionId, schema, {
+          run, where, columns, sort, timeRange, limit, offset,
+        });
+        const firstTableIndex = result.rows[0]?.tableIndex ?? null;
+        const response = envelope(
+          result,
+          actionsAfterFind(sessionId, schema, result.run, result.matchCount, result.hasMore, firstTableIndex)
+        );
         return text(toMcpText(response));
       })
   );

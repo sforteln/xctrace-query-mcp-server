@@ -227,8 +227,13 @@ export function actionsAfterQuery(sessionId: string, schema: string, run: number
     },
     {
       tool: "find",
-      args: { sessionId, schema, run, where: { "<mnemonic>": "<value>" } },
-      description: "Filter rows by column value.",
+      args: {
+        sessionId,
+        schema,
+        run,
+        where: [{ col: "<mnemonic>", op: "eq", val: "<value>" }],
+      },
+      description: "Filter rows with richer predicates (eq/gt/contains/regex/is-null…).",
     },
   ];
   if (hasMore) {
@@ -238,6 +243,51 @@ export function actionsAfterQuery(sessionId: string, schema: string, run: number
       description: "Fetch the next page of rows.",
     });
   }
+  return actions;
+}
+
+/** Actions available after a find call — drill into matches or refine. */
+export function actionsAfterFind(
+  sessionId: string,
+  schema: string,
+  run: number,
+  matchCount: number,
+  hasMore: boolean,
+  firstTableIndex: number | null
+): NextAction[] {
+  const actions: NextAction[] = [];
+  if (hasMore) {
+    actions.push({
+      tool: "find",
+      args: {
+        sessionId,
+        schema,
+        run,
+        where: "<same-where>",
+        offset: "<next-offset>",
+      },
+      description: "Fetch the next page of matching rows.",
+    });
+  }
+  if (firstTableIndex !== null) {
+    actions.push({
+      tool: "get_row",
+      args: { sessionId, schema, run, rowIndex: firstTableIndex },
+      description: "Fetch full detail for the first matching row.",
+    });
+  }
+  actions.push(
+    {
+      tool: "aggregate",
+      args: { sessionId, schema, run, groupBy: "<mnemonic>", measure: "<mnemonic>", op: "sum", topN: 10 },
+      description: "Summarise the matching rows by any column — group by error type, thread, etc.",
+    },
+    {
+      tool: "query",
+      args: { sessionId, schema, run, limit: 20 },
+      description: "Browse all rows without a predicate filter.",
+    }
+  );
   return actions;
 }
 
