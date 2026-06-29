@@ -104,10 +104,6 @@ function buildCellDetail(
     ...(unit ? { unit } : {}),
   };
 
-  if (!cell.children || Object.keys(cell.children).length === 0) {
-    return base;
-  }
-
   // Track-detail backtrace: already symbolicated, show frames directly.
   if (cell.resolvedFrames) {
     const frames = cell.resolvedFrames;
@@ -121,6 +117,11 @@ function buildCellDetail(
         resolvedFrames: frames,
       },
     };
+  }
+
+  // Scalar cells (no children, no resolved frames) — return early.
+  if (!cell.children || Object.keys(cell.children).length === 0) {
+    return base;
   }
 
   // Schema-table backtrace compound cell (kperf-bt / text-backtrace).

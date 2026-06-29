@@ -222,6 +222,59 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
     },
   },
 
+  // ── Allocations (track-detail format) ────────────────────────────────────────
+  // Synthesized schema names: "Allocations/Statistics" and "Allocations/Allocations List".
+  // These live under /tracks/track/details/detail (not /data/table), parsed by
+  // parseTrackDetail. Pinned here so roles are deterministic regardless of heuristics.
+  "Allocations/Statistics": {
+    instrument: "Allocations (statistics)",
+    primaryWeight: "persistent-bytes",
+    columns: {
+      category: label,
+      "persistent-bytes": bytes,
+      "count-persistent": count,
+      "total-bytes": bytes,
+      "transient-bytes": bytes,
+      "count-events": count,
+      "count-transient": count,
+      "count-total": count,
+    },
+  },
+  "Allocations/Allocations List": {
+    instrument: "Allocations (list)",
+    primaryTime: "timestamp",
+    primaryWeight: "size",
+    columns: {
+      address: detail,
+      category: label,
+      live: detail,
+      "responsible-caller": detail,
+      size: bytes,
+      identifier: detail,
+      "responsible-library": label,
+      timestamp: t,
+      "thread-id": thread,
+      index: detail,
+      backtrace: bt,
+    },
+  },
+
+  // ── Leaks (track-detail format) ───────────────────────────────────────────────
+  // Schema name: "Leaks/Leaks".
+  // Leaks alone has no backtraces; use AllocAndLeaksWithBacktraces for stacks.
+  "Leaks/Leaks": {
+    instrument: "Leaks",
+    primaryWeight: "size",
+    columns: {
+      "leaked-object": label,
+      size: bytes,
+      "responsible-frame": detail,
+      count: count,
+      "responsible-library": label,
+      address: detail,
+    },
+  },
+
   // ── Network ───────────────────────────────────────────────────────────────────
   NetworkConnectionStats: {
     instrument: "Network (connection stats)",
