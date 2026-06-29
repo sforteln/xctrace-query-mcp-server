@@ -227,26 +227,38 @@ function parseRow(
 /**
  * Parse the raw --xpath table XML into a {@link ParsedTable}.
  *
+ * A schema can appear as more than one `<table>` in a single run (e.g. `tick`
+ * at frequency 1 and 10, or `os-signpost` filtered by different subsystems), so
+ * an xpath addressing a schema can return multiple `<node>` elements. We use the
+ * first node's columns (all share the same schema) and UNION the rows across
+ * nodes into one logical table.
+ *
+ * Ref-id namespaces are scoped PER NODE — ids restart at 1 in each `<node>` —
+ * so every node gets its own fresh RefCache. (This is why there is no
+ * cross-call/shared cache: the meaningful cache is the parsed-table cache the
+ * session holds, not the transient ref map.)
+ *
  * @param tableXml  The full XML string returned by exportXPath().
- * @param cache     Optional pre-populated RefCache for cross-call reuse. If
- *                  omitted a fresh cache is created (single-call resolution).
  */
-export function parseTableXml(
-  tableXml: string,
-  cache: RefCache = new Map()
-): ParsedTable {
+export function parseTableXml(tableXml: string): ParsedTable {
   const doc = parser.parse(tableXml) as Record<string, any>;
-  const node = doc?.["trace-query-result"]?.node;
-  if (!node) {
+  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
+  if (nodes.length === 0) {
     return { schema: "", cols: [], rows: [] };
   }
 
-  const schemaNode = node.schema as Record<string, any>;
+  const schemaNode = nodes[0].schema as Record<string, any>;
   const schemaName = String(schemaNode?.["@_name"] ?? "");
   const cols = parseSchemaCols(schemaNode);
 
-  const rawRows = asArray<Record<string, any>>(node.row);
-  const rows = rawRows.map((r) => parseRow(r, cols, cache));
+  const rows: NormalizedRow[] = [];
+  for (const node of nodes) {
+    // Fresh ref cache per node — ids are node-local.
+    const cache: RefCache = new Map();
+    for (const r of asArray<Record<string, any>>(node.row)) {
+      rows.push(parseRow(r, cols, cache));
+    }
+  }
 
   return { schema: schemaName, cols, rows };
 }

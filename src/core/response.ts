@@ -90,6 +90,51 @@ export function actionsAfterListInstruments(sessionId: string, schemas: string[]
   ];
 }
 
+/** Actions available after describing a schema — pre-filled with the schema's
+ *  own role-derived suggestions so the agent can query/aggregate immediately. */
+export function actionsAfterDescribeSchema(
+  sessionId: string,
+  schema: string,
+  run: number,
+  opts: { primaryWeight: string | null; groupByCandidate: string | null; hasBacktrace: boolean }
+): NextAction[] {
+  const actions: NextAction[] = [
+    {
+      tool: "query",
+      args: { sessionId, schema, run, limit: 20 },
+      description: "Fetch a bounded first page of rows (summaries first).",
+    },
+    {
+      tool: "aggregate",
+      args: {
+        sessionId,
+        schema,
+        run,
+        groupBy: opts.groupByCandidate ?? "<label-mnemonic>",
+        measure: opts.primaryWeight ?? "<weight-mnemonic>",
+        op: opts.primaryWeight ? "sum" : "count",
+        topN: 10,
+      },
+      description: opts.primaryWeight
+        ? `Top N by weight: sum ${opts.primaryWeight} grouped by ${opts.groupByCandidate ?? "a label column"}.`
+        : `Top N by count grouped by ${opts.groupByCandidate ?? "a label column"} (no measure column — counts rows).`,
+    },
+  ];
+  if (opts.hasBacktrace) {
+    actions.push({
+      tool: "call_tree",
+      args: { sessionId, schema, run },
+      description: "Build a folded call tree from the resolved backtraces (sample-based instruments).",
+    });
+  }
+  actions.push({
+    tool: "get_row",
+    args: { sessionId, schema, run, rowIndex: 0 },
+    description: "Fetch one row's full detail including resolved backtrace.",
+  });
+  return actions;
+}
+
 /** Actions available after querying or aggregating a table. */
 export function actionsAfterQuery(sessionId: string, schema: string, run: number, hasMore: boolean): NextAction[] {
   const actions: NextAction[] = [

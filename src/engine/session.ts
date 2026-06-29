@@ -12,7 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { exportToc, exportXPath, buildTableXPath, XctraceError } from "./xctrace.js";
-import { parseTableXml, ParsedTable, RefCache } from "./parseTable.js";
+import { parseTableXml, ParsedTable } from "./parseTable.js";
 import { buildSchemaModel, updateSchemaCols, SchemaModel } from "./schemaModel.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
@@ -54,10 +54,9 @@ export interface TraceSession {
   instruments: InstrumentSummary[];
   /** Populated lazily from the first time-bearing table parsed. */
   timeRange: TimeRange | null;
-  /** Per-(run,schema) parsed table cache. Key: `${run}:${schema}`. */
+  /** Per-(run,schema) parsed table cache. Key: `${run}:${schema}`. This is the
+   *  real load-once cache — parsed tables are reused across tool calls. */
   tableCache: Map<string, ParsedTable>;
-  /** Shared ref-id resolution cache across all tables in this session. */
-  refCache: RefCache;
   /** Structured schema model: TOC metadata + lazily-populated column definitions. */
   schemaModel: SchemaModel;
 }
@@ -113,7 +112,6 @@ export async function openTrace(
     instruments,
     timeRange: null,
     tableCache: new Map(),
-    refCache: new Map(),
     schemaModel: buildSchemaModel(toc.runs),
   };
 
@@ -153,7 +151,7 @@ export async function getTable(
 
   const xpath = buildTableXPath(run, schema);
   const xml = await exportXPath(session.tracePath, xpath);
-  const table = parseTableXml(xml, session.refCache);
+  const table = parseTableXml(xml);
 
   // Update row count on the instruments summary entry.
   const entry = session.instruments.find(
