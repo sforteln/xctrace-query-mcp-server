@@ -57,7 +57,7 @@ claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
 ```
 
 ## Example conversation
-This is a typical session profiling a hanging app with the Hangs & Hitches instrument:
+This is a typical session profiling a hanging app with the Hangs instrument:
 
 ```
 User:   I recorded a Hangs trace of my app — it was freezing on the main thread.
