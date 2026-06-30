@@ -10,6 +10,7 @@ Every Instruments trace has the same shape underneath: `run[] → instrument[] �
 - **Node.js ≥ 22**
 - **Xcode** installed (the server shells out to `xcrun xctrace` to export trace data). Xcode is a runtime CLI dependency only — not the build environment.
 
+
 ## Install
 ### From source (until the package is published on npm)
 
@@ -55,6 +56,7 @@ After editing, start a **new Claude conversation** in the Xcode panel — the co
 ```bash
 claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
 ```
+
 
 ## Example conversations
 ### Opening an existing trace — Hangs instrument
@@ -143,7 +145,7 @@ The server emits a `versionWarning` in `open_trace` when it encounters an Xcode 
 | Time Profiler | ✅ |
 | Allocations | ✅ |
 | Leaks | ✅ |
-| SwiftUI | ⚠️ |
+| SwiftUI | ✅ |
 
 ✅ Verified — fixtures exist and the instrument has a curated quickstart shortcut.  
 ⚠️ Detected — the instrument is recognised but has no verified fixture yet; core navigation verbs still work.
@@ -154,20 +156,33 @@ Any instrument not in this table is still navigable via `describe_schema`, `quer
 When you see a `versionWarning` in `open_trace`, it means the server hasn't seen your Xcode version before and is falling back to the closest known rules. To add full support:
 1. **Checkout the repo and create a branch** — `git checkout -b adding-compatibility-<version>-AllSchemas`
 2. **Record a trace** with each instrument type using your Xcode version
-3. **Start a Claude session** in the repo directory and give it the trace files. Say: *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add Xcode `<version>` support using the traces in `<directory>`."*
+3. **Start a Claude session** in the repo directory and give it the trace files. Say: *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add Xcode `<version>` support using the trace`<filename>`."*
 4. **Review the PR** the AI creates — check that no fixture contains sensitive content (real user prompts, real IP addresses, real process names)
 5. **Open the PR** against this repo
 The full step-by-step is in [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md).
 
 ## Adding a new instrument
-This is easier than it sounds. The universal core verbs already work on any instrument the engine can parse — "adding an instrument" means adding test fixtures so the server knows what column shapes to expect, and optionally adding a curated lens for smarter navigation.
+Two PRs in order. The AI does the mechanical work — your job is to record the trace, give the AI the right prompt, and review what it produces.
 
-**Step 1 — Add compatibility (mechanical, one PR):**  
-Export XML from a real trace, add it as a fixture, update `VERIFIED_PAIRS` in `versionRules.ts`, and baseline the snapshots. Start a Claude session and say: *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B to add `<InstrumentName>` support using `<trace-file>`."*
+### PR 1 — Compatibility
 
-**Step 2 — Add a curated lens (optional, second PR):**  
-A lens adds a `quickStart` shortcut (so `open_trace` immediately suggests the right first call) and optionally adds domain-specific tool verbs. This step requires understanding what the instrument measures and what "suspicious" output looks like — the contributor guide explains what's expected.
-See [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md) for the full workflow, PR checklist, and privacy review guidelines.
+1. **Record a trace** with the new instrument in Xcode Instruments
+2. **Start a Claude session** in the repo directory, attach the trace file, and say:
+   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B to add `<InstrumentName>` support using `<trace-file>`."*
+3. **Review the fixture** the AI produces — check that it contains no sensitive content (real process names, IP addresses, private class names from your app). The AI will flag anything it's unsure about.
+4. **Open the PR**
+
+### PR 2 — Curated lens (optional)
+
+A lens adds a `quickStart` shortcut so `open_trace` immediately suggests the right first call. Merge PR 1 first, then:
+
+1. **Start a Claude session** in the repo directory and say:
+   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario C PR 2 to add a curated lens for `<InstrumentName>`."*
+2. **Answer the AI's questions** — it will ask what the instrument measures and what a problematic result looks like. You recorded the trace, so you know the domain.
+3. **Review the lens** — confirm the `quickStart` call it chose actually gets to the useful data quickly.
+4. **Open the PR**
+
+See [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md) for the full workflow the AI follows, the PR checklist, and privacy review guidelines.
 
 ## Develop
 

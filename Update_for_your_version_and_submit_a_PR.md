@@ -54,9 +54,35 @@ The script expects these trace files in the directory (create only what you need
 | `network.trace` | network-connection-detected, NetworkConnectionStats, network-connection-update |
 | `SwiftData.trace` | core-data-save, core-data-fetch, core-data-fault, core-data-relationship-fault |
 | `swift.trace` | SwiftTaskLifetime, SwiftTaskStateTable, SwiftTasksInfoTable |
+| `swiftUI.trace` | swiftui-updates, swiftui-causes, swiftui-changes, swiftui-layout-updates |
 | `AllocAndLeaksWithBacktraces.trace` | Leaks (track-detail) |
 
 Output lands in `tests/fixtures/xcode-<version>/schema-table/` and `tests/fixtures/xcode-<version>/track-detail/`.
+
+### Check sizes before exporting
+
+`.trace` bundles store data in a compact binary format. `xcrun xctrace export` decompresses and converts to verbose XML, which can be **10–100× the binary size** — a 300 MB trace file can produce gigabytes of XML for per-event schemas. Before exporting any schema:
+
+1. **Inspect the TOC first** to see what schemas exist:
+   ```bash
+   xcrun xctrace export --input my.trace --toc
+   ```
+
+2. **Export to a temp file and check the size** before committing:
+   ```bash
+   xcrun xctrace export \
+     --input my.trace \
+     --xpath '/trace-toc/run[@number="1"]/data/table[@schema="swiftui-updates"]' \
+     > /tmp/check.xml
+   wc -c /tmp/check.xml   # anything over ~500KB needs to become a synthetic fixture
+   ```
+
+3. **Schemas that are almost always too large** for a real fixture:
+   - `swiftui-updates`, `swiftui-causes`, `swiftui-changes` — record every attribute graph event; easily 4–365 MB
+   - `time-sample` — one row per CPU sample at ~1 kHz; easily 7 MB for a 30-second recording
+   - `Allocations List` — one row per live allocation; easily 50–80 MB
+
+   For these, export the XML once to see the column schema, then build a **synthetic fixture** with 3–4 hand-written rows that cover the column types. See the xcode-27.0 fixtures for examples.
 
 If you need to export a single schema manually (e.g. to iterate on one schema without re-running everything):
 
@@ -82,6 +108,7 @@ Some schemas contain sensitive content. Before committing any fixture:
 
 - **Foundation Models tables** (ModelInferenceTable, InstructionsTable, FMEventTable, SessionTable, RequestTable): may contain real user prompts and AI responses. Replace real rows with synthetic equivalents that preserve the column structure.
 - **NetworkConnectionStats**: may contain real process names and IP addresses. Replace with neutral values.
+- **SwiftUI tables** (swiftui-updates, swiftui-causes, swiftui-changes): may contain app-specific view type names, environment object names, and private service class names. Replace with generic SwiftUI framework type names. These fixtures are also too large to store — always create synthetic replacements.
 - **time-sample / Allocations List**: can be 7–80 MB. Use a very short recording or create a synthetic fixture with a few representative rows.
 
 ---
@@ -198,16 +225,22 @@ A schema exists in a trace but has no fixture yet. The universal verbs (`query`,
 git checkout -b adding-compatibility-27.0-CoreData
 ```
 
-**2. Export the fixture**
+**2. Export the fixture — check size first**
+
+Export to a temp file and check the size before writing to the fixtures directory. Schemas that capture per-event data (SwiftUI updates, cause graphs, time samples, network connections) can produce XML that is 10–100× the binary trace size:
 
 ```bash
 xcrun xctrace export \
   --input ~/Documents/traces/SwiftData.trace \
   --xpath '/trace-toc/run[@number="1"]/data/table[@schema="core-data-save"]' \
-  > tests/fixtures/xcode-27.0/schema-table/core-data-save.xml
+  > /tmp/check.xml
+wc -c /tmp/check.xml
 ```
 
-Review for sensitive content.
+- **Under ~500 KB:** copy to `tests/fixtures/xcode-27.0/schema-table/core-data-save.xml` and proceed.
+- **Over ~500 KB:** build a synthetic fixture instead. Copy the `<schema>` element from the XML (column definitions only), add 3–4 hand-written rows that cover the column types, and use `"MyApp"` with a fake PID for any process references. See `tests/fixtures/xcode-27.0/schema-table/swiftui-updates.xml` or `time-sample.xml` for examples.
+
+Review for sensitive content (process names, IP addresses, user prompts, private class/type names from the app).
 
 **3. Add to VERIFIED_PAIRS**
 

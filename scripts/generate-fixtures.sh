@@ -17,6 +17,7 @@
 #   ModelInferenceTable, InstructionsTable, FMEventTable, SessionTable, RequestTable
 #   NetworkConnectionStats
 #   time-sample, Allocations__Allocations-List  (synthetic due to size)
+#   swiftui-updates, swiftui-causes, swiftui-changes  (synthetic — private app content + multi-MB)
 #
 # Adding a new schema:
 #   1. Add a call below in the appropriate section.
@@ -89,6 +90,17 @@ export_schema_table "${TRACE_DIR}/SwiftData.trace" "core-data-relationship-fault
 export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTaskLifetime"
 export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTaskStateTable"
 export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTasksInfoTable"
+
+# ── SwiftUI (swiftUI.trace run 1) ────────────────────────────────────────────
+# WARNING: swiftui-updates, swiftui-causes, and swiftui-changes are typically 4–365 MB
+# and contain private app type names (view structs, environment objects). The xcode-27.0
+# fixtures are synthetic. Only commit sanitized or synthetic replacements.
+# swiftui-layout-updates is small and safe — it captures layout pass timing.
+export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-layout-updates"
+# Large tables — review carefully before committing:
+# export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-updates"
+# export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-causes"
+# export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-changes"
 
 # ── Time Profiler ─────────────────────────────────────────────────────────────
 # NOTE: time-sample can be very large (7MB+). The xcode-27.0 fixture is synthetic.
