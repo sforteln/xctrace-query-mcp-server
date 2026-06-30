@@ -74,6 +74,10 @@ export const VERIFIED_PAIRS = new Set<string>([
   "27.0:SwiftTaskLifetime",
   "27.0:SwiftTasksInfoTable",
   "27.0:SwiftTaskStateTable",
+  "27.0:swiftui-causes",
+  "27.0:swiftui-changes",
+  "27.0:swiftui-layout-updates",
+  "27.0:swiftui-updates",
   "27.0:time-sample",
   "27.0:ToolTable",
   // ── xcode-27.0 track-detail ──────────────────────────────────────────────

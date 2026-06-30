@@ -31,6 +31,10 @@ tests/fixtures/xcode-27.0/
     SwiftTaskLifetime.xml         from swift.trace run 1
     SwiftTaskStateTable.xml       from swift.trace run 1
     SwiftTasksInfoTable.xml       from swift.trace run 1
+    swiftui-updates.xml           SYNTHETIC — real data had private app content and was 3.8 MB
+    swiftui-causes.xml            SYNTHETIC — real data had private app content and was 365 MB
+    swiftui-changes.xml           SYNTHETIC — real data had private app content and was 20 MB
+    swiftui-layout-updates.xml    from swiftUI.trace run 1 (no rows — layout updates were disabled in the recording options)
   track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
 ```
@@ -44,7 +48,7 @@ tests/fixtures/xcode-27.0/
 | `time-sample` | 7.9MB (run 3 of modelAndTime.trace) — too large for a text fixture |
 | `Allocations/Allocations List` | 79MB — way too large |
 | `Allocations/Statistics` | appeared empty in available traces |
-| `swiftui-updates`, `SwiftActorLifetime`, `SwiftTaskCreationEvent` | Empty in swift.trace (app had no SwiftUI/actor activity during recording) |
+| `SwiftActorLifetime`, `SwiftTaskCreationEvent` | Empty in swift.trace (app had no actor activity during recording) |
 | kdebug, kdebug-strings, tick, process-info, thread-info, dyld-library-load | Infrastructure tables; not directly queried by the AI |
 
 ## ModelInferenceTable is SYNTHETIC
