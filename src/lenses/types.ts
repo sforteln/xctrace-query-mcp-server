@@ -15,6 +15,12 @@ export interface QuickStart {
   args: Record<string, unknown>;
   /** One-line explanation for the agent: what this call surfaces and why. */
   hint: string;
+  /**
+   * The run number this suggestion targets (same as args.run).
+   * If the user or agent wants to inspect a different run, discard this
+   * suggestedStart and call list_instruments with the desired run number instead.
+   */
+  forRun: number;
 }
 
 /**

@@ -49,7 +49,7 @@ export class LensRegistry {
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     for (const lens of this.allLenses) {
       const result = lens.quickStart?.(schemas, sessionId, run);
-      if (result) return result;
+      if (result) return { ...result, forRun: run };
     }
     return null;
   }
