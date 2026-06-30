@@ -55,6 +55,26 @@ const SERVER_VERSION = "0.1.0";
 /** Lenses to register at startup. Add new lenses here. */
 const LENSES: Lens[] = [fmLens];
 
+/**
+ * ## Tool description format (behavioral spec, not API docs)
+ *
+ * Descriptions are re-injected every turn as sticky context — they steer the AI's
+ * call DECISION, not just document the function. Three-move pattern:
+ *
+ *   1. WHAT      — verb-led sentence saying WHEN to call this (user intent / trigger).
+ *   2. ⚠️ Not for X — explicitly name wrong call sites. Most important move.
+ *   3. PREFER    — name the cheaper or purpose-built sibling when one exists.
+ *
+ * Anti-patterns: don't open with a determiner (the/this/a/an); don't restate the JSON
+ * schema in the tool description; don't write marketing copy; don't use static labels
+ * like "cheap/expensive" — bake cost reasoning into prose ("no xctrace calls").
+ *
+ * Parameter descriptions are a different register: intent vocabulary + what the value
+ * becomes ("Becomes the query's time window", not "Optional. The start time.").
+ *
+ * Enforced by: tests/driftGuard.test.ts
+ * Full guide:  Update_for_your_version_and_submit_a_PR.md
+ */
 export function createServer(): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
@@ -98,7 +118,9 @@ export function createServer(): McpServer {
         "Return a summary of an open trace session: runs, instruments (with row counts " +
         "for tables already fetched), and the time range discovered so far. " +
         "Lightweight — no xctrace calls. " +
-        "⚠️ Not for fetching rows — use query, find, or aggregate for data access.",
+        "⚠️ Not for fetching rows — use query, find, or aggregate for data access. " +
+        "Prefer list_instruments right after open_trace for full schema documentation " +
+        "and cross-run diffs — use get_summary to refresh session state mid-analysis.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
       },
@@ -193,7 +215,9 @@ export function createServer(): McpServer {
         "values — no raw numbers or backtrace frames). Use get_row for full detail on a " +
         "specific row. Defaults to the first 20 rows of the most recent run. " +
         "Always call describe_schema first to know which columns/mnemonics exist. " +
-        "⚠️ Not for full row detail or resolved backtraces — use get_row for that.",
+        "⚠️ Not for full row detail or resolved backtraces — use get_row for that. " +
+        "Not for grouping or counting — use aggregate for that. " +
+        "Prefer find over query when you need richer operators than equality (gt, contains, regex, …).",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
@@ -487,7 +511,9 @@ export function createServer(): McpServer {
         "user-configured search roots, sorted newest first. " +
         "Use this to discover available traces before opening one. " +
         "Returns path, name, modification time, and which root each trace was found in. " +
-        "If no traces are found, the response includes a hint to add a search root.",
+        "If no traces are found, the response includes a hint to add a search root. " +
+        "Prefer find_trace when the user describes a specific trace in natural language — " +
+        "it scores by keyword overlap and recency.",
       inputSchema: {},
     },
     async () =>
@@ -591,7 +617,8 @@ export function createServer(): McpServer {
       description:
         "Remove a directory from the search roots. Silently succeeds if the " +
         "path is not currently a root. Use list_search_roots to confirm. " +
-        "⚠️ Not for stopping a recording — use stop_recording for that.",
+        "⚠️ Not for deleting trace files — only removes the directory from the search index; " +
+        "the .trace files on disk are untouched.",
       inputSchema: {
         path: z.string().describe("Path to remove (must match exactly as stored — use list_search_roots to see stored values)."),
       },

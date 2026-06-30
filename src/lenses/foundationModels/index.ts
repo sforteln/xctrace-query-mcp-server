@@ -8,6 +8,8 @@ import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
 import { getFmRequest, getFmResponse, getFmEvents, getFmPrompt } from "./getRequest.js";
 import { findFmRequests } from "./findRequests.js";
 
+// Tool description format: see the comment above createServer() in src/index.ts.
+// Enforced by tests/driftGuard.test.ts — verb-led openers, ⚠️ Not for blocks, no stale identifiers.
 const fmLens: Lens = {
   instruments: [FM_SCHEMA],
 
@@ -25,7 +27,9 @@ const fmLens: Lens = {
           "Orange 'Resolve' step; the resolve field ('1Prompt', '1Resolve', …) encodes " +
           "which phase and which request number. " +
           "Use get_row(tableIndex) for full detail on any row. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "Prefer find_fm_requests when you need filtered results — it supports " +
+          "hasError, minDuration, emptyContext, and needsReformulation predicates.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
@@ -70,7 +74,7 @@ const fmLens: Lens = {
       {
         title: "Get FM Request Detail",
         description:
-          "Full detail for one FM inference row by its tableIndex (from list_fm_requests). " +
+          "Fetch full detail for one FM inference row by its tableIndex (from list_fm_requests). " +
           "Returns timing, agent, full prompt, parsed response JSON, token breakdown, " +
           "resolve phase, error info. " +
           "instruction/instructions columns are intentionally omitted — they contain the " +
