@@ -1,20 +1,16 @@
 # instruments-mcp-server
-
 A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode **Instruments `.trace`** files — Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more — without dumping raw `xctrace` XML into the model's context.
 
 Raw `xctrace` output is ~95% noise (XML envelope, ref-id indirection, triplicated columns). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down — for **any** instrument type, not just the ones it was written for.
 
 ## How it works
-
 Every Instruments trace has the same shape underneath: `run[] → instrument[] → schema/table[] → row[]` with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs (`query`, `aggregate`, `call_tree`, `find`) that work on **any** instrument — including ones added in future Xcode versions — with zero per-instrument code. Optional per-instrument "lenses" add ergonomic shortcuts on top.
 
 ## Requirements
-
 - **Node.js ≥ 22**
 - **Xcode** installed (the server shells out to `xcrun xctrace` to export trace data). Xcode is a runtime CLI dependency only — not the build environment.
 
 ## Install
-
 ### From source (until the package is published on npm)
 
 ```bash
@@ -25,13 +21,11 @@ npm run build
 ```
 
 **Claude Code:**
-
 ```bash
 claude mcp add instruments-mcp-server -- node /absolute/path/to/instruments-mcp-server/dist/index.js
 ```
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
 ```json
 {
   "mcpServers": {
@@ -43,6 +37,19 @@ claude mcp add instruments-mcp-server -- node /absolute/path/to/instruments-mcp-
 }
 ```
 
+**Xcode's Claude agent** — a separate install from the CLI and Desktop app. Edit (or create) `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/.claude.json`. Use the **full absolute path** to the node binary — Xcode's minimal `PATH` won't find it otherwise:
+```json
+{
+  "mcpServers": {
+    "instruments-mcp-server": {
+      "command": "/opt/homebrew/bin/node",
+      "args": ["/absolute/path/to/instruments-mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
+
 ### Once published on npm
 
 ```bash
@@ -50,7 +57,6 @@ claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
 ```
 
 ## Example conversation
-
 This is a typical session profiling a hanging app with the Hangs & Hitches instrument:
 
 ```
