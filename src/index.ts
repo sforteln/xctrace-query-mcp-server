@@ -6,7 +6,7 @@
  * it works on any Instruments .trace by introspecting column roles at runtime.
  * Per-instrument lens verbs (Foundation Models, Time Profiler, …) are layered
  * on in src/lenses/ and injected into each response's nextActions by the lens
- * framework (FTR:flint-granite).
+ * registry.
  */
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -374,7 +374,7 @@ export function createServer(): McpServer {
         thread: z
           .string()
           .optional()
-          .describe("Substring filter on thread fmt (e.g. 'PromptManager' or '0x25cc66') to scope to one thread."),
+          .describe("Substring filter on thread fmt (e.g. 'MyApp' or '0x25cc66') to scope to one thread."),
         timeRange: z
           .object({
             startNs: z.number().optional(),
@@ -733,7 +733,7 @@ export function createServer(): McpServer {
           .string()
           .optional()
           .describe(
-            "Filter by name or path substring, e.g. \"MyApp\", \"com.example\", \"PromptManager\". " +
+            "Filter by name or path substring, e.g. \"MyApp\" or \"com.example\". " +
             "Omit to list all user processes."
           ),
       },

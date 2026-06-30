@@ -8,8 +8,8 @@
  *
  * What this does NOT do (deferred to later layers):
  *   - Backtrace symbolication (addresses → function names)
- *   - Column role classification (time/weight/backtrace/thread/…) → FTR:silver-mica
- *   - Cross-call caching keyed by (tracePath, run, schema) → next prompt / session layer
+ *   - Column role classification (time/weight/backtrace/thread/…) → src/engine/roleInference.ts
+ *   - Cross-call caching keyed by (tracePath, run, schema) → src/engine/session.ts
  */
 import { XMLParser } from "fast-xml-parser";
 

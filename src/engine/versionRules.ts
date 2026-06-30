@@ -9,7 +9,7 @@
  * schema gets a new rules-version; all others inherit from VERSION_BASE.
  *
  * resolveRules(xcodeVersion, schema) is the single resolution path shared by
- * the parser, the version warning layer (PMT:coal-stag), and list_instruments
+ * the parser, the version warning layer, and list_instruments
  * annotations. It returns { rulesVersion, confidence } where:
  *   "verified" — the (rulesVersion, schema) pair has a fixture in tests/fixtures/
  *   "nearest"  — we fell back to a close-but-unverified version

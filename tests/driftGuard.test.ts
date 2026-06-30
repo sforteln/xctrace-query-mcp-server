@@ -1,8 +1,7 @@
 /**
  * Tool description drift guards.
  *
- * Two categories of checks adapted from the PromptManager MCPToolsDriftGuardTests
- * and MCPDriftGuardTests patterns:
+ * Two categories of checks:
  *
  * Structural — enforces the behavioral-spec shape of every tool description:
  *   • Opens with a verb or "Use X when…" (never a vacuous determiner/pronoun)

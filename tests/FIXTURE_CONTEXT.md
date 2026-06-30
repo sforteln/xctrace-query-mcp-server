@@ -1,4 +1,4 @@
-# Fixture Context — PMT:vesper-ember
+# Fixture Context
 
 ## What this is
 
@@ -11,7 +11,7 @@ Fixtures are in `tests/fixtures/xcode-27.0/` (Xcode 27.0 beta, the version that 
 ```
 tests/fixtures/xcode-27.0/
   schema-table/          ← parseTableXml() — /data/table format
-    ModelInferenceTable.xml       SYNTHETIC — real data had PromptManager app content
+    ModelInferenceTable.xml       SYNTHETIC — real data contained private app content
     ModelLoadingTable.xml         from model.trace run 1
     SessionTable.xml              from model.trace run 1
     ToolTable.xml                 from model.trace run 1
@@ -49,7 +49,7 @@ tests/fixtures/xcode-27.0/
 
 ## ModelInferenceTable is SYNTHETIC
 
-The real ModelInferenceTable.xml contained PromptManager app prompts and responses (private user data). The fixture was replaced with 2 fake rows using the same column schema. The column definitions are real (copied from the actual xctrace export); only the row data is synthetic.
+The real ModelInferenceTable.xml contained private app content. The fixture was replaced with 2 fake rows using the same column schema. The column definitions are real (copied from the actual xctrace export); only the row data is synthetic.
 
 To replace it with real data from a clean trace (one that has no sensitive content), re-export and overwrite this file, then run `npm test -- -u`.
 
@@ -67,47 +67,3 @@ npm test              # run all
 npm test -- -u        # update snapshots after parser changes
 ```
 
-## Pending work (next sessions)
-
-### PMT:green-deer — VERSION_BASE + VERSION_SCHEMA_OVERRIDES
-Implement `src/engine/versionRules.ts` with:
-- `VERSION_BASE`: map of `xcodeVersion → default rules { rulesVersion, confidence }`
-- `VERSION_SCHEMA_OVERRIDES`: two-level map `xcodeVersion → schema → { rulesVersion, confidence }`
-- `resolveRules(xcodeVersion, schema) → { rulesVersion, confidence }` — checks overrides first, falls back to VERSION_BASE, then falls back to nearest version (pessimistic: highest version below detected)
-- Coverage manifest: which (version, schema) combinations have been verified
-- `list_instruments` should annotate each schema with `{ rulesVersion, confidence }`
-
-Initial state: VERSION_BASE for xcode-27.0 (all schemas → rulesVersion: "27.0", confidence: "verified"); no overrides yet.
-
-### PMT:coal-stag — versionWarning in open_trace response
-When `detectXcodeVersion()` returns a version not covered by VERSION_BASE, add a `versionWarning` block to the `open_trace` response:
-```json
-{
-  "versionWarning": {
-    "detectedVersion": "28.0",
-    "note": "No rules for this version. Falling back to nearest known version.",
-    "schemaWarnings": [
-      { "schema": "ModelInferenceTable", "rulesVersion": "27.0", "confidence": "fallback" }
-    ]
-  }
-}
-```
-Per-schema entries because different schemas may fall back to different versions.
-
-### PMT:smooth-finch — contributor documentation
-Write `docs/Update_for_your_version.md` explaining:
-- How to record a trace for each instrument type
-- How to export XML fixtures from it
-- How to run tests and update snapshots
-- The ModelInferenceTable synthetic fixture situation (privacy)
-- How to add VERSION_BASE entry for a new Xcode version
-
-### FTR:pine-mount — Post-Open Quick Insight (10 draft prompts)
-After `open_trace`, return an instrument-aware summary with:
-- Row count and key findings
-- For Leaks: "4 leaks — types and top responsible frames — command to get backtrace for each"
-- For Foundation Models: "N inference requests — total tokens, slowest request, session count"
-- For Hangs: "N hangs detected — longest duration, affected threads"
-- Next-action commands the AI should call immediately
-
-All 10 prompts are in draft status — need refining before implementation.

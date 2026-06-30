@@ -179,7 +179,7 @@ function serializeNode(
 
 export interface CallTreeOptions {
   run?: number;
-  /** Substring filter on thread fmt (e.g. "PromptManager" or "0x25cc66"). */
+  /** Substring filter on thread fmt (e.g. "MyApp" or "0x25cc66"). */
   thread?: string;
   timeRange?: { startNs?: number; endNs?: number };
   /** Max tree depth (default 6). */

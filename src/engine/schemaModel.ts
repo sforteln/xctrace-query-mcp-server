@@ -10,7 +10,7 @@
  *      objects parsed from the --xpath <schema><col> elements.
  *
  * Role classification (time/weight/backtrace/thread/label/detail) is the next
- * layer and lives in src/engine/roleInference.ts (FTR:silver-mica prompts 2-3).
+ * layer and lives in src/engine/roleInference.ts.
  * This module just captures what the raw xctrace output tells us.
  */
 import type { TocTable, TocRun } from "./xctrace.js";

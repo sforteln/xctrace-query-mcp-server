@@ -10,8 +10,7 @@ const allocationsLens: Lens = {
   instruments: [ALLOCATIONS_SCHEMA],
 
   registerTools(_server: McpServer): void {
-    // Allocations lens tools are added in a follow-up prompt.
-    // The quickStart() hook below handles initial navigation from open_trace.
+    // No lens-specific tools — core verbs (query, aggregate, find) work directly on these schemas.
   },
 
   nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
