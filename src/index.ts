@@ -60,17 +60,38 @@ const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
 
 
-/** Lenses to register at startup. Add new lenses here. */
+/**
+ * Lenses to register at startup. Add new lenses here.
+ *
+ * Order matters: registry.quickStart() returns the first lens whose
+ * quickStart() matches, so this is a priority list, not just a registration
+ * list. Time Profiler and Hangs are deliberately LAST — both get auto-bundled
+ * as auxiliary instruments into other templates (SwiftUI, Swift Concurrency,
+ * Animation Hitches, and each other — confirmed via `xctrace record
+ * --show-recording-options`), so their schemas are present far more often
+ * than they're the actual recording intent. Putting them first meant e.g. a
+ * trace recorded specifically to investigate SwiftUI always won a generic
+ * "aggregate by thread" suggestion instead of a SwiftUI-specific one, since
+ * time-sample/time-profile are always along for the ride.
+ *
+ * Known residual gap: Time Profiler and Hangs bundle each other (a plain "cpu"
+ * recording can carry Hangs schemas too, and a plain "hitches" recording
+ * carries Time Profiler schemas), so their relative order can't be fully
+ * correct for both directions with static priority alone — there's no TOC
+ * signal distinguishing "the actual recording target" from "came along for
+ * free." Not solved here; falls back to whichever of the two is listed first
+ * below when both are ambiguous winners.
+ */
 const LENSES: Lens[] = [
   fmLens,
   leaksLens,
-  timeProfilerLens,
   networkLens,
-  hangsLens,
   swiftConcurrencyLens,
   swiftUILens,
   coreDataLens,
   allocationsLens,
+  hangsLens,
+  timeProfilerLens,
 ];
 
 /**
