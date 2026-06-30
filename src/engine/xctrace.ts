@@ -12,9 +12,10 @@
  * NOT model rows yet — `exportXPath` returns the raw table XML; row parsing,
  * de-duplication, and caching are layered on top in later work.
  */
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { XMLParser } from "fast-xml-parser";
+import type { Readable } from "node:stream";
 
 /** Discriminates the ways an xctrace export or record can fail. */
 export type XctraceErrorKind =
@@ -226,6 +227,107 @@ export async function exportXPath(
     );
   }
   return xml;
+}
+
+/** Handle returned by {@link exportXPathStream}. */
+export interface XPathStreamHandle {
+  /** xctrace's stdout — pipe this into a SAX parser (or any stream consumer). */
+  stdout: Readable;
+  /**
+   * Resolves when xctrace exits cleanly (code 0); rejects with a structured
+   * XctraceError otherwise. Await this alongside consuming `stdout` (e.g.
+   * `Promise.all([parseTableStream(stdout), done])`) — a non-zero exit after
+   * stdout has already produced data means whatever was parsed may be
+   * truncated, so the process-exit error should win over a parse that
+   * "succeeded" on partial data.
+   */
+  done: Promise<void>;
+}
+
+/**
+ * Like {@link exportXPath} but streams xctrace's stdout directly instead of
+ * buffering the whole export into one string. Exists for tables that can be
+ * gigabytes — large enough to blow execFile's maxBuffer cap, and large enough
+ * that materializing the whole thing as a JS string plus a parsed DOM tree
+ * simultaneously is wasteful even when it fits. Row parsing happens in the
+ * streaming parsers (parseTableStream / parseTrackDetailStream); this is the
+ * raw fetch primitive for that path, mirroring exportXPath's role for the
+ * buffered path.
+ *
+ * @throws {XctraceError} "trace-not-found" synchronously if the path is bad;
+ *         all other failures surface via the returned `done` promise.
+ */
+export async function exportXPathStream(
+  tracePath: string,
+  xpath: string
+): Promise<XPathStreamHandle> {
+  try {
+    await fs.access(tracePath);
+  } catch {
+    throw new XctraceError(
+      "trace-not-found",
+      `No .trace found at path: ${tracePath}`,
+      { tracePath }
+    );
+  }
+
+  const args = ["xctrace", "export", "--input", tracePath, "--xpath", xpath];
+  const child = spawn(XCRUN, args, { stdio: ["ignore", "pipe", "pipe"] });
+
+  const stderrChunks: string[] = [];
+  child.stderr?.on("data", (chunk: Buffer) => {
+    stderrChunks.push(chunk.toString());
+    const total = stderrChunks.reduce((n, s) => n + s.length, 0);
+    while (stderrChunks.length > 1 && total - stderrChunks[0].length > 2048) {
+      stderrChunks.shift();
+    }
+  });
+
+  const done = new Promise<void>((resolve, reject) => {
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") {
+        reject(
+          new XctraceError(
+            "xctrace-not-found",
+            "`xcrun xctrace` not found. Xcode (with command line tools) must be installed.",
+            { command: [XCRUN, ...args] }
+          )
+        );
+        return;
+      }
+      reject(
+        new XctraceError("export-failed", `xctrace export failed to start: ${err.message}`, {
+          command: [XCRUN, ...args],
+        })
+      );
+    });
+
+    child.on("close", (code: number | null) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new XctraceError(
+          "export-failed",
+          `xctrace export exited with an error${code !== null ? ` (code ${code})` : ""}.`,
+          {
+            command: [XCRUN, ...args],
+            exitCode: code,
+            stderr: stderrChunks.join("").trim(),
+            tracePath,
+          }
+        )
+      );
+    });
+  });
+
+  // Prevent an unhandled-rejection warning if the caller doesn't await `done`
+  // until after consuming stdout — this attaches a handler without consuming
+  // the original promise the caller still holds and will itself await.
+  done.catch(() => {});
+
+  return { stdout: child.stdout!, done };
 }
 
 /**

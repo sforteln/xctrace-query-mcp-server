@@ -12,9 +12,9 @@
 import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
-import { exportToc, exportXPath, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
-import { parseTableXml, ParsedTable } from "./parseTable.js";
-import { parseTrackDetailXml } from "./parseTrackDetail.js";
+import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
+import { parseTableStream, ParsedTable } from "./parseTable.js";
+import { parseTrackDetailStream } from "./parseTrackDetail.js";
 import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
@@ -207,8 +207,8 @@ export async function getTableAtPosition(
   if (cached) return cached;
 
   const xpath = buildTableXPathAtPosition(run, schema, position);
-  const xml = await exportXPath(session.tracePath, xpath);
-  const table = parseTableXml(xml);
+  const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+  const [table] = await Promise.all([parseTableStream(stdout), done]);
 
   // session.instruments has one entry per TOC <table> occurrence, in the same
   // order as schema-table positions — index into it by position, not .find(),
@@ -262,12 +262,12 @@ export async function getTable(
   if (modelEntry?.source === "track-detail" && modelEntry.trackDetail) {
     const { trackName, detailName } = modelEntry.trackDetail;
     const xpath = buildTrackDetailXPath(run, trackName, detailName);
-    const xml = await exportXPath(session.tracePath, xpath);
-    table = parseTrackDetailXml(xml, schema);
+    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+    [table] = await Promise.all([parseTrackDetailStream(stdout, schema), done]);
   } else {
     const xpath = buildTableXPath(run, schema);
-    const xml = await exportXPath(session.tracePath, xpath);
-    table = parseTableXml(xml);
+    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+    [table] = await Promise.all([parseTableStream(stdout), done]);
   }
 
   // Update row count on the instruments summary entry.

@@ -12,6 +12,15 @@
  *   - Cross-call caching keyed by (tracePath, run, schema) → src/engine/session.ts
  */
 import { XMLParser } from "fast-xml-parser";
+// Default import, not `import * as sax` — sax is a CJS module whose exports
+// (createStream etc.) are assigned inside an IIFE that Node's static
+// named-export detection can't see, so a namespace import resolves to an
+// empty object at runtime under NodeNext/ESM output. A default import always
+// gets the whole module.exports object regardless of static analysis.
+import sax from "sax";
+import type { Readable } from "node:stream";
+import { MiniXmlBuilder } from "./saxTreeBuilder.js";
+import { XctraceError } from "./xctrace.js";
 
 /** A resolved call frame from a track-detail inline backtrace. */
 export interface ResolvedFrame {
@@ -276,4 +285,113 @@ export function parseTableXml(tableXml: string): ParsedTable {
   }
 
   return { schema: schemaName, cols, rows };
+}
+
+/**
+ * Streaming counterpart to {@link parseTableXml} — consumes xctrace's stdout
+ * directly via a SAX parser instead of buffering the whole document into one
+ * string and building a full DOM tree of it. Reconstructs one <schema> or one
+ * <row> subtree at a time via {@link MiniXmlBuilder} (each is small — a few
+ * dozen cells at most) and feeds it through the SAME parseSchemaCols/parseRow
+ * used by the string-based path, so output is byte-for-byte equivalent.
+ *
+ * Same multi-node union behavior as parseTableXml: the first node's columns
+ * win, and rows from every node are concatenated (ref-ids are node-scoped, so
+ * the cache resets per node).
+ *
+ * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
+ *         matched nothing), "parse-error" on malformed XML.
+ */
+export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settleReject = (err: XctraceError) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const settleResolve = (table: ParsedTable) => {
+      if (settled) return;
+      settled = true;
+      resolve(table);
+    };
+
+    const saxStream = sax.createStream(true, { trim: false, normalize: false });
+
+    const pathStack: string[] = [];
+    let activeBuilder: MiniXmlBuilder | null = null;
+    let sawNode = false;
+    let schemaName = "";
+    let cols: SchemaCol[] = [];
+    const rows: NormalizedRow[] = [];
+    let cache: RefCache = new Map();
+
+    saxStream.on("opentag", (node) => {
+      const tag = node.name;
+      if (activeBuilder) {
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+        return;
+      }
+      pathStack.push(tag);
+      const path = pathStack.join(">");
+      if (path === "trace-query-result>node") {
+        sawNode = true;
+        cache = new Map();
+      } else if (path === "trace-query-result>node>schema" && cols.length === 0) {
+        activeBuilder = new MiniXmlBuilder();
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+      } else if (path === "trace-query-result>node>row") {
+        activeBuilder = new MiniXmlBuilder();
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+      }
+    });
+
+    saxStream.on("text", (text) => {
+      if (activeBuilder) activeBuilder.onText(text);
+    });
+
+    saxStream.on("closetag", (tag) => {
+      if (activeBuilder) {
+        const finished = activeBuilder.onCloseTag(tag);
+        if (finished) {
+          // This tag's open also pushed onto pathStack (capture starts on the
+          // SAME opentag event that pushes it) — pop it now that capture is
+          // done, or pathStack stays poisoned and the next <row> never matches.
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+          const builtNode = activeBuilder.result!;
+          if (tag === "schema") {
+            schemaName = String(builtNode["@_name"] ?? "");
+            cols = parseSchemaCols(builtNode);
+          } else if (tag === "row") {
+            rows.push(parseRow(builtNode, cols, cache));
+          }
+          activeBuilder = null;
+        }
+        return;
+      }
+      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+    });
+
+    saxStream.on("error", (err: Error) => {
+      settleReject(
+        new XctraceError("parse-error", `Failed to parse streamed table XML: ${err.message}`, {})
+      );
+    });
+
+    saxStream.on("end", () => {
+      if (!sawNode) {
+        settleReject(
+          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
+        );
+        return;
+      }
+      settleResolve({ schema: schemaName, cols, rows });
+    });
+
+    stdout.on("error", (err: Error) => {
+      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
+    });
+
+    stdout.pipe(saxStream);
+  });
 }

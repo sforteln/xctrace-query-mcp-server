@@ -21,6 +21,12 @@
  * "timestamp" attr → "start-time", everything else → "string").
  */
 import { XMLParser } from "fast-xml-parser";
+// Default import — see the comment in parseTable.ts for why `import * as sax`
+// resolves to an empty namespace object at runtime under NodeNext/ESM output.
+import sax from "sax";
+import type { Readable } from "node:stream";
+import { MiniXmlBuilder } from "./saxTreeBuilder.js";
+import { XctraceError } from "./xctrace.js";
 import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame } from "./parseTable.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
@@ -137,19 +143,20 @@ function discoverColumns(
   return { attrOrder, attrSamples, hasBacktrace };
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
+// ─── Shared build step (nodes → ParsedTable) ──────────────────────────────────
 
 /**
- * Parse track-detail XML (from exportXPath on a track-detail path) into a
- * ParsedTable — same shape as parseTableXml() output.
- *
- * @param xml            Raw XML string from exportXPath.
- * @param syntheticSchema The synthesized schema name ("Allocations/Allocations List", etc.)
+ * Build a ParsedTable from already-assembled node objects, each shaped
+ * `{ row: [...] }` matching fast-xml-parser's output for a track-detail
+ * <node>. Shared by the string-based and streaming entrypoints below so both
+ * produce identical output from identical discovery/row-building logic —
+ * only how `nodes` gets assembled differs (one full DOM parse vs. SAX-built
+ * per-row mini-DOMs).
  */
-export function parseTrackDetailXml(xml: string, syntheticSchema: string): ParsedTable {
-  const doc = parser.parse(xml) as Record<string, any>;
-  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
-
+function buildParsedTable(
+  nodes: Array<Record<string, any>>,
+  syntheticSchema: string
+): ParsedTable {
   if (nodes.length === 0) {
     return { schema: syntheticSchema, cols: [], rows: [] };
   }
@@ -221,4 +228,118 @@ export function parseTrackDetailXml(xml: string, syntheticSchema: string): Parse
   }
 
   return { schema: syntheticSchema, cols, rows };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Parse track-detail XML (from exportXPath on a track-detail path) into a
+ * ParsedTable — same shape as parseTableXml() output.
+ *
+ * @param xml            Raw XML string from exportXPath.
+ * @param syntheticSchema The synthesized schema name ("Allocations/Allocations List", etc.)
+ */
+export function parseTrackDetailXml(xml: string, syntheticSchema: string): ParsedTable {
+  const doc = parser.parse(xml) as Record<string, any>;
+  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
+  return buildParsedTable(nodes, syntheticSchema);
+}
+
+/**
+ * Streaming counterpart to {@link parseTrackDetailXml}. Column discovery is
+ * inherently two-pass (the attribute set is only known after seeing every
+ * row), so this buffers each <row>'s mini-DOM via {@link MiniXmlBuilder} as
+ * the stream arrives — small, compact objects, NOT the raw XML string and
+ * NOT a full generic DOM tree of the whole document — then runs the exact
+ * same {@link buildParsedTable} used by the string-based path once the
+ * stream ends.
+ *
+ * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
+ *         on malformed XML.
+ */
+export function parseTrackDetailStream(
+  stdout: Readable,
+  syntheticSchema: string
+): Promise<ParsedTable> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settleReject = (err: XctraceError) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const settleResolve = (table: ParsedTable) => {
+      if (settled) return;
+      settled = true;
+      resolve(table);
+    };
+
+    const saxStream = sax.createStream(true, { trim: false, normalize: false });
+
+    const pathStack: string[] = [];
+    let activeBuilder: MiniXmlBuilder | null = null;
+    let sawNode = false;
+    const nodes: Array<Record<string, any>> = [];
+    let currentNodeRows: Array<Record<string, any>> | null = null;
+
+    saxStream.on("opentag", (node) => {
+      const tag = node.name;
+      if (activeBuilder) {
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+        return;
+      }
+      pathStack.push(tag);
+      const path = pathStack.join(">");
+      if (path === "trace-query-result>node") {
+        sawNode = true;
+        currentNodeRows = [];
+        nodes.push({ row: currentNodeRows });
+      } else if (path === "trace-query-result>node>row") {
+        activeBuilder = new MiniXmlBuilder();
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+      }
+    });
+
+    saxStream.on("text", (text) => {
+      if (activeBuilder) activeBuilder.onText(text);
+    });
+
+    saxStream.on("closetag", (tag) => {
+      if (activeBuilder) {
+        const finished = activeBuilder.onCloseTag(tag);
+        if (finished) {
+          // This tag's open also pushed onto pathStack (capture starts on the
+          // SAME opentag event that pushes it) — pop it now that capture is
+          // done, or pathStack stays poisoned and the next <row> never matches.
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+          currentNodeRows!.push(activeBuilder.result!);
+          activeBuilder = null;
+        }
+        return;
+      }
+      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+    });
+
+    saxStream.on("error", (err: Error) => {
+      settleReject(
+        new XctraceError("parse-error", `Failed to parse streamed track-detail XML: ${err.message}`, {})
+      );
+    });
+
+    saxStream.on("end", () => {
+      if (!sawNode) {
+        settleReject(
+          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
+        );
+        return;
+      }
+      settleResolve(buildParsedTable(nodes, syntheticSchema));
+    });
+
+    stdout.on("error", (err: Error) => {
+      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
+    });
+
+    stdout.pipe(saxStream);
+  });
 }
