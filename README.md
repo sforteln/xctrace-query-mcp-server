@@ -103,9 +103,12 @@ Verified against **Xcode 27.0**. The server emits a `versionWarning` in `open_tr
 | Instrument | Schemas |
 |------------|---------|
 | Foundation Models | `ModelInferenceTable`, `InstructionsTable`, `FMEventTable`, `RequestTable`, `SessionTable`, `ModelLoadingTable`, `ToolTable` |
-| Hangs & Hitches | `potential-hangs`, `hitches`, `hang-risks` |
+| Hangs | `potential-hangs`, `hang-risks` |
+| Hitches | `hitches` |
 | Network | `NetworkConnectionStats`, `network-connection-update`, `network-connection-detected` |
-| Core Data / SwiftData | `core-data-fault`, `core-data-fetch`, `core-data-save`, `core-data-relationship-fault` |
+| Core Data Faults | `core-data-fault`, `core-data-relationship-fault` |
+| Core Data Fetches | `core-data-fetch` |
+| Core Data Saves | `core-data-save` |
 | Swift Concurrency | `SwiftTaskLifetime`, `SwiftTaskStateTable`, `SwiftTasksInfoTable` |
 | Time Profiler | `time-sample` |
 | Allocations | `Allocations/Allocations-List` |
