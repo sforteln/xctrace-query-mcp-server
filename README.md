@@ -56,8 +56,9 @@ After editing, start a **new Claude conversation** in the Xcode panel — the co
 claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
 ```
 
-## Example conversation
-This is a typical session profiling a hanging app with the Hangs instrument:
+## Example conversations
+
+### Opening an existing trace — Hangs instrument
 
 ```
 User:   I recorded a Hangs trace of my app — it was freezing on the main thread.
@@ -80,6 +81,42 @@ User:   Can you check if the shorter hangs are in the same place?
 AI:     [calls find on potential-hangs with duration filter]
         Yes — all three have the same URLSession call in the backtrace. Looks like
         the same root cause at different trigger points.
+```
+
+### Recording live then analysing — Foundation Models instrument
+
+```
+User:   I want to see what inference calls my app is making. It's already running.
+
+AI:     [calls start_recording, type "foundation-models", attach to MyApp process]
+        Recording started. Interact with the AI feature in your app, then tell me
+        when to stop.
+
+User:   Done — I triggered the search feature a few times.
+
+AI:     [calls stop_recording]
+        Trace saved. Opening it now.
+
+        [calls open_trace]
+        1 run. suggestedStart: list_fm_requests — let me pull the inference calls.
+
+        [calls list_fm_requests, limit 50]
+        12 requests. Most complete in 200–400 ms. Two stand out: requests 7 and 11
+        each took over 3 seconds. All are Prompt + Resolve pairs from the "search"
+        agent.
+
+User:   Why are 7 and 11 slow?
+
+AI:     [calls find_fm_requests, emptyContext true]
+        Requests 7 and 11 both have emptyContext — no help content was retrieved
+        before the model call. The model is answering from scratch instead of using
+        your indexed content, which explains the extra latency and likely the lower
+        quality too.
+
+        [calls get_fm_request, rowIndex for request 7]
+        Confirmed: referencedSections is empty. The search query that triggered this
+        request was "bluetooth settings" — worth checking whether that term is covered
+        in your indexed content.
 ```
 
 ---
