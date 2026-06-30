@@ -75,7 +75,8 @@ const fmLens: Lens = {
           "resolve phase, error info. " +
           "instruction/instructions columns are intentionally omitted — they contain the " +
           "full system prompt which can be several KB. Use get_fm_prompt when you need it explicitly. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for reading the system prompt — use get_fm_prompt for that (excluded here to preserve token budget).",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
@@ -120,7 +121,8 @@ const fmLens: Lens = {
           "Return the parsed response body for one FM inference row. " +
           "The response column contains JSON (body, needsReformulation, referencedSections, …); " +
           "this tool parses it so the agent reads structured data instead of an escaped JSON string. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for full request detail — use get_fm_request for timing, tokens, and error info.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
@@ -155,7 +157,8 @@ const fmLens: Lens = {
           "Return the ordered event timeline for one FM request — all rows sharing the " +
           "same model-request-id (Prompt phase, Resolve phase, …) with timing, resolve phase, " +
           "and content summary. Useful for understanding multi-step request flow. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for single-row detail — use get_fm_request for individual row breakdown.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           rowIndex: z.number().int().min(0).describe("tableIndex of any row in the request."),
@@ -193,7 +196,8 @@ const fmLens: Lens = {
           "Only call this when you specifically need to read the system prompt. " +
           "Returns both `instruction` (with header line) and `instructions` (text only) " +
           "plus character counts so you can decide how much context you need. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for routine request inspection — the instructions blob is large; prefer get_fm_request for everything except the system prompt.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
@@ -229,7 +233,8 @@ const fmLens: Lens = {
           "emptyContext (true = no help sections retrieved — referencedSections is empty; " +
           "this is the flagship predicate that surfaces the Help-AI context bug in one call). " +
           "Returns compact one-liners with tableIndex for get_fm_request drill-down. " +
-          "`run` defaults to the most recent run.",
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for listing all requests without filters — use list_fm_requests for the unfiltered view.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),

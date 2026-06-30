@@ -16,7 +16,7 @@
     "build": "tsc && chmod +x dist/index.js",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "bash -c 'unset npm_config_prefix && source $HOME/.nvm/nvm.sh && nvm exec $(cat .nvmrc) -- node node_modules/.bin/vitest run'",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

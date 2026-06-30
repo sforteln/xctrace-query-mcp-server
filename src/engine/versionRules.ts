@@ -53,7 +53,7 @@ export const VERSION_SCHEMA_OVERRIDES: Record<string, Record<string, string>> = 
  *   tests/fixtures/xcode-<rulesVersion>/schema-table/<schema>.xml   (schema-table)
  *   tests/fixtures/xcode-<rulesVersion>/track-detail/<encoded>.xml  (track-detail)
  */
-const VERIFIED_PAIRS = new Set<string>([
+export const VERIFIED_PAIRS = new Set<string>([
   // ── xcode-27.0 schema-table ──────────────────────────────────────────────
   "27.0:core-data-fault",
   "27.0:core-data-fetch",

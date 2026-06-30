@@ -8,6 +8,7 @@
  * on in src/lenses/ and injected into each response's nextActions by the lens
  * framework (FTR:flint-granite).
  */
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -54,7 +55,7 @@ const SERVER_VERSION = "0.1.0";
 /** Lenses to register at startup. Add new lenses here. */
 const LENSES: Lens[] = [fmLens];
 
-function createServer(): McpServer {
+export function createServer(): McpServer {
   const server = new McpServer({
     name: SERVER_NAME,
     version: SERVER_VERSION,
@@ -71,7 +72,8 @@ function createServer(): McpServer {
         "Load an Instruments .trace file and return a sessionId for subsequent calls. " +
         "The trace is loaded once and cached — all later tools reuse this session. " +
         "Returns the list of runs, instruments (schemas), and a coarse timeRange once " +
-        "data is fetched. Always call this first.",
+        "data is fetched. Always call this first. " +
+        "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
       inputSchema: {
         path: z.string().describe("Absolute or ~ path to the .trace bundle."),
       },
@@ -95,7 +97,8 @@ function createServer(): McpServer {
       description:
         "Return a summary of an open trace session: runs, instruments (with row counts " +
         "for tables already fetched), and the time range discovered so far. " +
-        "Lightweight — no xctrace calls.",
+        "Lightweight — no xctrace calls. " +
+        "⚠️ Not for fetching rows — use query, find, or aggregate for data access.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
       },
@@ -146,7 +149,8 @@ function createServer(): McpServer {
         "(time/weight/backtrace/thread/label/detail), the canonical primaryTime " +
         "and primaryWeight columns, row count, and a by-role grouping of columns. " +
         "Output is sufficient to form a query or aggregate call with no further " +
-        "schema knowledge. `run` is optional and defaults to the most recent run.",
+        "schema knowledge. `run` is optional and defaults to the most recent run. " +
+        "⚠️ Not for reading row data — call query or find after this to access actual rows.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z
@@ -188,7 +192,8 @@ function createServer(): McpServer {
         "timeRange window, sort, and pagination. Returns summary rows (formatted display " +
         "values — no raw numbers or backtrace frames). Use get_row for full detail on a " +
         "specific row. Defaults to the first 20 rows of the most recent run. " +
-        "Always call describe_schema first to know which columns/mnemonics exist.",
+        "Always call describe_schema first to know which columns/mnemonics exist. " +
+        "⚠️ Not for full row detail or resolved backtraces — use get_row for that.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
@@ -239,11 +244,12 @@ function createServer(): McpServer {
     {
       title: "Aggregate Table",
       description:
-        "The workhorse for profiling questions: group rows by any label/thread column " +
-        "and aggregate a weight column by sum, count, or avg. Returns the top N groups " +
-        "sorted heaviest-first with values formatted in the correct unit (s/ms/µs, MB/KB/B, count). " +
+        "Group rows by any label or thread column and aggregate a weight column by sum, count, or avg — " +
+        "the workhorse for most profiling questions. Returns the top N groups sorted heaviest-first " +
+        "with values formatted in the correct unit (s/ms/µs, MB/KB/B, count). " +
         "Examples: top threads by sample count (Time Profiler), total duration per agent " +
-        "(Foundation Models), largest allocation groups. `run` defaults to the most recent run.",
+        "(Foundation Models), largest allocation groups. `run` defaults to the most recent run. " +
+        "⚠️ Not for reading individual rows — use query or find to access specific rows.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name."),
@@ -305,7 +311,8 @@ function createServer(): McpServer {
         "Use schema 'time-profile' for Time Profiler — it carries pre-symbolicated <frame> elements. " +
         "Frames are grouped root-to-leaf; each node shows total/self weight, sample count, and % of total. " +
         "Filter by thread name/id substring to focus on one thread. " +
-        "`run` defaults to the most recent run.",
+        "`run` defaults to the most recent run. " +
+        "⚠️ Not for schemas without backtrace columns — only works on sample-based instruments like time-profile.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z
@@ -369,9 +376,9 @@ function createServer(): McpServer {
         "Supports richer operators than query's equality filter: eq, ne, gt, gte, lt, lte, " +
         "contains, not-contains, regex, is-null, not-null. All conditions are AND'd — a row must " +
         "match every condition to be included. Returns summary rows (fmt values) with tableIndex for " +
-        "follow-up get_row calls. This is the substrate for lens-specific finders: e.g. " +
-        "[{col:'error-count',op:'gt',val:0}] implements hasError; [{col:'resolve',op:'contains',val:'emptyContext'}] " +
-        "implements emptyContext. `run` defaults to the most recent run.",
+        "follow-up get_row calls. Lens-specific finders like find_fm_requests are preset predicates " +
+        "built on top of this tool. `run` defaults to the most recent run. " +
+        "⚠️ Not for counting or grouping — use aggregate for that.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
@@ -440,7 +447,8 @@ function createServer(): McpServer {
         "for compound cells (thread, process) the nested child values. " +
         "For backtrace columns (kperf-bt): surfaces the top-of-stack PC, frame count, and " +
         "process; use call_tree for a full aggregated symbolicated call tree. " +
-        "`run` is optional and defaults to the most recent run.",
+        "`run` is optional and defaults to the most recent run. " +
+        "⚠️ Not for scanning many rows in bulk — use query or find for that.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name."),
@@ -501,7 +509,8 @@ function createServer(): McpServer {
         "Scans the same roots as list_traces, ranks by keyword overlap with the " +
         "bundle name, tiebroken by recency. Words like last/latest/recent rank " +
         "purely by modification time. Returns up to 10 matches with paths ready " +
-        "to pass to open_trace.",
+        "to pass to open_trace. " +
+        "⚠️ Not for opening a trace — pass the returned path to open_trace.",
       inputSchema: {
         query: z.string().describe('Natural-language description of the trace, e.g. "Foundation Models" or "last recording".'),
       },
@@ -522,7 +531,8 @@ function createServer(): McpServer {
         "Add a directory to scan when searching for .trace files. " +
         "The path is validated (must exist and be a directory), resolved to absolute, " +
         "and de-duplicated before saving. Persists to the server config file so it " +
-        "survives subprocess restarts. Use list_search_roots to see current roots.",
+        "survives subprocess restarts. Use list_search_roots to see current roots. " +
+        "⚠️ Not for opening a trace — use open_trace with the path you want to load.",
       inputSchema: {
         path: z.string().describe("Absolute or ~ path to a directory containing .trace files."),
       },
@@ -580,7 +590,8 @@ function createServer(): McpServer {
       title: "Remove Search Root",
       description:
         "Remove a directory from the search roots. Silently succeeds if the " +
-        "path is not currently a root. Use list_search_roots to confirm.",
+        "path is not currently a root. Use list_search_roots to confirm. " +
+        "⚠️ Not for stopping a recording — use stop_recording for that.",
       inputSchema: {
         path: z.string().describe("Path to remove (must match exactly as stored — use list_search_roots to see stored values)."),
       },
@@ -797,7 +808,8 @@ function createServer(): McpServer {
         "For time-limited recordings, set timeLimit and the process auto-stops; " +
         "stop_recording still works (it will see the recording is already done).\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
-        "then describe_schema on any schema to learn its columns before querying.",
+        "then describe_schema on any schema to learn its columns before querying. " +
+        "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
     async ({ type, attach, launch, timeLimit, device }) =>
@@ -828,7 +840,8 @@ function createServer(): McpServer {
         "Finalize an interactive recording by sending SIGINT to xctrace. " +
         "xctrace flushes buffered data and exits cleanly before this call returns. " +
         "Returns the .trace path — pass it to open_trace to start navigating results. " +
-        "Safe to call on a time-limited recording that has already auto-stopped.",
+        "Safe to call on a time-limited recording that has already auto-stopped. " +
+        "⚠️ Not for checking status without stopping — use get_recording_status for non-destructive polling.",
       inputSchema: {
         recordingId: z
           .string()
@@ -864,7 +877,8 @@ function createServer(): McpServer {
         "Check the current status of an interactive recording without stopping it. " +
         'Status values: "recording" (in progress), "finalizing" (SIGINT sent, flushing), ' +
         '"done" (finished cleanly — call open_trace), "failed" (non-zero exit). ' +
-        "Useful for polling time-limited recordings to know when they auto-complete.",
+        "Useful for polling time-limited recordings to know when they auto-complete. " +
+        "⚠️ Not for stopping a recording — use stop_recording to finalize and get the .trace path.",
       inputSchema: {
         recordingId: z
           .string()
@@ -902,7 +916,9 @@ async function main(): Promise<void> {
   console.error(`${SERVER_NAME} v${SERVER_VERSION} ready (stdio)`);
 }
 
-main().catch((err) => {
-  console.error(`${SERVER_NAME} failed to start:`, err);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(`${SERVER_NAME} failed to start:`, err);
+    process.exit(1);
+  });
+}
