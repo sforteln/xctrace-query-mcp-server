@@ -80,6 +80,8 @@ export const VERIFIED_PAIRS = new Set<string>([
   "27.0:swiftui-layout-updates",
   "27.0:swiftui-update-groups",
   "27.0:swiftui-updates",
+  "27.0:SwiftUIFilteredUpdates",
+  "27.0:SwiftUILayoutUpdates2",
   "27.0:time-sample",
   "27.0:ToolTable",
   // ── xcode-27.0 track-detail ──────────────────────────────────────────────

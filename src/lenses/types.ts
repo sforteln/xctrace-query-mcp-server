@@ -17,10 +17,11 @@ export interface QuickStart {
   hint: string;
   /**
    * The run number this suggestion targets (same as args.run).
+   * Stamped by the registry from the run parameter — lenses omit this field.
    * If the user or agent wants to inspect a different run, discard this
    * suggestedStart and call list_instruments with the desired run number instead.
    */
-  forRun: number;
+  forRun?: number;
 }
 
 /**
@@ -50,7 +51,11 @@ export interface Lens {
    * the active schema matches this lens. Keep these brief — the core verbs
    * already provide the generic options.
    */
-  nextActions(sessionId: string, schema: string, run: number): NextAction[];
+  /**
+   * All schema names present in `run` — enables cross-instrument suggestions
+   * (e.g. Leaks offering Allocations queries only when Allocations is present).
+   */
+  nextActions(sessionId: string, schema: string, run: number, allSchemas: string[]): NextAction[];
 
   /**
    * Optional: return a cheap entry-point recommendation for open_trace based

@@ -18,7 +18,7 @@ const coreDataLens: Lens = {
     // No lens-specific tools — core verbs (query, aggregate, find) work directly on these schemas.
   },
 
-  nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
+  nextActions(_sessionId: string, schema: string, _run: number, _allSchemas: string[]): NextAction[] {
     if (!CORE_DATA_SCHEMAS.includes(schema)) return [];
     return [];
   },

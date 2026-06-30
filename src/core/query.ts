@@ -19,6 +19,12 @@ const MAX_LIMIT = 500;
 
 export interface QueryOptions {
   run?: number;
+  /**
+   * 1-based instance index — only needed when the schema appears multiple
+   * times in this run's TOC. Omitting it on an ambiguous schema throws a
+   * structured "ambiguous-schema" error listing the available instances.
+   */
+  position?: number;
   /** Simple equality filter: mnemonic → expected fmt or raw value. */
   filter?: Record<string, string | number>;
   /** Column mnemonics to include in output. Omit to include all columns. */
@@ -78,6 +84,7 @@ export async function queryTable(
     sort,
     offset = 0,
     limit: rawLimit,
+    position,
   } = opts;
 
   const limit = Math.min(rawLimit ?? DEFAULT_LIMIT, MAX_LIMIT);
@@ -86,7 +93,7 @@ export async function queryTable(
   const run = opts.run ?? sessionLastRun(sessionId);
 
   // Fetch (or hit cache for) the parsed table.
-  const table = await getTable(sessionId, run, schema);
+  const table = await getTable(sessionId, run, schema, position);
 
   // Find the primary time column for timeRange filtering.
   const classified = classifyWithHints(schema, table.cols);

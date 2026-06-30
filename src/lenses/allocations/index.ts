@@ -4,28 +4,78 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
 
-const ALLOCATIONS_SCHEMA = "Allocations/Allocations-List";
+const ALLOCATIONS_LIST_SCHEMA = "Allocations/Allocations-List";
+const ALLOCATIONS_STATS_SCHEMA = "Allocations/Statistics";
 
 const allocationsLens: Lens = {
-  instruments: [ALLOCATIONS_SCHEMA],
+  instruments: [ALLOCATIONS_LIST_SCHEMA, ALLOCATIONS_STATS_SCHEMA],
 
   registerTools(_server: McpServer): void {
     // No lens-specific tools — core verbs (query, aggregate, find) work directly on these schemas.
   },
 
-  nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
-    if (schema !== ALLOCATIONS_SCHEMA) return [];
+  nextActions(sessionId: string, schema: string, run: number, _allSchemas: string[]): NextAction[] {
+    if (schema === ALLOCATIONS_LIST_SCHEMA) {
+      return [
+        {
+          tool: "aggregate",
+          args: {
+            sessionId,
+            schema: ALLOCATIONS_LIST_SCHEMA,
+            run,
+            groupBy: "responsible-library",
+            measure: "size",
+            op: "sum",
+            topN: 20,
+          },
+          description:
+            "Group allocations by owning library — shows which frameworks and your own code are responsible for the most bytes allocated.",
+        },
+        {
+          tool: "aggregate",
+          args: {
+            sessionId,
+            schema: ALLOCATIONS_STATS_SCHEMA,
+            run,
+            groupBy: "category",
+            measure: "persistent-bytes",
+            op: "sum",
+            topN: 20,
+          },
+          description:
+            "Switch to the Statistics schema for the live persistent footprint by category — persistent-bytes shows only what is still retained, not total allocated. Faster than Allocations-List for this summary.",
+        },
+      ];
+    }
+    if (schema === ALLOCATIONS_STATS_SCHEMA) {
+      return [
+        {
+          tool: "aggregate",
+          args: {
+            sessionId,
+            schema: ALLOCATIONS_LIST_SCHEMA,
+            run,
+            groupBy: "category",
+            measure: "size",
+            op: "sum",
+            topN: 20,
+          },
+          description:
+            "Drill into Allocations-List for per-object detail — size here is total bytes allocated (including freed), useful for finding allocation churn alongside the persistent footprint in Statistics.",
+        },
+      ];
+    }
     return [];
   },
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
-    if (!schemas.includes(ALLOCATIONS_SCHEMA)) return null;
+    if (!schemas.includes(ALLOCATIONS_LIST_SCHEMA)) return null;
     return {
-      schema: ALLOCATIONS_SCHEMA,
+      schema: ALLOCATIONS_LIST_SCHEMA,
       tool: "aggregate",
       args: {
         sessionId,
-        schema: ALLOCATIONS_SCHEMA,
+        schema: ALLOCATIONS_LIST_SCHEMA,
         run,
         groupBy: "category",
         measure: "size",

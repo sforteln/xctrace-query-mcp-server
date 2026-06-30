@@ -9,7 +9,7 @@
  * Each MCP recording tool calls startRecording() with the resolved intent.
  * The output path is auto-generated in the server-owned recordings directory.
  */
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { record } from "../engine/record.js";
@@ -38,6 +38,18 @@ export interface RecordingIntent {
    * network payloads, database records, etc.) that could contain PII or secrets.
    */
   privacyNotice?: string;
+  /**
+   * Per-instrument recording options applied via `xctrace record --recording-options`.
+   * Keys/values must match what `xcrun xctrace record --template <template>
+   * --show-recording-options` reports for that template — xctrace silently
+   * ignores unrecognised keys, so verify against that output before adding any.
+   * These are baked-in defaults, not agent-tunable: the intent layer's whole
+   * point is to keep raw xctrace knobs out of the tool surface, so only set
+   * this when there's no real tradeoff (e.g. layout tracing is strictly more
+   * data for free) — a genuine cost/benefit knob should stay at Apple's
+   * per-template default rather than becoming a one-off param.
+   */
+  recordingOptions?: Record<string, Record<string, unknown>>;
 }
 
 export const RECORDING_INTENTS = {
@@ -114,8 +126,13 @@ export const RECORDING_INTENTS = {
     template: "SwiftUI",
     launchRequired: false,
     note:
-      "Records SwiftUI view body re-evaluations and state changes. " +
-      "After opening, query the 'swiftui-updates' and 'swiftui-changes' schemas.",
+      "Records SwiftUI view body re-evaluations, state changes, and layout passes " +
+      "(layout tracing is enabled by default). After opening, query 'swiftui-updates' " +
+      "and 'swiftui-changes' for update/cause events, or 'swiftui-layout-updates' / " +
+      "'SwiftUILayoutUpdates2' for per-view layout pass timing.",
+    recordingOptions: {
+      SwiftUI: { enableLayoutTracing: true },
+    },
   },
   "core-data": {
     label: "Data Persistence (Core Data / SwiftData)",
@@ -179,6 +196,21 @@ export async function defaultOutputPath(template: string): Promise<string> {
   return join(dir, `${ts}-${slug}.trace`);
 }
 
+/**
+ * Write an intent's recordingOptions to a JSON file alongside the trace output
+ * (same directory, same base name) so xctrace's --recording-options can find it.
+ * Returns undefined when the intent has no recordingOptions — callers skip the flag.
+ */
+export async function writeRecordingOptionsFile(
+  outputPath: string,
+  recordingOptions: Record<string, Record<string, unknown>> | undefined
+): Promise<string | undefined> {
+  if (!recordingOptions) return undefined;
+  const optionsPath = outputPath.replace(/\.trace$/, ".recording-options.json");
+  await writeFile(optionsPath, JSON.stringify(recordingOptions, null, 2), "utf8");
+  return optionsPath;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface StartRecordingOptions {
@@ -238,6 +270,7 @@ export async function startRecording(
   }
 
   const outputPath = await defaultOutputPath(intent.template);
+  const recordingOptionsFile = await writeRecordingOptionsFile(outputPath, intent.recordingOptions);
 
   // Delegate to the engine wrapper — it validates attach/launch exclusivity
   // and maps every xctrace failure to a structured XctraceError.
@@ -248,6 +281,7 @@ export async function startRecording(
     device,
     timeLimit,
     output: outputPath,
+    recordingOptionsFile,
   });
 
   const base: StartRecordingResult = {

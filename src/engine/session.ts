@@ -12,10 +12,10 @@
 import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
-import { exportToc, exportXPath, buildTableXPath, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
+import { exportToc, exportXPath, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
 import { parseTableXml, ParsedTable } from "./parseTable.js";
 import { parseTrackDetailXml } from "./parseTrackDetail.js";
-import { buildSchemaModel, updateSchemaCols, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
+import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
@@ -190,15 +190,64 @@ export function getSession(sessionId: string): TraceSession {
 }
 
 /**
+ * Like getTable but fetches the Nth occurrence (1-based) of a schema that
+ * appears multiple times in a trace — e.g. SwiftUIFilteredUpdates (3 instances).
+ * Cached under the key `${run}:${schema}[${position}]` to avoid re-fetching.
+ */
+export async function getTableAtPosition(
+  sessionId: string,
+  run: number,
+  schema: string,
+  position: number
+): Promise<ParsedTable> {
+  const session = getSession(sessionId);
+  const cacheKey = `${run}:${schema}[${position}]`;
+
+  const cached = session.tableCache.get(cacheKey);
+  if (cached) return cached;
+
+  const xpath = buildTableXPathAtPosition(run, schema, position);
+  const xml = await exportXPath(session.tracePath, xpath);
+  const table = parseTableXml(xml);
+
+  // session.instruments has one entry per TOC <table> occurrence, in the same
+  // order as schema-table positions — index into it by position, not .find(),
+  // so each duplicated instance gets its own row count instead of all of them
+  // colliding on the first match.
+  const matchingEntries = session.instruments.filter(
+    (i) => i.run === run && i.schema === schema
+  );
+  const entry = matchingEntries[position - 1];
+  if (entry) entry.rowCount = table.rows.length;
+
+  session.tableCache.set(cacheKey, table);
+  return table;
+}
+
+/**
  * Return (and cache) the parsed table for a given run + schema within a session.
  * First call shells out to xctrace; subsequent calls return the cached ParsedTable.
+ *
+ * Pass `position` (1-based) when the schema appears more than once in this run's
+ * TOC — an unqualified fetch on an ambiguous schema would silently concatenate
+ * all instances together (xctrace's xpath behavior, not a bug in this server),
+ * so this throws a structured "ambiguous-schema" error instead when `position`
+ * is omitted and more than one instance exists.
  */
 export async function getTable(
   sessionId: string,
   run: number,
-  schema: string
+  schema: string,
+  position?: number
 ): Promise<ParsedTable> {
   const session = getSession(sessionId);
+
+  if (position !== undefined) {
+    return getTableAtPosition(sessionId, run, schema, position);
+  }
+
+  assertUnambiguousSchema(session.schemaModel, run, schema);
+
   const cacheKey = `${run}:${schema}`;
 
   const cached = session.tableCache.get(cacheKey);

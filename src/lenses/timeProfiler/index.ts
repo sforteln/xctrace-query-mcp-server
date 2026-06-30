@@ -14,7 +14,7 @@ const timeProfilerLens: Lens = {
     // No lens-specific tools — core verbs (query, aggregate, call_tree) work directly on these schemas.
   },
 
-  nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
+  nextActions(_sessionId: string, schema: string, _run: number, _allSchemas: string[]): NextAction[] {
     if (schema !== TIME_SAMPLE_SCHEMA && schema !== TIME_PROFILE_SCHEMA) return [];
     return [];
   },

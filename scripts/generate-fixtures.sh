@@ -19,6 +19,8 @@
 #   time-sample, Allocations__Allocations-List  (synthetic due to size)
 #   swiftui-updates, swiftui-causes, swiftui-changes, swiftui-full-causes  (synthetic — private app content + multi-MB)
 #   swiftui-layout-updates, swiftui-update-groups  (synthetic — private app content + 28–183 MB)
+#   SwiftUIFilteredUpdates  (synthetic — appears 3× in TOC; fixture covers first instance only)
+#   SwiftUILayoutUpdates2   (synthetic — swiftui-layout-updates + depth column)
 #
 # Adding a new schema:
 #   1. Add a call below in the appropriate section.

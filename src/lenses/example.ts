@@ -65,7 +65,7 @@ export const exampleLens: Lens = {
     );
   },
 
-  nextActions(sessionId: string, schema: string, run: number): NextAction[] {
+  nextActions(sessionId: string, schema: string, run: number, _allSchemas: string[]): NextAction[] {
     return [
       {
         tool: "example_list",

@@ -143,10 +143,10 @@ export async function getRow(
   sessionId: string,
   schema: string,
   rowIndex: number,
-  opts: { run?: number } = {}
+  opts: { run?: number; position?: number } = {}
 ): Promise<GetRowResult> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, schema);
+  const table = await getTable(sessionId, run, schema, opts.position);
 
   if (rowIndex < 0 || rowIndex >= table.rows.length) {
     throw new RangeError(

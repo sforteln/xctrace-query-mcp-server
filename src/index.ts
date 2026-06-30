@@ -211,11 +211,20 @@ export function createServer(): McpServer {
           .int()
           .optional()
           .describe("Run number. Optional — defaults to the most recent run."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, run }) =>
-      safeToolWithLog("describe_schema", { sessionId, schema, run }, async () => {
-        const desc = await describeSchema(sessionId, schema, run);
+    async ({ sessionId, schema, run, position }) =>
+      safeToolWithLog("describe_schema", { sessionId, schema, run, position }, async () => {
+        const desc = await describeSchema(sessionId, schema, run, position);
         const groupByCandidate = desc.rolesSummary.label[0] ?? desc.rolesSummary.thread[0] ?? null;
         const response = envelope(
           desc,
@@ -274,11 +283,20 @@ export function createServer(): McpServer {
           .describe("Sort rows by a column value."),
         limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 20, max 500)."),
         offset: z.number().int().min(0).optional().describe("Rows to skip for pagination (default 0)."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset }) =>
-      safeToolWithLog("query", { sessionId, schema, run, filter, columns, timeRange, sort, limit, offset }, async () => {
-        const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset });
+    async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, position }) =>
+      safeToolWithLog("query", { sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, position }, async () => {
+        const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset, position });
         const response = envelope(
           result,
           [
@@ -333,12 +351,21 @@ export function createServer(): McpServer {
           })
           .optional()
           .describe("Restrict to a time window (nanoseconds) before grouping."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange }) =>
-      safeToolWithLog("aggregate", { sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange }, async () => {
+    async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, position }) =>
+      safeToolWithLog("aggregate", { sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, position }, async () => {
         const result = await aggregateTable(sessionId, schema, {
-          run, groupBy, measure, op, topN, filter, timeRange,
+          run, groupBy, measure, op, topN, filter, timeRange, position,
         });
         const hasBacktrace = false; // aggregate doesn't resolve backtraces
         const topKey = result.groups[0]?.key ?? null;
@@ -396,11 +423,20 @@ export function createServer(): McpServer {
           .max(20)
           .optional()
           .describe("Max children shown per node (default 8)."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, run, thread, timeRange, maxDepth, topN }) =>
-      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, maxDepth, topN }, async () => {
-        const result = await callTree(sessionId, schema, { run, thread, timeRange, maxDepth, topN });
+    async ({ sessionId, schema, run, thread, timeRange, maxDepth, topN, position }) =>
+      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, maxDepth, topN, position }, async () => {
+        const result = await callTree(sessionId, schema, { run, thread, timeRange, maxDepth, topN, position });
         const response = envelope(result, [
           {
             tool: "call_tree",
@@ -469,12 +505,21 @@ export function createServer(): McpServer {
           .describe("Restrict to a time window before evaluating predicates."),
         limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 50, max 500)."),
         offset: z.number().int().min(0).optional().describe("Rows to skip for pagination (default 0)."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, run, where, columns, sort, timeRange, limit, offset }) =>
-      safeToolWithLog("find", { sessionId, schema, run, where, columns, sort, timeRange, limit, offset }, async () => {
+    async ({ sessionId, schema, run, where, columns, sort, timeRange, limit, offset, position }) =>
+      safeToolWithLog("find", { sessionId, schema, run, where, columns, sort, timeRange, limit, offset, position }, async () => {
         const result = await findRows(sessionId, schema, {
-          run, where, columns, sort, timeRange, limit, offset,
+          run, where, columns, sort, timeRange, limit, offset, position,
         });
         const firstTableIndex = result.rows[0]?.tableIndex ?? null;
         const response = envelope(
@@ -510,11 +555,20 @@ export function createServer(): McpServer {
           .min(0)
           .describe("Raw table index (`tableIndex` from query results, 0-based)."),
         run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        position: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "1-based instance to pick when this schema appears more than once in the run. " +
+            "Omit on the first try — an ambiguous-schema error will list the instances if needed."
+          ),
       },
     },
-    async ({ sessionId, schema, rowIndex, run }) =>
-      safeToolWithLog("get_row", { sessionId, schema, rowIndex, run }, async () => {
-        const result = await getRow(sessionId, schema, rowIndex, { run });
+    async ({ sessionId, schema, rowIndex, run, position }) =>
+      safeToolWithLog("get_row", { sessionId, schema, rowIndex, run, position }, async () => {
+        const result = await getRow(sessionId, schema, rowIndex, { run, position });
         const hasBacktrace = Object.values(result.cells).some(
           (c) => c?.backtrace !== undefined
         );

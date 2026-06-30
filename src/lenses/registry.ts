@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "./types.js";
 import type { NextAction } from "../core/response.js";
+import { getSession } from "../engine/session.js";
 
 export class LensRegistry {
   private readonly byInstrument = new Map<string, Lens>();
@@ -38,7 +39,11 @@ export class LensRegistry {
    * registered for it. Safe to spread into any nextActions array.
    */
   nextActions(sessionId: string, schema: string, run: number): NextAction[] {
-    return this.get(schema)?.nextActions(sessionId, schema, run) ?? [];
+    const lens = this.get(schema);
+    if (!lens) return [];
+    const runEntry = getSession(sessionId).runs.find((r) => r.number === run);
+    const allSchemas = runEntry?.schemas ?? [];
+    return lens.nextActions(sessionId, schema, run, allSchemas);
   }
 
   /**

@@ -37,6 +37,8 @@ tests/fixtures/xcode-27.0/
     swiftui-full-causes.xml       SYNTHETIC — real data had private app content and was 1.1 GB
     swiftui-layout-updates.xml    SYNTHETIC — real data had private app content and was 183 MB; 3 rows covering uncached/uncached/cached with Medium/Low/no severity
     swiftui-update-groups.xml     SYNTHETIC — real data was 28 MB; labels use SwiftUI internal layout computer type names
+    SwiftUIFilteredUpdates.xml    SYNTHETIC — pre-filtered view of swiftui-updates (same columns); 3 instances in real traces (exclude-both, body-only, representable-only); fixture covers one instance with Layout and Other rows
+    SwiftUILayoutUpdates2.xml     SYNTHETIC — swiftui-layout-updates + depth column; 3 rows covering depth 0/1/2
   track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
 ```

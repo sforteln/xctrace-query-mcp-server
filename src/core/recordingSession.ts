@@ -18,7 +18,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawnRecord } from "../engine/record.js";
-import { defaultOutputPath, type RecordingIntent } from "./recording.js";
+import { defaultOutputPath, writeRecordingOptionsFile, type RecordingIntent } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
 import type { ChildProcess } from "node:child_process";
 
@@ -98,6 +98,7 @@ export async function startSession(
   }
 
   const tracePath = await defaultOutputPath(intent.template);
+  const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, intent.recordingOptions);
   const recordingId = randomUUID();
 
   const handle = spawnRecord({
@@ -107,6 +108,7 @@ export async function startSession(
     device,
     timeLimit,
     output: tracePath,
+    recordingOptionsFile,
   });
 
   const stderrChunks: string[] = [];

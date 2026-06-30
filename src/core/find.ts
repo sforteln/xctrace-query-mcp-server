@@ -36,6 +36,12 @@ export interface Condition {
 
 export interface FindOptions {
   run?: number;
+  /**
+   * 1-based instance index — only needed when the schema appears multiple
+   * times in this run's TOC. Omitting it on an ambiguous schema throws a
+   * structured "ambiguous-schema" error listing the available instances.
+   */
+  position?: number;
   where: Condition[];
   columns?: string[];
   sort?: { by: string; dir?: "asc" | "desc" };
@@ -171,11 +177,12 @@ export async function findRows(
     sort,
     offset = 0,
     timeRange,
+    position,
   } = opts;
   const limit = Math.min(opts.limit ?? 50, 500);
   const run = opts.run ?? sessionLastRun(sessionId);
 
-  const table = await getTable(sessionId, run, schema);
+  const table = await getTable(sessionId, run, schema, position);
 
   const classified = classifyWithHints(schema, table.cols);
   const timeColDef = firstWithRole(classified, "time");

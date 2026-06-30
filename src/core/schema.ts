@@ -9,7 +9,7 @@
  * by-role grouping of column mnemonics.
  */
 import { getTable, lastRun, getSchemaModel } from "../engine/session.js";
-import { findOne } from "../engine/schemaModel.js";
+import { findOne, findSchemaTableEntries } from "../engine/schemaModel.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import {
   ColumnRole,
@@ -54,10 +54,11 @@ export interface SchemaDescription {
 export async function describeSchema(
   sessionId: string,
   schema: string,
-  run?: number
+  run?: number,
+  position?: number
 ): Promise<SchemaDescription> {
   const resolvedRun = run ?? lastRun(sessionId);
-  const table = await getTable(sessionId, resolvedRun, schema);
+  const table = await getTable(sessionId, resolvedRun, schema, position);
 
   const classified = classifyWithHints(schema, table.cols);
   const hint = hintFor(schema);
@@ -84,7 +85,15 @@ export async function describeSchema(
   };
   for (const c of classified) rolesSummary[c.roleInfo.role].push(c.mnemonic);
 
-  const docEntry = findOne(getSchemaModel(sessionId), resolvedRun, schema);
+  // When the schema has multiple TOC instances, pick the one matching the
+  // resolved position (getTable already rejected an ambiguous fetch with no
+  // position) rather than findOne's first-match, so documentation/TOC
+  // metadata reflects the instance actually fetched.
+  const model = getSchemaModel(sessionId);
+  const docEntry =
+    position !== undefined
+      ? findSchemaTableEntries(model, resolvedRun, schema)[position - 1]
+      : findOne(model, resolvedRun, schema);
 
   return {
     schema,

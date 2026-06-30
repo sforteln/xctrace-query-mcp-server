@@ -22,6 +22,12 @@ export type AggOp = "sum" | "count" | "avg";
 
 export interface AggregateOptions {
   run?: number;
+  /**
+   * 1-based instance index — only needed when the schema appears multiple
+   * times in this run's TOC. Omitting it on an ambiguous schema throws a
+   * structured "ambiguous-schema" error listing the available instances.
+   */
+  position?: number;
   /** Mnemonic of the label/thread column to group by. */
   groupBy: string;
   /** Mnemonic of the weight column to aggregate. Required for sum/avg; ignored for count. */
@@ -100,10 +106,11 @@ export async function aggregateTable(
     topN = 10,
     filter,
     timeRange,
+    position,
   } = opts;
 
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, schema);
+  const table = await getTable(sessionId, run, schema, position);
 
   // Resolve unit for the measure column.
   const classified = classifyWithHints(schema, table.cols);

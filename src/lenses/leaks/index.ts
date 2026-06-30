@@ -13,9 +13,57 @@ const leaksLens: Lens = {
     // No lens-specific tools — core verbs (query, aggregate, find) work directly on these schemas.
   },
 
-  nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
+  nextActions(sessionId: string, schema: string, run: number, allSchemas: string[]): NextAction[] {
     if (schema !== LEAKS_SCHEMA) return [];
-    return [];
+    const actions: NextAction[] = [
+      {
+        tool: "aggregate",
+        args: {
+          sessionId,
+          schema: LEAKS_SCHEMA,
+          run,
+          groupBy: "responsible-library",
+          measure: "size",
+          op: "sum",
+          topN: 20,
+        },
+        description:
+          "Group leaks by owning library — shows whether leaked bytes are app-owned or framework-owned.",
+      },
+    ];
+    if (allSchemas.includes("Allocations/Allocations-List")) {
+      actions.push({
+        tool: "aggregate",
+        args: {
+          sessionId,
+          schema: "Allocations/Allocations-List",
+          run,
+          groupBy: "category",
+          measure: "persistent-bytes",
+          op: "sum",
+          topN: 20,
+        },
+        description:
+          "Summarise persistent memory by category alongside the leaks — persistent-bytes is the live footprint grouped by framework or class name.",
+      });
+    }
+    if (allSchemas.includes("Allocations/Statistics")) {
+      actions.push({
+        tool: "aggregate",
+        args: {
+          sessionId,
+          schema: "Allocations/Statistics",
+          run,
+          groupBy: "category",
+          measure: "persistent-bytes",
+          op: "sum",
+          topN: 20,
+        },
+        description:
+          "Pre-summarised Allocations view — same persistent-bytes breakdown as Allocations-List but faster. Try this if Allocations-List is slow or empty.",
+      });
+    }
+    return actions;
   },
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {

@@ -26,7 +26,8 @@ export type XctraceErrorKind =
   | "record-failed"      // xctrace record exited non-zero (general failure)
   | "target-not-found"   // --attach target process/app not found
   | "bad-template"       // --template name does not exist
-  | "permission-denied"; // Instruments/DTServiceHub authorization not granted
+  | "permission-denied"  // Instruments/DTServiceHub authorization not granted
+  | "ambiguous-schema";  // schema appears multiple times in this run — needs a position
 
 export interface XctraceErrorDetails {
   /** The argv passed to xcrun, for diagnostics (no secrets — just paths/flags). */
@@ -37,6 +38,19 @@ export interface XctraceErrorDetails {
   stderr?: string;
   /** The trace path involved, when relevant. */
   tracePath?: string;
+  /**
+   * Present for "ambiguous-schema" errors — the available instances (1-based
+   * position) and whatever TOC attributes distinguish them, so the caller can
+   * pick the right one and retry with `position` set.
+   */
+  instances?: Array<{
+    position: number;
+    documentation: string | null;
+    swiftTable: string | null;
+    subsystem: string | null;
+    category: string | null;
+    codes: string | null;
+  }>;
 }
 
 /**
@@ -220,6 +234,14 @@ export async function exportXPath(
  */
 export function buildTableXPath(run: number, schema: string): string {
   return `/trace-toc/run[@number="${run}"]/data/table[@schema="${schema}"]`;
+}
+
+/**
+ * Like buildTableXPath but selects the Nth occurrence (1-based) — used when
+ * multiple tables share the same schema name (e.g. SwiftUIFilteredUpdates).
+ */
+export function buildTableXPathAtPosition(run: number, schema: string, position: number): string {
+  return `/trace-toc/run[@number="${run}"]/data/table[@schema="${schema}"][${position}]`;
 }
 
 /**

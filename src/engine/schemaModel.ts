@@ -13,6 +13,7 @@
  * layer and lives in src/engine/roleInference.ts.
  * This module just captures what the raw xctrace output tells us.
  */
+import { XctraceError } from "./xctrace.js";
 import type { TocTable, TocRun } from "./xctrace.js";
 import type { SchemaCol } from "./parseTable.js";
 
@@ -210,6 +211,54 @@ export function findOne(
   schema: string
 ): TableSchema | undefined {
   return model.find((e) => e.run === run && e.toc.schema === schema);
+}
+
+/**
+ * Return every schema-table TOC entry (not track-details) for a given run +
+ * schema, in TOC order — positions 1..N map directly to the xctrace positional
+ * xpath `table[@schema="..."][N]`. A schema with more than one entry here is
+ * ambiguous: an unqualified xctrace export silently concatenates ALL of them
+ * into one table rather than picking one, so callers must disambiguate.
+ */
+export function findSchemaTableEntries(
+  model: SchemaModel,
+  run: number,
+  schema: string
+): TableSchema[] {
+  return model.filter(
+    (e) => e.run === run && e.toc.schema === schema && e.source === "schema-table"
+  );
+}
+
+/**
+ * Throw a structured "ambiguous-schema" error when a run+schema has more than
+ * one TOC instance. Callers invoke this only when they don't already have a
+ * `position` — it's the fail-fast guard against the union-merge xctrace
+ * silently performs on an unqualified xpath for a duplicated schema name.
+ */
+export function assertUnambiguousSchema(
+  model: SchemaModel,
+  run: number,
+  schema: string
+): void {
+  const entries = findSchemaTableEntries(model, run, schema);
+  if (entries.length <= 1) return;
+
+  throw new XctraceError(
+    "ambiguous-schema",
+    `Schema "${schema}" appears ${entries.length} times in run ${run} — an unqualified ` +
+      `fetch would silently merge all instances. Pass position (1-${entries.length}) to pick one.`,
+    {
+      instances: entries.map((e, i) => ({
+        position: i + 1,
+        documentation: e.toc.documentation,
+        swiftTable: e.toc.swiftTable,
+        subsystem: e.toc.subsystem,
+        category: e.toc.category,
+        codes: e.toc.codes,
+      })),
+    }
+  );
 }
 
 /**

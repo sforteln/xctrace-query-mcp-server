@@ -44,6 +44,14 @@ export interface RecordOptions {
   timeLimit?: string;
   /** Absolute path where the resulting .trace bundle will be written. */
   output: string;
+  /**
+   * Absolute path to a JSON file of per-instrument recording options, passed
+   * as `--recording-options <file>`. Format: `{"<Instrument>": {"<key>": <value>}}`,
+   * matching the keys `xcrun xctrace record --show-recording-options` reports
+   * for the chosen template. Callers write this file (see writeRecordingOptionsFile
+   * in core/recording.ts) — this module only forwards the path to xctrace.
+   */
+  recordingOptionsFile?: string;
 }
 
 export interface RecordResult {
@@ -138,7 +146,7 @@ function classifyRecordFailure(
  * spawning.
  */
 export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
-  const { template, attach, launch, device, timeLimit, output } = opts;
+  const { template, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
 
   const args: string[] = [
     "xctrace", "record",
@@ -147,6 +155,7 @@ export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
     ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),
+    ...(recordingOptionsFile ? ["--recording-options", recordingOptionsFile] : []),
     "--output", output,
   ];
 
@@ -174,7 +183,7 @@ export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
  *   - "xctrace-not-found" xcrun binary missing (Xcode not installed)
  */
 export async function record(opts: RecordOptions): Promise<RecordResult> {
-  const { template, attach, launch, device, timeLimit, output } = opts;
+  const { template, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
 
   if (attach !== undefined && launch !== undefined) {
     throw new XctraceError(
@@ -198,6 +207,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
     ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),
+    ...(recordingOptionsFile ? ["--recording-options", recordingOptionsFile] : []),
     "--output", output,
   ];
 

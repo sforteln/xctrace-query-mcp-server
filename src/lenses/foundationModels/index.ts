@@ -301,7 +301,7 @@ const fmLens: Lens = {
     };
   },
 
-  nextActions(sessionId: string, schema: string, run: number): NextAction[] {
+  nextActions(sessionId: string, schema: string, run: number, _allSchemas: string[]): NextAction[] {
     if (schema !== FM_SCHEMA) return [];
     return [
       {

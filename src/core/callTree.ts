@@ -16,9 +16,10 @@
  * structured note suggesting `time-profile` instead.
  */
 import { XMLParser } from "fast-xml-parser";
-import { exportXPath, buildTableXPath } from "../engine/xctrace.js";
+import { exportXPath, buildTableXPath, buildTableXPathAtPosition } from "../engine/xctrace.js";
 import { exportToc } from "../engine/xctrace.js";
 import { getSession, lastRun as sessionLastRun } from "../engine/session.js";
+import { assertUnambiguousSchema } from "../engine/schemaModel.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
 
@@ -179,6 +180,12 @@ function serializeNode(
 
 export interface CallTreeOptions {
   run?: number;
+  /**
+   * 1-based instance index — only needed when the schema appears multiple
+   * times in this run's TOC. Omitting it on an ambiguous schema throws a
+   * structured "ambiguous-schema" error listing the available instances.
+   */
+  position?: number;
   /** Substring filter on thread fmt (e.g. "MyApp" or "0x25cc66"). */
   thread?: string;
   timeRange?: { startNs?: number; endNs?: number };
@@ -195,10 +202,17 @@ export async function callTree(
 ): Promise<CallTreeResult> {
   const run = opts.run ?? sessionLastRun(sessionId);
   const session = getSession(sessionId);
-  const { maxDepth = 6, topN = 8, thread, timeRange } = opts;
+  const { maxDepth = 6, topN = 8, thread, timeRange, position } = opts;
 
-  // Export the raw XML for this schema.
-  const xpath = buildTableXPath(run, schema);
+  // Export the raw XML for this schema. callTree builds its own xpath rather
+  // than going through session.getTable, so it needs its own ambiguity guard.
+  let xpath: string;
+  if (position !== undefined) {
+    xpath = buildTableXPathAtPosition(run, schema, position);
+  } else {
+    assertUnambiguousSchema(session.schemaModel, run, schema);
+    xpath = buildTableXPath(run, schema);
+  }
   const xml = await exportXPath(session.tracePath, xpath);
 
   const doc = ctParser.parse(xml) as Record<string, any>;
