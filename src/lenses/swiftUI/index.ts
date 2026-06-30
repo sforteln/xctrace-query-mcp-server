@@ -9,6 +9,7 @@ import { safeTool, text } from "../../core/toolUtils.js";
 import { getSchemaModel, getTableAtPosition, lastRun as sessionLastRun } from "../../engine/session.js";
 import { findSchemaTableEntries } from "../../engine/schemaModel.js";
 import { compareRows } from "../../core/tableFilter.js";
+import { aggregateTable } from "../../core/aggregate.js";
 import type { ParsedTable } from "../../engine/parseTable.js";
 
 const SWIFTUI_UPDATES_SCHEMA = "swiftui-updates";
@@ -72,16 +73,35 @@ function findFilteredUpdatesPosition(
   return null;
 }
 
+/**
+ * Columns excluded from the default response. Each carries unbounded-size
+ * data per row — view-hierarchy is a full ancestor modifier chain,
+ * cause-graph-node and downstream-events are arrays — and in production use
+ * even `limit: 30` overflowed response size limits because of these alone.
+ * Pass their mnemonics explicitly via `columns` when actually needed.
+ */
+const HEAVY_COLUMNS = new Set([
+  "view-hierarchy",
+  "root-causes",
+  "downstream-events",
+  "cause-graph-node",
+  "full-cause-graph-node",
+]);
+
 /** Paginate and format a ParsedTable into the standard query result shape. */
 function paginateTable(
   table: ParsedTable,
   schema: string,
   run: number,
-  opts: { sort?: { by: string; dir?: "asc" | "desc" }; limit?: number; offset?: number }
+  opts: { sort?: { by: string; dir?: "asc" | "desc" }; limit?: number; offset?: number; columns?: string[] }
 ) {
   const limit = Math.min(opts.limit ?? 20, 500);
   const offset = opts.offset ?? 0;
-  const columnsShown = table.cols.map((c) => c.mnemonic);
+  const allMnemonics = table.cols.map((c) => c.mnemonic);
+  const columnsShown =
+    opts.columns && opts.columns.length > 0
+      ? opts.columns.filter((m) => allMnemonics.includes(m))
+      : allMnemonics.filter((m) => !HEAVY_COLUMNS.has(m));
 
   type Indexed = { tableIndex: number; row: (typeof table.rows)[0] };
   let rows: Indexed[] = table.rows.map((row, i) => ({ tableIndex: i, row }));
@@ -143,9 +163,18 @@ const swiftUILens: Lens = {
             .optional()
             .describe("Max rows to return (default 20, max 500)."),
           offset: z.number().int().min(0).optional().describe("Rows to skip for pagination."),
+          columns: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Column mnemonics to include. Omit for the compact default, which excludes " +
+              "view-hierarchy, root-causes, downstream-events, and cause-graph-node — each " +
+              "carries unbounded per-row data and can overflow response limits even at small " +
+              "row counts. Pass their mnemonics explicitly when actually needed."
+            ),
         },
       },
-      async ({ sessionId, run: runOpt, sort, limit, offset }) =>
+      async ({ sessionId, run: runOpt, sort, limit, offset, columns }) =>
         safeTool(async () => {
           const run = runOpt ?? sessionLastRun(sessionId);
           const position = findFilteredUpdatesPosition(sessionId, run, "view-body");
@@ -164,6 +193,7 @@ const swiftUILens: Lens = {
             sort,
             limit,
             offset,
+            columns,
           });
           const actions: NextAction[] = [];
           if (result.hasMore) {
@@ -190,11 +220,11 @@ const swiftUILens: Lens = {
               description: "Switch to Representable (UIKit/AppKit) bridge updates.",
             },
             {
-              tool: "aggregate",
+              tool: "aggregate_swiftui_filtered_updates",
               args: {
                 sessionId,
-                schema: SWIFTUI_FILTERED_UPDATES_SCHEMA,
                 run,
+                kind: "view-body",
                 groupBy: "view-name",
                 measure: "downstream-cost",
                 op: "sum",
@@ -233,9 +263,18 @@ const swiftUILens: Lens = {
             .optional()
             .describe("Max rows to return (default 20, max 500)."),
           offset: z.number().int().min(0).optional().describe("Rows to skip for pagination."),
+          columns: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Column mnemonics to include. Omit for the compact default, which excludes " +
+              "view-hierarchy, root-causes, downstream-events, and cause-graph-node — each " +
+              "carries unbounded per-row data and can overflow response limits even at small " +
+              "row counts. Pass their mnemonics explicitly when actually needed."
+            ),
         },
       },
-      async ({ sessionId, run: runOpt, sort, limit, offset }) =>
+      async ({ sessionId, run: runOpt, sort, limit, offset, columns }) =>
         safeTool(async () => {
           const run = runOpt ?? sessionLastRun(sessionId);
           const position = findFilteredUpdatesPosition(sessionId, run, "representable");
@@ -256,6 +295,7 @@ const swiftUILens: Lens = {
             sort,
             limit,
             offset,
+            columns,
           });
           const actions: NextAction[] = [];
           if (result.hasMore) {
@@ -282,11 +322,11 @@ const swiftUILens: Lens = {
               description: "Switch to Layout, Environment, and other non-body updates.",
             },
             {
-              tool: "aggregate",
+              tool: "aggregate_swiftui_filtered_updates",
               args: {
                 sessionId,
-                schema: SWIFTUI_FILTERED_UPDATES_SCHEMA,
                 run,
+                kind: "representable",
                 groupBy: "view-name",
                 measure: "downstream-cost",
                 op: "sum",
@@ -325,9 +365,18 @@ const swiftUILens: Lens = {
             .optional()
             .describe("Max rows to return (default 20, max 500)."),
           offset: z.number().int().min(0).optional().describe("Rows to skip for pagination."),
+          columns: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "Column mnemonics to include. Omit for the compact default, which excludes " +
+              "view-hierarchy, root-causes, downstream-events, and cause-graph-node — each " +
+              "carries unbounded per-row data and can overflow response limits even at small " +
+              "row counts. Pass their mnemonics explicitly when actually needed."
+            ),
         },
       },
-      async ({ sessionId, run: runOpt, sort, limit, offset }) =>
+      async ({ sessionId, run: runOpt, sort, limit, offset, columns }) =>
         safeTool(async () => {
           const run = runOpt ?? sessionLastRun(sessionId);
           const position = findFilteredUpdatesPosition(sessionId, run, "other");
@@ -348,6 +397,7 @@ const swiftUILens: Lens = {
             sort,
             limit,
             offset,
+            columns,
           });
           const actions: NextAction[] = [];
           if (result.hasMore) {
@@ -374,11 +424,11 @@ const swiftUILens: Lens = {
               description: "Switch to Representable (UIKit/AppKit) bridge updates.",
             },
             {
-              tool: "aggregate",
+              tool: "aggregate_swiftui_filtered_updates",
               args: {
                 sessionId,
-                schema: SWIFTUI_FILTERED_UPDATES_SCHEMA,
                 run,
+                kind: "other",
                 groupBy: "category",
                 measure: "downstream-cost",
                 op: "sum",
@@ -387,6 +437,92 @@ const swiftUILens: Lens = {
               description: "Break down layout and environment updates by category.",
             }
           );
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
+    // ── aggregate_swiftui_filtered_updates ────────────────────────────────────
+    server.registerTool(
+      "aggregate_swiftui_filtered_updates",
+      {
+        title: "Aggregate SwiftUI Filtered Updates",
+        description:
+          "Group and sum/count/avg one of the three pre-filtered 'SwiftUIFilteredUpdates' instances " +
+          "by any column — e.g. groupBy view-name and measure downstream-cost to find which views " +
+          "cost the most, or groupBy update-type with op count for a frequency breakdown. " +
+          "Resolves the schema's position automatically from `kind`, so the caller never needs to " +
+          "know SwiftUIFilteredUpdates exists 3× in the trace or pass a raw position. " +
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for reading individual rows — use list_swiftui_view_body_updates, " +
+          "list_swiftui_representable_updates, or list_swiftui_layout_env_updates for that.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          kind: z
+            .enum(["view-body", "representable", "other"])
+            .describe(
+              "Which pre-filtered instance to aggregate: 'view-body' for View Body re-evaluations, " +
+              "'representable' for UIKit/AppKit bridge updates, or 'other' for Layout, Environment, " +
+              "and everything except the other two."
+            ),
+          groupBy: z.string().describe("Mnemonic of the column to group by, e.g. view-name or update-type."),
+          measure: z
+            .string()
+            .optional()
+            .describe("Mnemonic of the weight column to aggregate, e.g. downstream-cost. Required for sum/avg; ignored for count."),
+          op: z.enum(["sum", "count", "avg"]).optional().describe("Aggregation operation (default: sum)."),
+          topN: z
+            .number()
+            .int()
+            .min(1)
+            .max(100)
+            .optional()
+            .describe("Max groups to return, heaviest first (default 10)."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, kind, groupBy, measure, op, topN, run: runOpt }) =>
+        safeTool(async () => {
+          const run = runOpt ?? sessionLastRun(sessionId);
+          const position = findFilteredUpdatesPosition(sessionId, run, kind);
+          if (position === null) {
+            return text(
+              JSON.stringify({ error: `${kind} filtered updates table not found in this trace` })
+            );
+          }
+          const result = await aggregateTable(sessionId, SWIFTUI_FILTERED_UPDATES_SCHEMA, {
+            run,
+            groupBy,
+            measure,
+            op,
+            topN,
+            position,
+          });
+
+          const listToolByKind: Record<FilteredUpdatesKind, string> = {
+            "view-body": "list_swiftui_view_body_updates",
+            representable: "list_swiftui_representable_updates",
+            other: "list_swiftui_layout_env_updates",
+          };
+          const actions: NextAction[] = [
+            {
+              tool: listToolByKind[kind],
+              args: { sessionId, run, sort: { by: measure ?? groupBy, dir: "desc" } },
+              description: `Drill into individual ${kind} rows, sorted by ${measure ?? groupBy}.`,
+            },
+            {
+              tool: "aggregate_swiftui_filtered_updates",
+              args: { sessionId, run, kind, groupBy: "<different-mnemonic>", measure, op, topN },
+              description: "Re-aggregate this same instance by a different column.",
+            },
+          ];
+          for (const otherKind of ["view-body", "representable", "other"] as const) {
+            if (otherKind === kind) continue;
+            actions.push({
+              tool: "aggregate_swiftui_filtered_updates",
+              args: { sessionId, run, kind: otherKind, groupBy, measure, op, topN },
+              description: `Compare against the ${otherKind} instance.`,
+            });
+          }
           return text(toMcpText(envelope(result, actions)));
         })
     );
@@ -412,6 +548,11 @@ const swiftUILens: Lens = {
           description:
             "List Layout, Environment, and other non-body events (everything except body and representable).",
         },
+        {
+          tool: "aggregate_swiftui_filtered_updates",
+          args: { sessionId, run, kind: "other", groupBy: "view-name", measure: "downstream-cost", op: "sum", topN: 20 },
+          description: "Aggregate one of the three instances directly by any column (view-name, update-type, category, ...).",
+        },
       ];
     }
     return [];
@@ -430,26 +571,28 @@ const swiftUILens: Lens = {
           sort: { by: "downstream-cost", dir: "desc" },
           limit: 20,
         },
-        hint: "SwiftUI trace — sorted by downstream-cost shows the most expensive updates by total subtree impact; check view-name, severity, and root-causes. The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present: it pre-filters by update type so you can aggregate groupBy category to compare body vs layout cost directly.",
+        hint: "SwiftUI trace — sorted by downstream-cost shows the most expensive updates by total subtree impact; check view-name, severity, and root-causes (use the columns param to include them — excluded from the default to keep responses small). The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present as three pre-filtered instances (view-body/representable/other) — use aggregate_swiftui_filtered_updates(kind=...) to compare them directly.",
       };
     }
 
-    // SwiftUIFilteredUpdates is a pre-filtered view with the same columns as swiftui-updates.
-    // Present when swiftui-updates is absent (layout-focused traces).
+    // SwiftUIFilteredUpdates is a pre-filtered view with the same columns as swiftui-updates,
+    // split into three TOC instances (view-body/representable/other) — never query it
+    // unqualified, that throws ambiguous-schema. Present when swiftui-updates is absent
+    // (layout-focused traces).
     if (schemas.includes(SWIFTUI_FILTERED_UPDATES_SCHEMA)) {
       return {
         schema: SWIFTUI_FILTERED_UPDATES_SCHEMA,
-        tool: "aggregate",
+        tool: "aggregate_swiftui_filtered_updates",
         args: {
           sessionId,
-          schema: SWIFTUI_FILTERED_UPDATES_SCHEMA,
           run,
-          groupBy: "category",
+          kind: "other",
+          groupBy: "view-name",
           measure: "downstream-cost",
           op: "sum",
           topN: 10,
         },
-        hint: "SwiftUI filtered-updates trace — aggregate by category splits View Body vs Layout vs Other by total downstream cost; drill into the heaviest category with query sorted by downstream-cost.",
+        hint: "SwiftUI filtered-updates trace — SwiftUIFilteredUpdates exists as three pre-filtered instances (view-body/representable/other), starting here with 'other' (Layout, Environment, and everything else) aggregated by view-name and downstream-cost. Switch kind to 'view-body' or 'representable' for the other instances, or use list_swiftui_view_body_updates / list_swiftui_representable_updates / list_swiftui_layout_env_updates to read individual rows.",
       };
     }
 
