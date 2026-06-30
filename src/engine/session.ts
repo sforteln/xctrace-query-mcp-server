@@ -10,7 +10,8 @@
  * drills into more tables).
  */
 import { randomUUID } from "node:crypto";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { stat } from "node:fs/promises";
 import { exportToc, exportXPath, buildTableXPath, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
 import { parseTableXml, ParsedTable } from "./parseTable.js";
 import { parseTrackDetailXml } from "./parseTrackDetail.js";
@@ -33,6 +34,12 @@ export interface RunSummary {
   number: number;
   /** Schema names present in this run. */
   schemas: string[];
+  /**
+   * ISO8601 timestamp of when this run was recorded, derived from the
+   * modification time of the run's subdirectory inside the .trace bundle.
+   * Null when the directory is not found (older trace formats, simulator, etc.).
+   */
+  recordedAt: string | null;
 }
 
 /** Coarse time range over the session, populated lazily from the first time-bearing table parsed. */
@@ -97,7 +104,7 @@ export async function openTrace(
   // De-duplicate track-details per run (same as buildSchemaModel does).
   const seenTrackDetails = new Set<string>();
 
-  const runs: RunSummary[] = toc.runs.map((r) => {
+  const runsBase = toc.runs.map((r) => {
     const tableSchemas = r.tables.map((t) => t.schema);
     const trackSchemas: string[] = [];
     for (const track of r.tracks) {
@@ -112,6 +119,20 @@ export async function openTrace(
     }
     return { number: r.number, schemas: [...tableSchemas, ...trackSchemas] };
   });
+
+  // Timestamps from the run subdirectory mtime — free (no xctrace call needed).
+  const runs: RunSummary[] = await Promise.all(
+    runsBase.map(async (r) => {
+      let recordedAt: string | null = null;
+      try {
+        const s = await stat(join(tracePath, `Run ${r.number}.run`));
+        recordedAt = s.mtime.toISOString();
+      } catch {
+        // Run directory not found or inaccessible — timestamp stays null.
+      }
+      return { ...r, recordedAt };
+    })
+  );
 
   // Reset for instruments loop.
   seenTrackDetails.clear();

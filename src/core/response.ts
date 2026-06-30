@@ -48,7 +48,7 @@ export function actionsAfterOpen(sessionId: string): NextAction[] {
     {
       tool: "list_instruments",
       args: { sessionId },
-      description: "List all instruments and schemas in this trace with row counts.",
+      description: "List all schemas with documentation and cross-run diffs — use when suggestedStart is absent or doesn't match your goal.",
     },
     {
       tool: "describe_schema",

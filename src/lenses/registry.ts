@@ -1,15 +1,17 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { Lens } from "./types.js";
+import type { Lens, QuickStart } from "./types.js";
 import type { NextAction } from "../core/response.js";
 
 export class LensRegistry {
   private readonly byInstrument = new Map<string, Lens>();
+  private readonly allLenses: Lens[] = [];
 
   /**
    * Register a lens. Its schema names are indexed for fast lookup.
    * Does not call registerTools — do that separately against the McpServer.
    */
   register(lens: Lens): void {
+    this.allLenses.push(lens);
     for (const instrument of lens.instruments) {
       this.byInstrument.set(instrument, lens);
     }
@@ -37,6 +39,19 @@ export class LensRegistry {
    */
   nextActions(sessionId: string, schema: string, run: number): NextAction[] {
     return this.get(schema)?.nextActions(sessionId, schema, run) ?? [];
+  }
+
+  /**
+   * Return a suggestedStart from the first lens that recognises the given
+   * schema names, or null if no lens matches. Used by open_trace to give the
+   * agent a cheap, pre-filled next call without any intermediate navigation.
+   */
+  quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
+    for (const lens of this.allLenses) {
+      const result = lens.quickStart?.(schemas, sessionId, run);
+      if (result) return result;
+    }
+    return null;
   }
 }
 

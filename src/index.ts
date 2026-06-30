@@ -25,6 +25,7 @@ import type { Lens } from "./lenses/index.js";
 import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
+import leaksLens from "./lenses/leaks/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
@@ -53,7 +54,7 @@ const SERVER_VERSION = "0.1.0";
 
 
 /** Lenses to register at startup. Add new lenses here. */
-const LENSES: Lens[] = [fmLens];
+const LENSES: Lens[] = [fmLens, leaksLens];
 
 /**
  * ## Tool description format (behavioral spec, not API docs)
@@ -91,8 +92,10 @@ export function createServer(): McpServer {
       description:
         "Load an Instruments .trace file and return a sessionId for subsequent calls. " +
         "The trace is loaded once and cached — all later tools reuse this session. " +
-        "Returns the list of runs, instruments (schemas), and a coarse timeRange once " +
-        "data is fetched. Always call this first. " +
+        "Returns runs with `recordedAt` timestamps so the agent can identify 'the run I just created'; " +
+        "instruments (schemas); and when a lens recognises the trace type, a `suggestedStart` block " +
+        "with the exact next tool call to make — follow it to reach first real data in 2 calls total. " +
+        "Always call this first. " +
         "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
       inputSchema: {
         path: z.string().describe("Absolute or ~ path to the .trace bundle."),
@@ -103,7 +106,14 @@ export function createServer(): McpServer {
         const result = await openTrace(path);
         const schemas = [...new Set(result.instruments.map((i) => i.schema))];
         const versionWarning = buildVersionWarning(result.xcodeVersion, schemas);
-        const payload = versionWarning ? { ...result, versionWarning } : result;
+        const lastRunNum = Math.max(...result.runs.map((r) => r.number));
+        const lastRunSchemas = result.runs.find((r) => r.number === lastRunNum)?.schemas ?? [];
+        const suggestedStart = registry.quickStart(lastRunSchemas, result.sessionId, lastRunNum);
+        const payload = {
+          ...result,
+          ...(versionWarning && { versionWarning }),
+          ...(suggestedStart && { suggestedStart }),
+        };
         const response = envelope(payload, actionsAfterOpen(result.sessionId));
         return text(toMcpText(response));
       })
@@ -140,10 +150,11 @@ export function createServer(): McpServer {
       title: "List Instruments",
       description:
         "List every instrument (schema/table) in a trace, grouped by run. " +
-        "Returns schema names, row counts (if already fetched), documentation, " +
-        "and whether each schema is present in all runs. Includes a crossRunDiff " +
-        "note when runs differ — e.g. 'run 3 adds: time-sample, context-switch-sample'. " +
-        "Cheap: no xctrace calls. Call this right after open_trace to pick an instrument.",
+        "Returns schema names, row counts (if already fetched), schema documentation, " +
+        "and a crossRunDiff note when runs differ — e.g. 'run 3 adds: time-sample, context-switch-sample'. " +
+        "Cheap: no xctrace calls. " +
+        "Use this when open_trace did not return a suggestedStart, when you need cross-run comparison, " +
+        "or when you want schema documentation before querying.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
       },
