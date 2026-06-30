@@ -17,7 +17,8 @@
 #   ModelInferenceTable, InstructionsTable, FMEventTable, SessionTable, RequestTable
 #   NetworkConnectionStats
 #   time-sample, Allocations__Allocations-List  (synthetic due to size)
-#   swiftui-updates, swiftui-causes, swiftui-changes  (synthetic — private app content + multi-MB)
+#   swiftui-updates, swiftui-causes, swiftui-changes, swiftui-full-causes  (synthetic — private app content + multi-MB)
+#   swiftui-layout-updates, swiftui-update-groups  (synthetic — private app content + 28–183 MB)
 #
 # Adding a new schema:
 #   1. Add a call below in the appropriate section.
@@ -91,13 +92,14 @@ export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTaskLifetime"
 export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTaskStateTable"
 export_schema_table "${TRACE_DIR}/swift.trace" "SwiftTasksInfoTable"
 
-# ── SwiftUI (swiftUI.trace run 1) ────────────────────────────────────────────
-# WARNING: swiftui-updates, swiftui-causes, and swiftui-changes are typically 4–365 MB
-# and contain private app type names (view structs, environment objects). The xcode-27.0
-# fixtures are synthetic. Only commit sanitized or synthetic replacements.
-# swiftui-layout-updates is small and safe — it captures layout pass timing.
-export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-layout-updates"
-# Large tables — review carefully before committing:
+# ── SwiftUI (swiftUI2.trace or similar with Layout Updates enabled) ───────────
+# WARNING: All SwiftUI schemas contain private app type names and are 20 MB – 1.1 GB.
+# The xcode-27.0 fixtures are all synthetic. Only commit sanitized or synthetic replacements.
+# To get the real column schema, export to /tmp first and check size with wc -c.
+# Large tables — review carefully before committing (all are >20 MB in practice):
+# export_schema_table "${TRACE_DIR}/swiftUI2.trace" "swiftui-layout-updates"
+# export_schema_table "${TRACE_DIR}/swiftUI2.trace" "swiftui-update-groups"
+# export_schema_table "${TRACE_DIR}/swiftUI2.trace" "swiftui-full-causes"
 # export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-updates"
 # export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-causes"
 # export_schema_table "${TRACE_DIR}/swiftUI.trace" "swiftui-changes"

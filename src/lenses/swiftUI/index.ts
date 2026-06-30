@@ -7,28 +7,28 @@ import type { NextAction } from "../../core/response.js";
 const SWIFTUI_UPDATES_SCHEMA = "swiftui-updates";
 const SWIFTUI_CHANGES_SCHEMA = "swiftui-changes";
 const SWIFTUI_CAUSES_SCHEMA = "swiftui-causes";
+const SWIFTUI_FULL_CAUSES_SCHEMA = "swiftui-full-causes";
 const SWIFTUI_LAYOUT_UPDATES_SCHEMA = "swiftui-layout-updates";
+const SWIFTUI_UPDATE_GROUPS_SCHEMA = "swiftui-update-groups";
+
+const SWIFTUI_SCHEMAS = new Set([
+  SWIFTUI_UPDATES_SCHEMA,
+  SWIFTUI_CHANGES_SCHEMA,
+  SWIFTUI_CAUSES_SCHEMA,
+  SWIFTUI_FULL_CAUSES_SCHEMA,
+  SWIFTUI_LAYOUT_UPDATES_SCHEMA,
+  SWIFTUI_UPDATE_GROUPS_SCHEMA,
+]);
 
 const swiftUILens: Lens = {
-  instruments: [
-    SWIFTUI_UPDATES_SCHEMA,
-    SWIFTUI_CHANGES_SCHEMA,
-    SWIFTUI_CAUSES_SCHEMA,
-    SWIFTUI_LAYOUT_UPDATES_SCHEMA,
-  ],
+  instruments: [...SWIFTUI_SCHEMAS],
 
   registerTools(_server: McpServer): void {
     // No lens-specific tools — core verbs (query, aggregate, find) work directly on these schemas.
   },
 
   nextActions(_sessionId: string, schema: string, _run: number): NextAction[] {
-    if (
-      schema !== SWIFTUI_UPDATES_SCHEMA &&
-      schema !== SWIFTUI_CHANGES_SCHEMA &&
-      schema !== SWIFTUI_CAUSES_SCHEMA &&
-      schema !== SWIFTUI_LAYOUT_UPDATES_SCHEMA
-    )
-      return [];
+    if (!SWIFTUI_SCHEMAS.has(schema)) return [];
     return [];
   },
 

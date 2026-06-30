@@ -31,10 +31,12 @@ tests/fixtures/xcode-27.0/
     SwiftTaskLifetime.xml         from swift.trace run 1
     SwiftTaskStateTable.xml       from swift.trace run 1
     SwiftTasksInfoTable.xml       from swift.trace run 1
-    swiftui-updates.xml           SYNTHETIC — real data had private app content and was 3.8 MB
+    swiftui-updates.xml           SYNTHETIC — real data had private app content and was 1.57 GB
     swiftui-causes.xml            SYNTHETIC — real data had private app content and was 365 MB
     swiftui-changes.xml           SYNTHETIC — real data had private app content and was 20 MB
-    swiftui-layout-updates.xml    from swiftUI.trace run 1 (no rows — layout updates were disabled in the recording options)
+    swiftui-full-causes.xml       SYNTHETIC — real data had private app content and was 1.1 GB
+    swiftui-layout-updates.xml    SYNTHETIC — real data had private app content and was 183 MB; 3 rows covering uncached/uncached/cached with Medium/Low/no severity
+    swiftui-update-groups.xml     SYNTHETIC — real data was 28 MB; labels use SwiftUI internal layout computer type names
   track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
 ```
