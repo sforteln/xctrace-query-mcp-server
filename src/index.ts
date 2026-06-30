@@ -26,6 +26,7 @@ import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
+import timeProfilerLens from "./lenses/timeProfiler/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
@@ -54,7 +55,7 @@ const SERVER_VERSION = "0.1.0";
 
 
 /** Lenses to register at startup. Add new lenses here. */
-const LENSES: Lens[] = [fmLens, leaksLens];
+const LENSES: Lens[] = [fmLens, leaksLens, timeProfilerLens];
 
 /**
  * ## Tool description format (behavioral spec, not API docs)
