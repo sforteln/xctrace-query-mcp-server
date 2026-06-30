@@ -27,6 +27,12 @@ import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
 import timeProfilerLens from "./lenses/timeProfiler/index.js";
+import networkLens from "./lenses/network/index.js";
+import hangsLens from "./lenses/hangs/index.js";
+import swiftConcurrencyLens from "./lenses/swiftConcurrency/index.js";
+import swiftUILens from "./lenses/swiftUI/index.js";
+import coreDataLens from "./lenses/coreData/index.js";
+import allocationsLens from "./lenses/allocations/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
@@ -55,7 +61,17 @@ const SERVER_VERSION = "0.1.0";
 
 
 /** Lenses to register at startup. Add new lenses here. */
-const LENSES: Lens[] = [fmLens, leaksLens, timeProfilerLens];
+const LENSES: Lens[] = [
+  fmLens,
+  leaksLens,
+  timeProfilerLens,
+  networkLens,
+  hangsLens,
+  swiftConcurrencyLens,
+  swiftUILens,
+  coreDataLens,
+  allocationsLens,
+];
 
 /**
  * ## Tool description format (behavioral spec, not API docs)
