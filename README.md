@@ -57,7 +57,6 @@ claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
 ```
 
 ## Example conversations
-
 ### Opening an existing trace — Hangs instrument
 
 ```
@@ -92,7 +91,7 @@ AI:     [calls start_recording, type "foundation-models", attach to MyApp proces
         Recording started. Interact with the AI feature in your app, then tell me
         when to stop.
 
-User:   Done — I triggered the search feature a few times.
+User:   Done. I triggered the search feature a few times.
 
 AI:     [calls stop_recording]
         Trace saved. Opening it now.
@@ -118,55 +117,49 @@ AI:     [calls find_fm_requests, emptyContext true]
         request was "bluetooth settings" — worth checking whether that term is covered
         in your indexed content.
 ```
-
 ---
-
-The server always returns a `suggestedStart` in the `open_trace` response — a pre-filled tool call that gets you to the key data in one step for the most common instruments. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
+The server always returns a `suggestedStart` in the `open_trace` response  a pre-filled tool call that gets you to the key data in one step for the most common instruments. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
 
 ## If the AI seems stuck
-
 These prompts reliably get things moving again:
-
 - **"What does suggestedStart say?"** — The `open_trace` response includes a ready-to-run first call. Ask the AI to read it and follow it.
 - **"List all instruments in this trace."** — `list_instruments` shows every schema with its row count and the AI can pick the most relevant one.
 - **"Describe the schema for [schema name] before you query it."** — `describe_schema` returns each column's role (time, weight, backtrace, etc.) so the AI can form the right query.
 - **"I want to look at run 2, not the most recent run."** — The AI defaults to the most recent run; remind it that `open_trace` returned all run numbers and it can pass a different one.
 - **"Use aggregate to find the top 10 by [metric]."** — When the AI is fetching raw rows without summarising, pushing it toward `aggregate` usually surfaces the signal faster.
 
-## Supported instruments and schemas
+## Supported instruments
 
-Verified against **Xcode 27.0**. The server emits a `versionWarning` in `open_trace` when it encounters an Xcode version it hasn't seen before — that's the signal to add support (see below).
+The server emits a `versionWarning` in `open_trace` when it encounters an Xcode version it hasn't seen before — that's the signal to add support (see below).
 
-| Instrument | Schemas |
-|------------|---------|
-| Foundation Models | `ModelInferenceTable`, `InstructionsTable`, `FMEventTable`, `RequestTable`, `SessionTable`, `ModelLoadingTable`, `ToolTable` |
-| Hangs | `potential-hangs`, `hang-risks` |
-| Hitches | `hitches` |
-| Network | `NetworkConnectionStats`, `network-connection-update`, `network-connection-detected` |
-| Core Data Faults | `core-data-fault`, `core-data-relationship-fault` |
-| Core Data Fetches | `core-data-fetch` |
-| Core Data Saves | `core-data-save` |
-| Swift Concurrency | `SwiftTaskLifetime`, `SwiftTaskStateTable`, `SwiftTasksInfoTable` |
-| Time Profiler | `time-sample` |
-| Allocations | `Allocations/Allocations-List` |
-| Leaks | `Leaks/Leaks` |
+| Instrument | Xcode 27.0 |
+|------------|:----------:|
+| Foundation Models | ✅ |
+| Hangs | ✅ |
+| Animation Hitches | ✅ |
+| Network | ✅ |
+| Core Data | ✅ |
+| Swift Concurrency | ✅ |
+| Time Profiler | ✅ |
+| Allocations | ✅ |
+| Leaks | ✅ |
+| SwiftUI | ⚠️ |
 
-Any schema not in this table still works with the universal core verbs (`query`, `aggregate`, `describe_schema`, `find`) — it just won't have a curated lens or a `suggestedStart` shortcut.
+✅ Verified — fixtures exist and the instrument has a curated quickstart shortcut.  
+⚠️ Detected — the instrument is recognised but has no verified fixture yet; core navigation verbs still work.
+
+Any instrument not in this table is still navigable via `describe_schema`, `query`, `aggregate`, and `find` — it just won't have a curated shortcut. Open a PR to add verified support (see below).
 
 ## Adding support for a new Xcode version
-
 When you see a `versionWarning` in `open_trace`, it means the server hasn't seen your Xcode version before and is falling back to the closest known rules. To add full support:
-
 1. **Checkout the repo and create a branch** — `git checkout -b adding-compatibility-<version>-AllSchemas`
 2. **Record a trace** with each instrument type using your Xcode version
 3. **Start a Claude session** in the repo directory and give it the trace files. Say: *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add Xcode `<version>` support using the traces in `<directory>`."*
 4. **Review the PR** the AI creates — check that no fixture contains sensitive content (real user prompts, real IP addresses, real process names)
 5. **Open the PR** against this repo
-
 The full step-by-step is in [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md).
 
 ## Adding a new instrument
-
 This is easier than it sounds. The universal core verbs already work on any instrument the engine can parse — "adding an instrument" means adding test fixtures so the server knows what column shapes to expect, and optionally adding a curated lens for smarter navigation.
 
 **Step 1 — Add compatibility (mechanical, one PR):**  
@@ -174,7 +167,6 @@ Export XML from a real trace, add it as a fixture, update `VERIFIED_PAIRS` in `v
 
 **Step 2 — Add a curated lens (optional, second PR):**  
 A lens adds a `quickStart` shortcut (so `open_trace` immediately suggests the right first call) and optionally adds domain-specific tool verbs. This step requires understanding what the instrument measures and what "suspicious" output looks like — the contributor guide explains what's expected.
-
 See [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md) for the full workflow, PR checklist, and privacy review guidelines.
 
 ## Develop
@@ -188,7 +180,6 @@ npm run watch     # incremental rebuilds
 ```
 
 To enable session logging (useful for debugging which tools the agent selects):
-
 ```bash
 claude mcp add instruments-mcp-server -- node /path/to/dist/index.js --log
 # Logs appear in ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
