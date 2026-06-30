@@ -291,6 +291,16 @@ const fmLens: Lens = {
     );
   },
 
+  quickStart(schemas: string[], sessionId: string, run: number) {
+    if (!schemas.includes(FM_SCHEMA)) return null;
+    return {
+      schema: FM_SCHEMA,
+      tool: "list_fm_requests",
+      args: { sessionId, run, limit: 50 },
+      hint: "Foundation Models trace — list_fm_requests shows all inference calls with timing, token counts, and error flags",
+    };
+  },
+
   nextActions(sessionId: string, schema: string, run: number): NextAction[] {
     if (schema !== FM_SCHEMA) return [];
     return [
