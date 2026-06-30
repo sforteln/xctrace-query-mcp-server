@@ -56,6 +56,37 @@ const coreDataLens: Lens = {
       };
     }
 
+    if (schemas.includes(REL_FAULT_SCHEMA)) {
+      return {
+        schema: REL_FAULT_SCHEMA,
+        tool: "aggregate",
+        args: {
+          sessionId,
+          schema: REL_FAULT_SCHEMA,
+          run,
+          groupBy: "relationship",
+          op: "count",
+          topN: 10,
+        },
+        hint: "Core Data trace — aggregate relationship faults by relationship name shows which associations are traversed most lazily; high counts suggest adding a prefetch key path",
+      };
+    }
+
+    if (schemas.includes(SAVE_SCHEMA)) {
+      return {
+        schema: SAVE_SCHEMA,
+        tool: "query",
+        args: {
+          sessionId,
+          schema: SAVE_SCHEMA,
+          run,
+          sort: { by: "duration", dir: "desc" },
+          limit: 20,
+        },
+        hint: "Core Data trace — save operations sorted by duration shows the slowest commits; check the backtrace column to find call sites causing expensive saves",
+      };
+    }
+
     return null;
   },
 };
