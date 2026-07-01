@@ -18,6 +18,7 @@ import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
+import { correlate } from "./core/correlate.js";
 import { callTree } from "./core/callTree.js";
 import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
@@ -399,6 +400,83 @@ export function createServer(): McpServer {
         );
         return text(toMcpText(response));
       })
+  );
+
+  // ── correlate ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "correlate",
+    {
+      title: "Correlate Intervals with Events",
+      description:
+        "Find which point events (schema B, e.g. core-data-fetch) fall inside which time " +
+        "intervals (schema A, e.g. swiftui-updates' [start, start+duration] windows) — the " +
+        "cross-instrument causation primitive. Matched on the same thread by default, since " +
+        "two unrelated interval/event pairs can otherwise overlap in time by coincidence; " +
+        "pass matchThread:false to correlate on time alone (weaker evidence). Grouped by an " +
+        "intervals-schema label column (e.g. view-name) so the result reads as a direct " +
+        "answer — 'SidebarView.body contained 445 Feature fetches' — not a raw per-interval " +
+        "dump. Both schemas must already be in the SAME trace on the SAME clock — use " +
+        "start_recording's `instruments` param to compose them into one recording; two " +
+        "separate recordings can never be correlated this way. " +
+        "`run` defaults to the most recent run. " +
+        "⚠️ Not for aggregating within one schema — use aggregate for that.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        intervalsSchema: z.string().describe("Schema carrying the [start, start+duration] windows, e.g. \"swiftui-updates\"."),
+        eventsSchema: z.string().describe("Schema carrying point timestamps to test for containment, e.g. \"core-data-fetch\"."),
+        groupBy: z.string().describe("Mnemonic of an intervalsSchema label column to group results by, e.g. \"view-name\"."),
+        measure: z
+          .string()
+          .optional()
+          .describe("Mnemonic of an eventsSchema weight column to sum per group, alongside the match count."),
+        matchThread: z
+          .boolean()
+          .optional()
+          .describe("Require the matched event to be on the same thread as the interval (default true)."),
+        intervalsFilter: z
+          .record(z.union([z.string(), z.number()]))
+          .optional()
+          .describe("Pre-filter intervals before joining: { mnemonic: value }."),
+        eventsFilter: z
+          .record(z.union([z.string(), z.number()]))
+          .optional()
+          .describe("Pre-filter events before joining: { mnemonic: value }."),
+        topN: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("Max groups to return, heaviest by matched-event-count first (default 10)."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+      },
+    },
+    async ({ sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, run }) =>
+      safeToolWithLog(
+        "correlate",
+        { sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, run },
+        async () => {
+          const result = await correlate(sessionId, intervalsSchema, eventsSchema, {
+            run, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN,
+          });
+          const topKey = result.groups[0]?.key ?? null;
+          const actions = [
+            {
+              tool: "query",
+              args: { sessionId, schema: intervalsSchema, run: result.run, ...(topKey ? { filter: { [groupBy]: topKey } } : {}), limit: 20 },
+              description: topKey
+                ? `Read the individual "${topKey}" intervals to see specific rows.`
+                : "Query the intervals schema directly.",
+            },
+            {
+              tool: "query",
+              args: { sessionId, schema: eventsSchema, run: result.run, limit: 20 },
+              description: "Read the individual events to see specific rows.",
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        }
+      )
   );
 
   // ── call_tree ─────────────────────────────────────────────────────────────

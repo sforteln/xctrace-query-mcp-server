@@ -71,7 +71,7 @@ export interface AggregateResult {
 
 // ─── Value formatting ─────────────────────────────────────────────────────────
 
-function formatValue(value: number, unit: WeightUnit | undefined, op: AggOp): string {
+export function formatValue(value: number, unit: WeightUnit | undefined, op: AggOp): string {
   if (op === "count") return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
   if (!unit || unit === "unknown") return value.toFixed(2);
 
