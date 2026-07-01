@@ -22,6 +22,15 @@ const STATS_WEIGHT = hintFor(ALLOCATIONS_STATS_SCHEMA)!.primaryWeight!;
 // Track-detail attributes have no separate raw-nanosecond/formatted split like
 // schema-table cells do — timestamp's `.raw` is this same formatted string, not
 // a number. Pre-attach snapshot rows all carry this exact sentinel value.
+//
+// Independently verified against Instruments.app itself (not just inferred
+// from this timestamp): opening the same trace directly in the Leaks/
+// Allocations UI, some leak backtraces show "No stack trace is available for
+// this leak. It may have been allocated before the recording started." —
+// Apple's own UI confirms the same root cause this sentinel detects: malloc
+// stack logging only captures allocations that happen DURING the recording,
+// so anything already live when Instruments attached has no stack to show,
+// in principle, not just in this parser.
 const ZERO_TIMESTAMP = "00:00.000.000";
 
 /**
