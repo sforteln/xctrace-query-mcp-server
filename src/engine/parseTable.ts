@@ -393,6 +393,16 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
       resolve(table);
     };
 
+    // sax's 64 KB default (a global, not per-instance) rejects with "Max
+    // buffer length exceeded: attribValue" on a single oversized attribute
+    // value — real trace data hits this on swiftui-updates/swiftui-layout-
+    // updates, whose view-hierarchy/full-cause-graph-node blobs can exceed
+    // it even on a small (15s/211MB) trace. Raising the ceiling is a
+    // mitigation, not a fix — an even larger blob can still exceed it; the
+    // real fix is projecting these known-unbounded columns out before they
+    // ever reach the parser (tracked as a separate, deferred prompt: column
+    // projection at parse time).
+    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
     const saxStream = sax.createStream(true, { trim: false, normalize: false });
 
     const pathStack: string[] = [];

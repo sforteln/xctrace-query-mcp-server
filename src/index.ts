@@ -465,7 +465,10 @@ export function createServer(): McpServer {
         "intervals (schema A, e.g. swiftui-updates' [start, start+duration] windows) — the " +
         "cross-instrument causation primitive. Matched on the same thread by default, since " +
         "two unrelated interval/event pairs can otherwise overlap in time by coincidence; " +
-        "pass matchThread:false to correlate on time alone (weaker evidence). Grouped by an " +
+        "pass matchThread:false to correlate on time alone (weaker evidence) — confirmed in " +
+        "practice that some instrument pairs record thread identity differently, which makes " +
+        "matchThread:true silently return zero matches even when events genuinely fall inside " +
+        "the intervals; a threadMismatchWarning field flags exactly this case. Grouped by an " +
         "intervals-schema label column (e.g. view-name) so the result reads as a direct " +
         "answer — 'SidebarView.body contained 445 Feature fetches' — not a raw per-interval " +
         "dump. Both schemas must already be in the SAME trace on the SAME clock — use " +

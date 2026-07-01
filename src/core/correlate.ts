@@ -77,6 +77,16 @@ export interface CorrelateResult {
   totalGroups: number;
   groups: CorrelateGroup[];
   unit?: WeightUnit;
+  /**
+   * Present only when matchThread found zero matches despite non-empty
+   * intervals/events — the two schemas may record thread identity
+   * differently (confirmed in practice: SwiftUI update-groups vs. Data
+   * Fetches don't share a thread fmt even for same-thread work), which
+   * makes matchThread:true silently report "no causation" when causation
+   * exists. Suggests retrying with matchThread:false before concluding
+   * there's genuinely no temporal overlap.
+   */
+  threadMismatchWarning?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -172,6 +182,9 @@ export async function correlate(
     { intervalCount: number; intervalsWithMatch: number; matchedEventCount: number; measureSum: number }
   >();
   let totalMatchedEvents = 0;
+  // Tracked independent of matchThread so we can tell "genuinely no temporal
+  // overlap" apart from "overlap exists but thread identities didn't match".
+  let temporalCandidates = 0;
 
   for (const row of intervalRows) {
     const groupCell = row[groupBy];
@@ -193,6 +206,7 @@ export async function correlate(
     while (idx < events.length && events[idx].ts <= end) {
       const ev = events[idx];
       idx++;
+      temporalCandidates++;
       if (matchThread && ev.thread !== intervalThread) continue;
       matchedHere++;
       if (measure) {
@@ -224,6 +238,13 @@ export async function correlate(
       : {}),
   }));
 
+  const threadMismatchWarning =
+    matchThread && totalMatchedEvents === 0 && temporalCandidates > 0
+      ? `${temporalCandidates} event(s) fall within an interval's time window but were excluded because their ` +
+        "thread identity didn't match — these two schemas may record thread identity differently. Retry with " +
+        "matchThread:false before concluding there's no causation."
+      : undefined;
+
   return {
     intervalsSchema,
     eventsSchema,
@@ -241,5 +262,6 @@ export async function correlate(
     totalGroups,
     groups: resultGroups,
     ...(measure && unit ? { unit } : {}),
+    ...(threadMismatchWarning ? { threadMismatchWarning } : {}),
   };
 }

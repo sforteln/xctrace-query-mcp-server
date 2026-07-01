@@ -274,6 +274,12 @@ export function parseTrackDetailStream(
       resolve(table);
     };
 
+    // See the matching comment in parseTable.ts's parseTableStream — sax's
+    // 64 KB default MAX_BUFFER_LENGTH (a global, not per-instance) rejects
+    // oversized single attribute values; raised here too since it's a
+    // process-wide sax module property and either streaming parser could
+    // run first.
+    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
     const saxStream = sax.createStream(true, { trim: false, normalize: false });
 
     const pathStack: string[] = [];
