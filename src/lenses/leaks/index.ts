@@ -94,6 +94,60 @@ function buildAllocationJoinAction(
   };
 }
 
+/**
+ * Table-wide version of the same PRE-ATTACHMENT/UNRESOLVED check
+ * buildAllocationJoinAction does per-row — catches the exact plausible-but-
+ * wrong-looking result this whole check exists for: a Leaks/Leaks query
+ * that comes back with real rows (looks usable) but where most/all of them
+ * join to unattributable Allocations records, because the recording was
+ * made via attach and these objects were already live before Instruments
+ * attached. Only runs when Allocations/Allocations List is ALREADY cached
+ * (peek, never fetch) — this is a bonus check on data the caller already
+ * paid for, not a reason to trigger an expensive fetch just for a hint.
+ */
+function unattributableFractionHint(
+  sessionId: string,
+  run: number,
+  allSchemas: string[]
+): NextAction | null {
+  if (!allSchemas.includes(ALLOCATIONS_LIST_SCHEMA)) return null;
+  const leaksTable = peekTable(sessionId, run, LEAKS_SCHEMA);
+  const allocTable = peekTable(sessionId, run, ALLOCATIONS_LIST_SCHEMA);
+  if (!leaksTable || !allocTable || leaksTable.rows.length === 0) return null;
+
+  const allocByAddress = new Map<string, (typeof allocTable.rows)[number]>();
+  for (const row of allocTable.rows) {
+    const addr = row["address"]?.fmt;
+    if (addr) allocByAddress.set(addr, row);
+  }
+
+  let matched = 0;
+  let unattributable = 0;
+  for (const leak of leaksTable.rows) {
+    const addr = leak["address"]?.fmt;
+    if (!addr) continue;
+    const allocRow = allocByAddress.get(addr);
+    if (!allocRow) continue;
+    matched++;
+    const isPreAttach = allocRow["timestamp"]?.fmt === ZERO_TIMESTAMP;
+    const callerFmt = allocRow["responsible-caller"]?.fmt ?? null;
+    if (isPreAttach || callerFmt === null || callerFmt === UNRESOLVED_CALLER) unattributable++;
+  }
+
+  if (matched === 0 || unattributable / matched < 0.5) return null;
+
+  return {
+    tool: "start_recording",
+    args: { type: "leaks-backtraces" },
+    description:
+      `${unattributable}/${matched} leaks have no recoverable stack — most were already ` +
+      "allocated before this recording started capturing (a signature of an attach-mode " +
+      "recording; malloc stack logging only sees allocations made DURING the recording). " +
+      "If you need real callsites, relaunch with launch mode instead of attach and reproduce " +
+      "the leak fresh — attach can never symbolicate these same objects after the fact.",
+  };
+}
+
 const leaksLens: Lens = {
   instruments: [LEAKS_SCHEMA],
 
@@ -119,6 +173,12 @@ const leaksLens: Lens = {
     if (address && allSchemas.includes(ALLOCATIONS_LIST_SCHEMA)) {
       actions.push(buildAllocationJoinAction(sessionId, run, address));
     }
+
+    // Table-wide check — fires regardless of whether get_row supplied a
+    // single row, since this is the strongest signal right after a plain
+    // query/aggregate on Leaks/Leaks (the quickStart's own first call).
+    const wideHint = unattributableFractionHint(sessionId, run, allSchemas);
+    if (wideHint) actions.unshift(wideHint);
 
     actions.push({
       tool: "aggregate",
