@@ -60,6 +60,34 @@ import {
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
 
+// ─── Heap guard ─────────────────────────────────────────────────────────────
+//
+// session.tableCache holds a fully-parsed table in memory for the life of the
+// session, with no eviction (see howSessionsWork.md). Large real traces —
+// swiftui-updates on a busy, multi-instrument recording in particular — can
+// hold enough parsed rows to exceed Node's default old-space limit (~4 GB on
+// most systems), which aborts the ENTIRE process with a fatal OOM. That kills
+// the MCP connection outright (no error reaches the client — it just reads as
+// "Connection closed") and wipes every open session, not just the one query
+// that tripped it. Re-exec with a larger heap if the launch config (Xcode's
+// MCP registration, `claude mcp add`, etc.) didn't already request one,
+// rather than requiring every possible launcher to know to pass this flag.
+// A larger ceiling is a mitigation, not a fix for the underlying unbounded
+// cache growth — an even larger trace can still exceed it.
+const HEAP_MB = Number(process.env.INSTRUMENTS_MCP_MAX_HEAP_MB) || 8192;
+if (
+  process.argv[1] === fileURLToPath(import.meta.url) &&
+  !process.execArgv.some((a) => a.startsWith("--max-old-space-size"))
+) {
+  const { spawnSync } = await import("node:child_process");
+  const result = spawnSync(
+    process.execPath,
+    [`--max-old-space-size=${HEAP_MB}`, ...process.argv.slice(1)],
+    { stdio: "inherit" }
+  );
+  process.exit(result.status ?? 1);
+}
+
 
 /**
  * Lenses to register at startup. Add new lenses here.
