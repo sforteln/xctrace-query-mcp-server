@@ -9,11 +9,14 @@
  *   minDuration (ns)     → duration ≥ minDuration (raw nanoseconds)
  *   hasError             → error-count > 0 (or == 0 when false)
  *   needsReformulation   → response contains '"needsReformulation": true'
- *   emptyContext         → response contains '"referencedSections": []'
- *                          (no help sections were retrieved for the request)
+ *   noCitations          → response contains '"referencedSections": []'
+ *                          (the model cited zero sections in its own output)
  *
- * emptyContext is the flagship: it surfaces the Help-AI bug (requests
- * processed with zero retrieved context) in one call.
+ * noCitations is NOT the same as "no context retrieved" — referencedSections
+ * is the model's own citation list, not the retrieval set fed into the
+ * prompt. A model can receive full context and still cite nothing (e.g. it
+ * declines to answer). To check what was actually retrieved, read the
+ * instructions blob via get_fm_prompt.
  */
 import { findRows } from "../../core/find.js";
 import type { Condition } from "../../core/find.js";
@@ -28,8 +31,8 @@ export interface FindFmRequestsOptions {
   hasError?: boolean;
   /** true → response.needsReformulation is true. */
   needsReformulation?: boolean;
-  /** true → response.referencedSections is empty (no context retrieved). */
-  emptyContext?: boolean;
+  /** true → response.referencedSections is empty (model cited no sections — not the same as no context retrieved). */
+  noCitations?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -76,12 +79,12 @@ function buildConditions(opts: FindFmRequestsOptions): { conditions: Condition[]
     labels.push("!needsReformulation");
   }
 
-  if (opts.emptyContext === true) {
+  if (opts.noCitations === true) {
     conditions.push({ col: "response", op: "contains", val: '"referencedSections": []' });
-    labels.push("emptyContext (no sections retrieved)");
-  } else if (opts.emptyContext === false) {
+    labels.push("noCitations (model cited zero sections)");
+  } else if (opts.noCitations === false) {
     conditions.push({ col: "response", op: "not-contains", val: '"referencedSections": []' });
-    labels.push("hasContext");
+    labels.push("hasCitations");
   }
 
   return { conditions, labels };
@@ -127,6 +130,7 @@ export async function findFmRequests(
       totalTokens: cells["total-tokens"] ?? null,
       promptTokens: cells["prompt-tokens"] ?? null,
       responseTokens: cells["response-tokens"] ?? null,
+      cachedTokens: cells["cached-tokens"] ?? null,
       errorCount,
       hasError: errorCount > 0,
       resolve: cells["resolve"] ?? null,

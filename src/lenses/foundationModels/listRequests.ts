@@ -27,6 +27,8 @@ export interface FmRequestRow {
   totalTokens: string | null;
   promptTokens: string | null;
   responseTokens: string | null;
+  /** Tokens served from cache instead of re-encoded — 0 here is a missed-caching signal. */
+  cachedTokens: string | null;
   /** Numeric error count — >0 means hasError. */
   errorCount: number;
   hasError: boolean;
@@ -86,6 +88,7 @@ export async function listFmRequests(
       totalTokens: row["total-tokens"]?.fmt ?? null,
       promptTokens: row["prompt-tokens"]?.fmt ?? null,
       responseTokens: row["response-tokens"]?.fmt ?? null,
+      cachedTokens: row["cached-tokens"]?.fmt ?? null,
       errorCount,
       hasError: errorCount > 0,
       resolve: row["resolve"]?.fmt ?? null,

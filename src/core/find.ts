@@ -7,7 +7,7 @@
  *
  * This is the substrate for lens-specific finders. For example:
  *   FM hasError     → [{ col: "error-count",  op: "gt",       val: 0 }]
- *   FM emptyContext → [{ col: "resolve",       op: "contains", val: "emptyContext" }]
+ *   FM noCitations  → [{ col: "response",      op: "contains", val: "referencedSections\": []" }]
  *   FM needsReform  → [{ col: "response",      op: "contains", val: "needsReformulation\": true" }]
  *   FM slow request → [{ col: "duration",      op: "gt",       val: 5000000000 }]  // >5 s in ns
  */

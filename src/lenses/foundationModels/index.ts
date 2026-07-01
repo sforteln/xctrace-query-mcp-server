@@ -7,6 +7,7 @@ import { safeTool, text } from "../../core/toolUtils.js";
 import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
 import { getFmRequest, getFmResponse, getFmEvents, getFmPrompt } from "./getRequest.js";
 import { findFmRequests } from "./findRequests.js";
+import { getFmTiming } from "./getTiming.js";
 
 // Tool description format: see the comment above createServer() in src/index.ts.
 // Enforced by tests/driftGuard.test.ts — verb-led openers, ⚠️ Not for blocks, no stale identifiers.
@@ -21,15 +22,16 @@ const fmLens: Lens = {
         title: "List FM Requests",
         description:
           "List Foundation Models inference requests as compact one-liners: " +
-          "start time, duration, agent name, prompt snippet (80 chars), token counts, " +
-          "error flag, and resolve phase. " +
+          "start time, duration, agent name, prompt snippet (80 chars), token counts " +
+          "(including cachedTokens — 0 across requests that share a prompt prefix is a " +
+          "missed prompt-caching signal), error flag, and resolve phase. " +
           "Each user request generates two rows — a Yellow 'Prompt' inference and an " +
           "Orange 'Resolve' step; the resolve field ('1Prompt', '1Resolve', …) encodes " +
           "which phase and which request number. " +
           "Use get_row(tableIndex) for full detail on any row. " +
           "`run` defaults to the most recent run. " +
           "Prefer find_fm_requests when you need filtered results — it supports " +
-          "hasError, minDuration, emptyContext, and needsReformulation predicates.",
+          "hasError, minDuration, noCitations, and needsReformulation predicates.",
         inputSchema: {
           sessionId: z.string().describe("The sessionId returned by open_trace."),
           run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
@@ -49,12 +51,17 @@ const fmLens: Lens = {
             {
               tool: "find_fm_requests",
               args: { sessionId, run: result.run },
-              description: "Filter requests by predicate — hasError, minDuration, emptyContext, needsReformulation.",
+              description: "Filter requests by predicate — hasError, minDuration, noCitations, needsReformulation.",
             },
             {
               tool: "aggregate",
               args: { sessionId, schema: FM_SCHEMA, run: result.run, groupBy: "agent-name", measure: "duration", op: "sum", topN: 10 },
               description: "Total duration by agent to find which agent spent the most time.",
+            },
+            {
+              tool: "get_fm_timing",
+              args: { sessionId, rowIndex: 0, run: result.run },
+              description: "Prefill-vs-generation latency split and cache stats for a request (replace rowIndex with tableIndex from results).",
             },
           ];
           if (result.hasMore) {
@@ -75,8 +82,8 @@ const fmLens: Lens = {
         title: "Get FM Request Detail",
         description:
           "Fetch full detail for one FM inference row by its tableIndex (from list_fm_requests). " +
-          "Returns timing, agent, full prompt, parsed response JSON, token breakdown, " +
-          "resolve phase, error info. " +
+          "Returns one aggregate duration, agent, full prompt, parsed response JSON, token breakdown, " +
+          "resolve phase, error info — use get_fm_timing for the prefill-vs-generation split within that duration. " +
           "instruction/instructions columns are intentionally omitted — they contain the " +
           "full system prompt which can be several KB. Use get_fm_prompt when you need it explicitly. " +
           "`run` defaults to the most recent run. " +
@@ -100,6 +107,11 @@ const fmLens: Lens = {
               tool: "get_fm_events",
               args: { sessionId, rowIndex, run: result.resolve ? undefined : run },
               description: "See all phases (Prompt → Resolve) for this request.",
+            },
+            {
+              tool: "get_fm_timing",
+              args: { sessionId, rowIndex, run: result.resolve ? undefined : run },
+              description: "Prefill vs. generation latency split and cache stats (not visible in this row's duration field).",
             },
             {
               tool: "get_fm_prompt",
@@ -188,6 +200,48 @@ const fmLens: Lens = {
         })
     );
 
+    // ── get_fm_timing ───────────────────────────────────────────────────────
+    server.registerTool(
+      "get_fm_timing",
+      {
+        title: "Get FM Request Timing",
+        description:
+          "Return the prefill/generation latency split and cache stats for one FM request, " +
+          "parsed from FMEventTable's request_start/response_start/response_complete events. " +
+          "prefillMs (time to first token) is typically 80%+ of wall time for on-device inference " +
+          "and is invisible in get_fm_request's single duration field. cachedTokenCount is the " +
+          "missed-optimization signal — 0 across requests that share a large invariant prompt " +
+          "prefix (fixed instructions, injected schema, same retrieved sections) means the model " +
+          "is re-encoding that prefix every call instead of reusing a cached KV state. " +
+          "Returns null fields if FMEventTable isn't present in this trace. " +
+          "`run` defaults to the most recent run. " +
+          "⚠️ Not for cold-start via ModelLoadingTable — that table is often teardown-only in " +
+          "attach-mode recordings; compare prefillMs across requests instead.",
+        inputSchema: {
+          sessionId: z.string().describe("The sessionId returned by open_trace."),
+          rowIndex: z.number().int().min(0).describe("tableIndex from list_fm_requests."),
+          run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+        },
+      },
+      async ({ sessionId, rowIndex, run }) =>
+        safeTool(async () => {
+          const result = await getFmTiming(sessionId, rowIndex, { run });
+          const actions: NextAction[] = [
+            {
+              tool: "get_fm_request",
+              args: { sessionId, rowIndex, run },
+              description: "Full request detail (timing summary, tokens, error info).",
+            },
+            {
+              tool: "list_fm_requests",
+              args: { sessionId, run },
+              description: "Return to the full request list.",
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        })
+    );
+
     // ── get_fm_prompt ───────────────────────────────────────────────────────
     server.registerTool(
       "get_fm_prompt",
@@ -234,8 +288,10 @@ const fmLens: Lens = {
           "minDuration (nanoseconds, inclusive), " +
           "hasError (true = error-count > 0), " +
           "needsReformulation (true = response contains needsReformulation:true), " +
-          "emptyContext (true = no help sections retrieved — referencedSections is empty; " +
-          "this is the flagship predicate that surfaces the Help-AI context bug in one call). " +
+          "noCitations (true = response.referencedSections is empty — the model cited zero " +
+          "sections in its own output; NOT the same as no context being retrieved — a request " +
+          "can retrieve full context and still get zero citations if the model declines to " +
+          "answer. Check get_fm_prompt to see what was actually retrieved). " +
           "Returns compact one-liners with tableIndex for get_fm_request drill-down. " +
           "`run` defaults to the most recent run. " +
           "⚠️ Not for listing all requests without filters — use list_fm_requests for the unfiltered view.",
@@ -254,18 +310,18 @@ const fmLens: Lens = {
             .boolean()
             .optional()
             .describe("true: response JSON contains needsReformulation:true."),
-          emptyContext: z
+          noCitations: z
             .boolean()
             .optional()
-            .describe("true: response.referencedSections is empty — no context was retrieved for the request."),
+            .describe("true: response.referencedSections is empty — the model cited zero sections (not the same as no context retrieved)."),
           limit: z.number().int().min(1).max(200).optional().describe("Max results (default 50)."),
           offset: z.number().int().min(0).optional().describe("Pagination offset (default 0)."),
         },
       },
-      async ({ sessionId, run, minDuration, hasError, needsReformulation, emptyContext, limit, offset }) =>
+      async ({ sessionId, run, minDuration, hasError, needsReformulation, noCitations, limit, offset }) =>
         safeTool(async () => {
           const result = await findFmRequests(sessionId, {
-            run, minDuration, hasError, needsReformulation, emptyContext, limit, offset,
+            run, minDuration, hasError, needsReformulation, noCitations, limit, offset,
           });
           const actions: NextAction[] = [
             {
@@ -282,7 +338,7 @@ const fmLens: Lens = {
           if (result.hasMore) {
             actions.unshift({
               tool: "find_fm_requests",
-              args: { sessionId, run: result.run, minDuration, hasError, needsReformulation, emptyContext, offset: result.offset + result.returnedRows, limit: result.limit },
+              args: { sessionId, run: result.run, minDuration, hasError, needsReformulation, noCitations, offset: result.offset + result.returnedRows, limit: result.limit },
               description: "Fetch the next page of matching requests.",
             });
           }
@@ -311,8 +367,8 @@ const fmLens: Lens = {
       },
       {
         tool: "find_fm_requests",
-        args: { sessionId, run, emptyContext: true },
-        description: "Find requests with no context retrieved (emptyContext bug) — or filter by hasError, needsReformulation, minDuration.",
+        args: { sessionId, run, noCitations: true },
+        description: "Find requests where the model cited zero sections (not the same as no context retrieved — check get_fm_prompt for that) — or filter by hasError, needsReformulation, minDuration.",
       },
     ];
   },
