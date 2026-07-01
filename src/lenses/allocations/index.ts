@@ -3,9 +3,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
+import { hintFor } from "../../engine/roleHints.js";
 
-const ALLOCATIONS_LIST_SCHEMA = "Allocations/Allocations-List";
+const ALLOCATIONS_LIST_SCHEMA = "Allocations/Allocations List";
 const ALLOCATIONS_STATS_SCHEMA = "Allocations/Statistics";
+// Pinned in roleHints.ts — read from there instead of re-hardcoding the
+// mnemonic here, so a future column rename only needs updating in one place.
+const LIST_WEIGHT = hintFor(ALLOCATIONS_LIST_SCHEMA)!.primaryWeight!;
+const STATS_WEIGHT = hintFor(ALLOCATIONS_STATS_SCHEMA)!.primaryWeight!;
 
 const allocationsLens: Lens = {
   instruments: [ALLOCATIONS_LIST_SCHEMA, ALLOCATIONS_STATS_SCHEMA],
@@ -24,7 +29,7 @@ const allocationsLens: Lens = {
             schema: ALLOCATIONS_LIST_SCHEMA,
             run,
             groupBy: "responsible-library",
-            measure: "size",
+            measure: LIST_WEIGHT,
             op: "sum",
             topN: 20,
           },
@@ -38,7 +43,7 @@ const allocationsLens: Lens = {
             schema: ALLOCATIONS_STATS_SCHEMA,
             run,
             groupBy: "category",
-            measure: "persistent-bytes",
+            measure: STATS_WEIGHT,
             op: "sum",
             topN: 20,
           },
@@ -56,7 +61,7 @@ const allocationsLens: Lens = {
             schema: ALLOCATIONS_LIST_SCHEMA,
             run,
             groupBy: "category",
-            measure: "size",
+            measure: LIST_WEIGHT,
             op: "sum",
             topN: 20,
           },
@@ -78,7 +83,7 @@ const allocationsLens: Lens = {
         schema: ALLOCATIONS_LIST_SCHEMA,
         run,
         groupBy: "category",
-        measure: "size",
+        measure: LIST_WEIGHT,
         op: "sum",
         topN: 10,
       },

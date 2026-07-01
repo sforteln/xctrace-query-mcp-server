@@ -85,7 +85,7 @@ export const VERIFIED_PAIRS = new Set<string>([
   "27.0:time-sample",
   "27.0:ToolTable",
   // ── xcode-27.0 track-detail ──────────────────────────────────────────────
-  "27.0:Allocations/Allocations-List",
+  "27.0:Allocations/Allocations List",
   "27.0:Leaks/Leaks",
 ]);
 

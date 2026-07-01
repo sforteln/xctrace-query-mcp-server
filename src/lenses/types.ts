@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { NextAction } from "../core/response.js";
+import type { CellDetail } from "../core/getRow.js";
 
 /**
  * Structured entry-point recommendation returned by a lens's quickStart() hook.
@@ -54,8 +55,20 @@ export interface Lens {
   /**
    * All schema names present in `run` — enables cross-instrument suggestions
    * (e.g. Leaks offering Allocations queries only when Allocations is present).
+   *
+   * `row` is present only when called from get_row (a specific row was just
+   * fetched) — absent from query/aggregate/find, which have no single row in
+   * context. Use it to pre-fill a concrete next call with a real value from
+   * this row (e.g. joining a leak's `address` into an Allocations filter)
+   * instead of a generic schema-level suggestion.
    */
-  nextActions(sessionId: string, schema: string, run: number, allSchemas: string[]): NextAction[];
+  nextActions(
+    sessionId: string,
+    schema: string,
+    run: number,
+    allSchemas: string[],
+    row?: Record<string, CellDetail | null>
+  ): NextAction[];
 
   /**
    * Optional: return a cheap entry-point recommendation for open_trace based

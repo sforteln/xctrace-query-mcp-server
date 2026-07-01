@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "./types.js";
 import type { NextAction } from "../core/response.js";
+import type { CellDetail } from "../core/getRow.js";
 import { getSession } from "../engine/session.js";
 
 export class LensRegistry {
@@ -37,13 +38,21 @@ export class LensRegistry {
   /**
    * Return lens-specific nextActions for a schema, or [] if no lens is
    * registered for it. Safe to spread into any nextActions array.
+   *
+   * Pass `row` when called from get_row so a lens can pre-fill a concrete
+   * next call from a real value on this row (see Lens.nextActions).
    */
-  nextActions(sessionId: string, schema: string, run: number): NextAction[] {
+  nextActions(
+    sessionId: string,
+    schema: string,
+    run: number,
+    row?: Record<string, CellDetail | null>
+  ): NextAction[] {
     const lens = this.get(schema);
     if (!lens) return [];
     const runEntry = getSession(sessionId).runs.find((r) => r.number === run);
     const allSchemas = runEntry?.schemas ?? [];
-    return lens.nextActions(sessionId, schema, run, allSchemas);
+    return lens.nextActions(sessionId, schema, run, allSchemas, row);
   }
 
   /**

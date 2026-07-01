@@ -3,10 +3,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
+import { hintFor } from "../../engine/roleHints.js";
 
 const HANGS_SCHEMA = "potential-hangs";
 const HITCHES_SCHEMA = "hitches";
 const HANG_RISKS_SCHEMA = "hang-risks";
+
+// Pinned in roleHints.ts — read from there instead of re-hardcoding the mnemonic.
+const HANGS_WEIGHT = hintFor(HANGS_SCHEMA)!.primaryWeight!;
 
 const HANGS_SCHEMAS = [HANGS_SCHEMA, HITCHES_SCHEMA, HANG_RISKS_SCHEMA];
 
@@ -31,10 +35,10 @@ const hangsLens: Lens = {
           sessionId,
           schema: HANGS_SCHEMA,
           run,
-          sort: { by: "duration", dir: "desc" },
+          sort: { by: HANGS_WEIGHT, dir: "desc" },
           limit: 20,
         },
-        hint: "Hangs & Hitches trace — potential-hangs sorted by duration shows the worst hangs first; check hang-type (main-thread vs. background) and thread for root-cause clues",
+        hint: `Hangs & Hitches trace — potential-hangs sorted by ${HANGS_WEIGHT} shows the worst hangs first; check hang-type (main-thread vs. background) and thread for root-cause clues`,
       };
     }
 

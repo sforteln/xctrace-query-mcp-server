@@ -130,7 +130,9 @@ export function actionsAfterDescribeSchema(
   actions.push({
     tool: "get_row",
     args: { sessionId, schema, run, rowIndex: 0 },
-    description: "Fetch one row's full detail including resolved backtrace.",
+    description: opts.hasBacktrace
+      ? "Fetch one row's full detail including resolved backtrace."
+      : "Fetch one row's full detail (this schema has no backtrace column).",
   });
   return actions;
 }
@@ -213,12 +215,20 @@ export function actionsAfterGetRow(
 }
 
 /** Actions available after querying or aggregating a table. */
-export function actionsAfterQuery(sessionId: string, schema: string, run: number, hasMore: boolean): NextAction[] {
+export function actionsAfterQuery(
+  sessionId: string,
+  schema: string,
+  run: number,
+  hasMore: boolean,
+  hasBacktrace: boolean
+): NextAction[] {
   const actions: NextAction[] = [
     {
       tool: "get_row",
       args: { sessionId, schema, run, rowIndex: 0 },
-      description: "Fetch the full detail for a specific row including resolved backtrace.",
+      description: hasBacktrace
+        ? "Fetch the full detail for a specific row including resolved backtrace."
+        : "Fetch the full detail for a specific row (this schema has no backtrace column).",
     },
     {
       tool: "aggregate",

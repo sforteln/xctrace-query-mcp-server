@@ -260,33 +260,3 @@ export function assertUnambiguousSchema(
     }
   );
 }
-
-/**
- * Return a concise summary of the model — one entry per unique schema name
- * (taking the first run's entry) with its documentation and column count.
- * Used by list_instruments.
- */
-export function summariseSchemas(model: SchemaModel): Array<{
-  schema: string;
-  runs: number[];
-  documentation: string | null;
-  hasCallstack: boolean;
-  isFoundationModels: boolean;
-  colCount: number | null;
-}> {
-  const bySchema = new Map<string, TableSchema[]>();
-  for (const entry of model) {
-    const list = bySchema.get(entry.toc.schema) ?? [];
-    list.push(entry);
-    bySchema.set(entry.toc.schema, list);
-  }
-
-  return Array.from(bySchema.entries()).map(([schema, entries]) => ({
-    schema,
-    runs: entries.map((e) => e.run),
-    documentation: entries[0].toc.documentation,
-    hasCallstack: entries.some((e) => e.toc.callstack !== null),
-    isFoundationModels: entries.some((e) => e.toc.swiftTable !== null),
-    colCount: entries[0].cols?.length ?? null,
-  }));
-}

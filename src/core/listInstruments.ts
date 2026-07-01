@@ -12,6 +12,22 @@
 import { getSession, lastRun as sessionLastRun } from "../engine/session.js";
 import { findOne } from "../engine/schemaModel.js";
 import { resolveRules, type RulesConfidence } from "../engine/versionRules.js";
+import { hintFor } from "../engine/roleHints.js";
+
+/**
+ * Track-detail schemas (Allocations/Leaks) have no TOC `callstack` attribute
+ * at all — that's schema-table-only metadata — so the TOC check alone always
+ * reads false for them regardless of whether the schema actually carries
+ * inline symbolicated backtraces (e.g. Allocations/Allocations List). Fall
+ * back to the pinned role-hint table, which is cheap (no data fetch) and
+ * declares backtrace-role columns for known schemas independent of any
+ * particular trace's captured data.
+ */
+function hasPinnedBacktraceColumn(schema: string): boolean {
+  const hint = hintFor(schema);
+  if (!hint) return false;
+  return Object.values(hint.columns).some((c) => c.role === "backtrace");
+}
 
 export interface SchemaInfo {
   schema: string;
@@ -94,7 +110,8 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
           source: entry?.source ?? "schema-table",
           rowCount: inst.rowCount,
           documentation: entry?.toc.documentation ?? null,
-          hasCallstack: (entry?.toc.callstack ?? null) !== null,
+          hasCallstack:
+            (entry?.toc.callstack ?? null) !== null || hasPinnedBacktraceColumn(inst.schema),
           isFoundationModels: (entry?.toc.swiftTable ?? null) !== null,
           presentInAllRuns: commonSchemas.has(inst.schema),
           rulesVersion,

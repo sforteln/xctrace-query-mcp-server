@@ -103,6 +103,7 @@ export async function startSession(
 
   const handle = spawnRecord({
     template: intent.template,
+    extraInstruments: intent.extraInstruments,
     attach,
     launch,
     device,

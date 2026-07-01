@@ -3,10 +3,15 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
+import { hintFor } from "../../engine/roleHints.js";
 
 const NETWORK_STATS_SCHEMA = "NetworkConnectionStats";
 const NETWORK_UPDATE_SCHEMA = "network-connection-update";
 const NETWORK_DETECTED_SCHEMA = "network-connection-detected";
+
+// Pinned in roleHints.ts — read from there instead of re-hardcoding the mnemonic.
+const STATS_WEIGHT = hintFor(NETWORK_STATS_SCHEMA)!.primaryWeight!;
+const UPDATE_WEIGHT = hintFor(NETWORK_UPDATE_SCHEMA)!.primaryWeight!;
 
 const NETWORK_SCHEMAS = [NETWORK_STATS_SCHEMA, NETWORK_UPDATE_SCHEMA, NETWORK_DETECTED_SCHEMA];
 
@@ -32,11 +37,11 @@ const networkLens: Lens = {
           schema: NETWORK_STATS_SCHEMA,
           run,
           groupBy: "process",
-          measure: "bytes-in",
+          measure: STATS_WEIGHT,
           op: "sum",
           topN: 10,
         },
-        hint: "Network trace — aggregate bytes-in by process shows which apps received the most data; also try groupBy remote-address to see traffic by host, or measure bytes-out for send traffic",
+        hint: `Network trace — aggregate ${STATS_WEIGHT} by process shows which apps received the most data; also try groupBy remote-address to see traffic by host, or measure bytes-out for send traffic`,
       };
     }
 
@@ -49,11 +54,11 @@ const networkLens: Lens = {
           schema: NETWORK_UPDATE_SCHEMA,
           run,
           groupBy: "connection-serial",
-          measure: "rx-bytes",
+          measure: UPDATE_WEIGHT,
           op: "sum",
           topN: 10,
         },
-        hint: "Network trace — aggregate rx-bytes by connection shows which connections transferred the most data; use NetworkConnectionStats if available for host and process info",
+        hint: `Network trace — aggregate ${UPDATE_WEIGHT} by connection shows which connections transferred the most data; use NetworkConnectionStats if available for host and process info`,
       };
     }
 

@@ -8,9 +8,14 @@ import { listFmRequests, FM_SCHEMA } from "./listRequests.js";
 import { getFmRequest, getFmResponse, getFmEvents, getFmPrompt } from "./getRequest.js";
 import { findFmRequests } from "./findRequests.js";
 import { getFmTiming } from "./getTiming.js";
+import { hintFor } from "../../engine/roleHints.js";
 
 // Tool description format: see the comment above createServer() in src/index.ts.
 // Enforced by tests/driftGuard.test.ts — verb-led openers, ⚠️ Not for blocks, no stale identifiers.
+
+// Pinned in roleHints.ts — read from there instead of re-hardcoding the mnemonic.
+const FM_WEIGHT = hintFor(FM_SCHEMA)!.primaryWeight!;
+
 const fmLens: Lens = {
   instruments: [FM_SCHEMA],
 
@@ -55,7 +60,7 @@ const fmLens: Lens = {
             },
             {
               tool: "aggregate",
-              args: { sessionId, schema: FM_SCHEMA, run: result.run, groupBy: "agent-name", measure: "duration", op: "sum", topN: 10 },
+              args: { sessionId, schema: FM_SCHEMA, run: result.run, groupBy: "agent-name", measure: FM_WEIGHT, op: "sum", topN: 10 },
               description: "Total duration by agent to find which agent spent the most time.",
             },
             {

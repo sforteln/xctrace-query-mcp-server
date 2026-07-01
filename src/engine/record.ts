@@ -29,6 +29,13 @@ export interface RecordOptions {
   /** Instruments template name, e.g. "Time Profiler", "Allocations". */
   template: string;
   /**
+   * Extra instruments to add on top of the template via repeated
+   * `--instrument <name>` flags. Built-in xctrace templates are single-
+   * instrument (e.g. "Allocations" and "Leaks" are separate templates with
+   * no combined built-in) — this is how a recording captures both.
+   */
+  extraInstruments?: string[];
+  /**
    * Attach to a running process by PID (numeric string) or process name.
    * Mutually exclusive with `launch`.
    */
@@ -146,11 +153,12 @@ function classifyRecordFailure(
  * spawning.
  */
 export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
-  const { template, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
+  const { template, extraInstruments, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
 
   const args: string[] = [
     "xctrace", "record",
     "--template", template,
+    ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
     ...(attach !== undefined ? ["--attach", attach] : []),
     ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),
@@ -183,7 +191,7 @@ export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
  *   - "xctrace-not-found" xcrun binary missing (Xcode not installed)
  */
 export async function record(opts: RecordOptions): Promise<RecordResult> {
-  const { template, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
+  const { template, extraInstruments, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
 
   if (attach !== undefined && launch !== undefined) {
     throw new XctraceError(
@@ -203,6 +211,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
   const args: string[] = [
     "xctrace", "record",
     "--template", template,
+    ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
     ...(attach !== undefined ? ["--attach", attach] : []),
     ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),

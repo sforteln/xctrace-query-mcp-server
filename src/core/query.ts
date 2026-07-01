@@ -68,6 +68,8 @@ export interface QueryResult {
   columnsShown: string[];
   /** The time column used for timeRange filtering, if any. */
   timeColumn: string | null;
+  /** Whether this schema has a backtrace-role column (get_row/call_tree can resolve one). */
+  hasBacktrace: boolean;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -154,5 +156,6 @@ export async function queryTable(
     rows,
     columnsShown,
     timeColumn,
+    hasBacktrace: classified.some((c) => c.roleInfo.role === "backtrace"),
   };
 }

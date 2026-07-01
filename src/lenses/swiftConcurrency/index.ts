@@ -3,6 +3,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
+import { hintFor } from "../../engine/roleHints.js";
 
 const TASK_LIFETIME_SCHEMA = "SwiftTaskLifetime";
 const TASK_STATE_SCHEMA = "SwiftTaskStateTable";
@@ -31,6 +32,10 @@ const swiftConcurrencyLens: Lens = {
         ? TASK_STATE_SCHEMA
         : TASKS_INFO_SCHEMA;
 
+    // TASKS_INFO_SCHEMA has no pinned role hint (unlike the other two), so
+    // primaryWeight may be undefined for it — fall back to generic wording.
+    const weight = hintFor(schema)?.primaryWeight;
+
     return {
       schema,
       tool: "aggregate",
@@ -42,7 +47,9 @@ const swiftConcurrencyLens: Lens = {
         op: "count",
         topN: 10,
       },
-      hint: "Swift Concurrency trace — aggregate by process counts tasks spawned per process; follow up with query sorted by duration to find long-running or blocked tasks",
+      hint: weight
+        ? `Swift Concurrency trace — aggregate by process counts tasks spawned per process; follow up with query sorted by ${weight} to find long-running or blocked tasks`
+        : "Swift Concurrency trace — aggregate by process counts tasks spawned per process; use describe_schema to see available columns for a follow-up query",
     };
   },
 };

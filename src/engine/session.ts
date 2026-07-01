@@ -190,6 +190,18 @@ export function getSession(sessionId: string): TraceSession {
 }
 
 /**
+ * Return the already-cached table for a run + schema, or undefined if it
+ * hasn't been fetched yet. Never triggers an xctrace export — use this when
+ * a cheap, synchronous caller (e.g. a lens's nextActions) wants to enrich its
+ * response with data from another schema only when that data is already warm,
+ * without risking turning a fast call into a multi-minute one on a cold fetch.
+ */
+export function peekTable(sessionId: string, run: number, schema: string): ParsedTable | undefined {
+  const session = getSession(sessionId);
+  return session.tableCache.get(`${run}:${schema}`);
+}
+
+/**
  * Like getTable but fetches the Nth occurrence (1-based) of a schema that
  * appears multiple times in a trace — e.g. SwiftUIFilteredUpdates (3 instances).
  * Cached under the key `${run}:${schema}[${position}]` to avoid re-fetching.

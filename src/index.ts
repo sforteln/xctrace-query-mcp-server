@@ -321,7 +321,7 @@ export function createServer(): McpServer {
         const response = envelope(
           result,
           [
-            ...actionsAfterQuery(sessionId, schema, result.run, result.hasMore),
+            ...actionsAfterQuery(sessionId, schema, result.run, result.hasMore, result.hasBacktrace),
             ...registry.nextActions(sessionId, schema, result.run),
           ]
         );
@@ -597,7 +597,7 @@ export function createServer(): McpServer {
           result,
           [
             ...actionsAfterGetRow(sessionId, schema, result.run, rowIndex, result.totalRows, hasBacktrace),
-            ...registry.nextActions(sessionId, schema, result.run),
+            ...registry.nextActions(sessionId, schema, result.run, result.cells),
           ]
         );
         return text(toMcpText(response));

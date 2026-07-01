@@ -25,6 +25,13 @@ export interface RecordingIntent {
   /** xctrace --template value. */
   template: string;
   /**
+   * Extra instruments to add on top of the template via repeated
+   * `--instrument <name>`. Built-in templates are single-instrument — e.g.
+   * "Allocations" and "Leaks" are separate templates with no built-in
+   * combination — so this is the only way to record both in one pass.
+   */
+  extraInstruments?: string[];
+  /**
    * When true, --launch is required and --attach is not accepted.
    * App Launch is the only built-in intent with this constraint — its sole
    * purpose is capturing the startup sequence from process creation.
@@ -91,6 +98,7 @@ export const RECORDING_INTENTS = {
   "leaks-backtraces": {
     label: "Allocations + Leaks (with backtraces)",
     template: "Allocations",
+    extraInstruments: ["Leaks"],
     launchRequired: false,
     note:
       "Records Allocations + Leaks together so leaked objects carry responsible frames. " +
@@ -160,16 +168,6 @@ export const RECORDING_INTENTS = {
       "Inform the user before starting — xctrace will also log this data to system logs.",
   },
 } satisfies Record<string, RecordingIntent>;
-
-/**
- * Return the intent for a Leaks recording.
- *
- * Kept for use by the record_leaks tool (which exposes a backtraces boolean param).
- * start_recording users should instead pick "leaks" or "leaks-backtraces" as the type.
- */
-export function leaksIntent(backtraces: boolean): RecordingIntent {
-  return backtraces ? RECORDING_INTENTS["leaks-backtraces"] : RECORDING_INTENTS.leaks;
-}
 
 // ─── Output path ──────────────────────────────────────────────────────────────
 
@@ -276,6 +274,7 @@ export async function startRecording(
   // and maps every xctrace failure to a structured XctraceError.
   await record({
     template: intent.template,
+    extraInstruments: intent.extraInstruments,
     attach,
     launch,
     device,
