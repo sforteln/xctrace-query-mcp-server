@@ -37,6 +37,13 @@ export interface XctraceErrorDetails {
   exitCode?: number | null;
   /** Captured stderr, trimmed — surfaced as a field, never dumped raw to the agent. */
   stderr?: string;
+  /**
+   * Captured stdout, trimmed. xctrace normally explains failures on stderr,
+   * but a launch-mode failure has been observed with a non-zero exit and
+   * completely empty stderr — surfacing stdout too means that case isn't a
+   * dead end with nothing to diagnose it from.
+   */
+  stdout?: string;
   /** The trace path involved, when relevant. */
   tracePath?: string;
   /**

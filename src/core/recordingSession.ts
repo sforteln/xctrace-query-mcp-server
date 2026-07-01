@@ -45,6 +45,13 @@ interface ActiveRecording {
   exitCode: number | null;
   /** Accumulated stderr (trimmed, last 2 KB kept). */
   stderr: string;
+  /**
+   * Accumulated stdout (trimmed, last 2 KB kept). xctrace normally prints
+   * diagnostics to stderr, but a launch-mode failure has been observed with
+   * a non-zero exit code and completely empty stderr — capture stdout too
+   * so a failure like that isn't a dead end with nothing to go on.
+   */
+  stdout: string;
 }
 
 const activeRecordings = new Map<string, ActiveRecording>();
@@ -146,15 +153,21 @@ export async function startSession(
     recordingOptionsFile,
   });
 
+  // Rolling 2 KB window on each stream — enough for error diagnosis without
+  // holding a whole long recording's output in memory.
+  function rollingCollector(chunks: string[]) {
+    return (chunk: Buffer) => {
+      chunks.push(chunk.toString());
+      const total = chunks.reduce((n, s) => n + s.length, 0);
+      while (chunks.length > 1 && total - chunks[0].length > 2048) {
+        chunks.shift();
+      }
+    };
+  }
   const stderrChunks: string[] = [];
-  handle.process.stderr?.on("data", (chunk: Buffer) => {
-    stderrChunks.push(chunk.toString());
-    // Keep a rolling 2 KB window — enough for error diagnosis.
-    const total = stderrChunks.reduce((n, s) => n + s.length, 0);
-    while (stderrChunks.length > 1 && total - stderrChunks[0].length > 2048) {
-      stderrChunks.shift();
-    }
-  });
+  const stdoutChunks: string[] = [];
+  handle.process.stderr?.on("data", rollingCollector(stderrChunks));
+  handle.process.stdout?.on("data", rollingCollector(stdoutChunks));
 
   const rec: ActiveRecording = {
     recordingId,
@@ -168,6 +181,7 @@ export async function startSession(
     done: null!,
     exitCode: null,
     stderr: "",
+    stdout: "",
   };
 
   let resolveExit!: () => void;
@@ -184,6 +198,7 @@ export async function startSession(
 
   handle.process.on("close", (code: number | null) => {
     rec.stderr = stderrChunks.join("").trim();
+    rec.stdout = stdoutChunks.join("").trim();
     rec.exitCode = code;
     // xctrace exits 0 on a clean stop (SIGINT-finalized or time-limit reached).
     // It can also exit null when killed by a signal — treat null as done since
@@ -249,11 +264,16 @@ export async function stopSession(
   await rec.done;
 
   if (rec.status === "failed") {
-    const excerpt = rec.stderr ? ` ${rec.stderr.slice(-500)}` : "";
+    // stderr is usually where xctrace explains itself, but a launch-mode
+    // failure has been observed with a non-zero exit and completely empty
+    // stderr — fall back to stdout rather than leaving a bare exit code
+    // with nothing to diagnose it from.
+    const excerptSource = rec.stderr || rec.stdout;
+    const excerpt = excerptSource ? ` ${excerptSource.slice(-500)}` : " (no output on stdout or stderr)";
     throw new XctraceError(
       "record-failed",
       `Recording failed (exit code ${rec.exitCode}).${excerpt}`,
-      { exitCode: rec.exitCode ?? null, stderr: rec.stderr }
+      { exitCode: rec.exitCode ?? null, stderr: rec.stderr, stdout: rec.stdout }
     );
   }
 
