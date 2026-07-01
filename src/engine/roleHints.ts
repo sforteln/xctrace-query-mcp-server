@@ -133,6 +133,24 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "transition-color": label,
     },
   },
+  InstructionsTable: {
+    instrument: "Foundation Models (instructions)",
+    // start is this row's own event time; session-start is a session-wide
+    // constant repeated across every row in that session — start is the one
+    // that actually varies per instruction and belongs in timeRange filtering.
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      instruction: detail,
+      "session-start": t,
+      "session-index": detail,
+      "plot-label": label,
+      "synthesized-id": detail,
+      "sub-synthesized-ids": detail,
+    },
+  },
 
   // ── Points of Interest / Signposts ───────────────────────────────────────────
   "os-signpost": {
@@ -492,6 +510,52 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "downstream-cost": ns,
       "downstream-events": detail,
       "cause-graph-node": detail,
+      "full-cause-graph-node": detail,
+    },
+  },
+  // swiftui-layout-updates / SwiftUILayoutUpdates2: per-view layout pass
+  // timing. duration is the pass's total cost including children; self-
+  // duration is this view alone — duration is the canonical "how expensive
+  // was this" measure (matches the existing SwiftUI lens's own quickStart,
+  // which already sorts these schemas by duration, not self-duration).
+  "swiftui-layout-updates": {
+    instrument: "SwiftUI (layout updates)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      id: detail,
+      "self-duration": ns,
+      cached: detail,
+      description: detail,
+      "view-hierarchy": detail,
+      module: label,
+      "view-name": label,
+      process: thread,
+      thread: thread,
+      severity: label,
+      "full-cause-graph-node": detail,
+    },
+  },
+  SwiftUILayoutUpdates2: {
+    instrument: "SwiftUI (layout updates, v2)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      id: detail,
+      "self-duration": ns,
+      depth: detail,
+      cached: detail,
+      description: detail,
+      "view-hierarchy": detail,
+      module: label,
+      "view-name": label,
+      process: thread,
+      thread: thread,
+      severity: label,
       "full-cause-graph-node": detail,
     },
   },

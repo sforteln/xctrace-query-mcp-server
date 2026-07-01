@@ -13,17 +13,26 @@
  */
 import type { Cell, NormalizedRow } from "../engine/parseTable.js";
 import type { ClassifiedColumn, ColumnRole } from "../engine/roleInference.js";
-import { firstWithRole } from "../engine/roleInference.js";
+import { firstWithRole, preferredThreadColumn } from "../engine/roleInference.js";
 
 // ─── Single-cell accessors ────────────────────────────────────────────────────
 
-/** Return the Cell for the first column matching a role, or null. */
+/**
+ * Return the Cell for the first column matching a role, or null.
+ *
+ * For "thread" specifically, prefers the most specific "who" column
+ * (thread/tid over process/pid, excluding core/cpu) rather than whichever
+ * comes first in column order — a schema can carry both a process column
+ * and a specific-thread column (confirmed on swiftui-update-groups), and
+ * "same thread" vs. "same process" are not interchangeable matches. See
+ * roleInference.ts's preferredThreadColumn for why.
+ */
 export function roleCell(
   row: NormalizedRow,
   classified: ClassifiedColumn[],
   role: ColumnRole
 ): Cell | null {
-  const col = firstWithRole(classified, role);
+  const col = role === "thread" ? preferredThreadColumn(classified) : firstWithRole(classified, role);
   if (!col) return null;
   return row[col.mnemonic] ?? null;
 }

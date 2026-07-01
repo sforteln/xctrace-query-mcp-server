@@ -7,7 +7,7 @@
  * without knowing which column carries timestamps.
  */
 import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
-import { classifyWithHints } from "../engine/roleHints.js";
+import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesFilter, matchesTimeRange, compareRows } from "./tableFilter.js";
 import type { NormalizedRow } from "../engine/parseTable.js";
@@ -97,10 +97,11 @@ export async function queryTable(
   // Fetch (or hit cache for) the parsed table.
   const table = await getTable(sessionId, run, schema, position);
 
-  // Find the primary time column for timeRange filtering.
+  // Find the primary time column for timeRange filtering. Pinned primaryTime
+  // wins — see the matching comment in find.ts for why firstWithRole alone
+  // isn't safe when a schema has 2+ time-role columns.
   const classified = classifyWithHints(schema, table.cols);
-  const timeColDef = firstWithRole(classified, "time");
-  const timeColumn = timeColDef?.mnemonic ?? null;
+  const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
   // Determine which column mnemonics to include in the response.
   const allMnemonics = table.cols.map((c) => c.mnemonic);

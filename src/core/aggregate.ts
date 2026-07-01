@@ -11,7 +11,7 @@
  * not "1234567890".
  */
 import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
-import { classifyWithHints } from "../engine/roleHints.js";
+import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesFilter, matchesTimeRange } from "./tableFilter.js";
 import type { WeightUnit } from "../engine/roleInference.js";
@@ -119,9 +119,10 @@ export async function aggregateTable(
     : undefined;
   const unit = measureClassified?.roleInfo.unit;
 
-  // Find time column for timeRange filtering.
-  const timeColDef = firstWithRole(classified, "time");
-  const timeColumn = timeColDef?.mnemonic ?? null;
+  // Find time column for timeRange filtering. Pinned primaryTime wins — see
+  // the matching comment in find.ts for why firstWithRole alone isn't safe
+  // when a schema has 2+ time-role columns.
+  const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
   // --- Pre-filter ---
   let rows = table.rows;

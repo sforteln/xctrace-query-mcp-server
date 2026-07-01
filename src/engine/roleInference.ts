@@ -212,3 +212,38 @@ export function allWithRole(
 ): ClassifiedColumn[] {
   return cols.filter((c) => c.roleInfo.role === role);
 }
+
+/**
+ * The "thread" role deliberately buckets six different "who" mnemonics
+ * together (thread, tid, pid, process, core, cpu — see the classifier rules
+ * above), because they're all candidate join/grouping keys, but they are NOT
+ * interchangeable: a thread lives inside exactly one process (containment is
+ * definitional, true for any schema, not something to verify per-instrument),
+ * so "same thread" is always a strictly stronger match than "same process".
+ * core/cpu are a different dimension entirely (a hardware execution unit,
+ * not a stable identity — work migrates across cores constantly), not a
+ * finer-grained "who" than process, so they're excluded from consideration
+ * here rather than ranked.
+ *
+ * Use this instead of firstWithRole(cols, "thread") / allWithRole(cols,
+ * "thread")[0] wherever "the" thread column matters for correctness (e.g.
+ * matching two rows as "same execution context") — firstWithRole just
+ * returns whichever candidate appears first in column order, which silently
+ * picks the wrong one when a schema carries both a process and a thread
+ * column (confirmed on swiftui-update-groups).
+ */
+export function preferredThreadColumn(cols: ClassifiedColumn[]): ClassifiedColumn | undefined {
+  const candidates = allWithRole(cols, "thread").filter(
+    (c) => c.mnemonic !== "core" && c.mnemonic !== "cpu"
+  );
+  if (candidates.length === 0) return undefined;
+  for (const preferred of ["thread", "tid"]) {
+    const match = candidates.find((c) => c.mnemonic === preferred);
+    if (match) return match;
+  }
+  for (const fallback of ["process", "pid"]) {
+    const match = candidates.find((c) => c.mnemonic === fallback);
+    if (match) return match;
+  }
+  return candidates[0];
+}

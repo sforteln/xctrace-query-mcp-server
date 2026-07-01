@@ -18,11 +18,11 @@
  * agent has to summarize itself.
  */
 import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
-import { classifyWithHints } from "../engine/roleHints.js";
-import { firstWithRole } from "../engine/roleInference.js";
+import { classifyWithHints, hintFor } from "../engine/roleHints.js";
+import { firstWithRole, preferredThreadColumn } from "../engine/roleInference.js";
 import { matchesFilter } from "./tableFilter.js";
 import { formatValue } from "./aggregate.js";
-import type { WeightUnit } from "../engine/roleInference.js";
+import type { WeightUnit, ClassifiedColumn } from "../engine/roleInference.js";
 import type { NormalizedRow } from "../engine/parseTable.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -68,6 +68,9 @@ export interface CorrelateResult {
   startColumn: string;
   durationColumn: string;
   timestampColumn: string;
+  /** The "who" columns actually used for thread matching, null if matchThread was false. */
+  intervalsThreadColumn: string | null;
+  eventsThreadColumn: string | null;
   /** Total intervals/events after their respective filters, before joining. */
   totalIntervals: number;
   totalEvents: number;
@@ -79,12 +82,14 @@ export interface CorrelateResult {
   unit?: WeightUnit;
   /**
    * Present only when matchThread found zero matches despite non-empty
-   * intervals/events — the two schemas may record thread identity
-   * differently (confirmed in practice: SwiftUI update-groups vs. Data
-   * Fetches don't share a thread fmt even for same-thread work), which
-   * makes matchThread:true silently report "no causation" when causation
-   * exists. Suggests retrying with matchThread:false before concluding
-   * there's genuinely no temporal overlap.
+   * intervals/events. Usually means the two schemas' thread identity
+   * strings genuinely don't align for this data — but double-check
+   * intervalsThreadColumn/eventsThreadColumn first: a schema carrying both
+   * a process column and a specific-thread column (e.g. swiftui-update-
+   * groups has both) could still resolve to the wrong one if a future
+   * schema's column order doesn't match either preferred mnemonic
+   * ("thread"/"tid"). Suggests retrying with matchThread:false before
+   * concluding there's genuinely no temporal overlap.
    */
   threadMismatchWarning?: string;
 }
@@ -101,6 +106,26 @@ function threadKey(row: NormalizedRow, threadCol: string | null): string | null 
   if (!threadCol) return null;
   return row[threadCol]?.fmt ?? null;
 }
+
+/**
+ * The interval duration column must be nanoseconds-shaped — it gets added to
+ * `start` to form `end`. A pinned primaryWeight isn't automatically safe here:
+ * some schemas pin a non-duration measure (e.g. SwiftActorQueueSize's
+ * primaryWeight is "count", a queue depth — adding that to a timestamp would
+ * be nonsense), so verify the pinned column's unit before trusting it, and
+ * otherwise search weight-role columns specifically for a nanoseconds one
+ * rather than firstWithRole's plain column-order pick.
+ */
+function preferredDurationColumn(classified: ClassifiedColumn[], primaryWeight: string | undefined): string | null {
+  if (primaryWeight) {
+    const pinned = classified.find((c) => c.mnemonic === primaryWeight);
+    if (pinned?.roleInfo.role === "weight" && pinned.roleInfo.unit === "nanoseconds") return pinned.mnemonic;
+  }
+  const nsWeight = classified.find((c) => c.roleInfo.role === "weight" && c.roleInfo.unit === "nanoseconds");
+  if (nsWeight) return nsWeight.mnemonic;
+  return firstWithRole(classified, "weight")?.mnemonic ?? null;
+}
+
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -121,11 +146,14 @@ export async function correlate(
   const intervalsClassified = classifyWithHints(intervalsSchema, intervalsTable.cols);
   const eventsClassified = classifyWithHints(eventsSchema, eventsTable.cols);
 
-  const startColumn = firstWithRole(intervalsClassified, "time")?.mnemonic ?? null;
-  const durationColumn = firstWithRole(intervalsClassified, "weight")?.mnemonic ?? null;
-  const timestampColumn = firstWithRole(eventsClassified, "time")?.mnemonic ?? null;
-  const intervalsThreadCol = matchThread ? firstWithRole(intervalsClassified, "thread")?.mnemonic ?? null : null;
-  const eventsThreadCol = matchThread ? firstWithRole(eventsClassified, "thread")?.mnemonic ?? null : null;
+  // Pinned primaryTime/primaryWeight win where they apply — see find.ts's
+  // matching comment for why firstWithRole alone isn't safe when 2+ columns
+  // share a role.
+  const startColumn = hintFor(intervalsSchema)?.primaryTime ?? firstWithRole(intervalsClassified, "time")?.mnemonic ?? null;
+  const durationColumn = preferredDurationColumn(intervalsClassified, hintFor(intervalsSchema)?.primaryWeight);
+  const timestampColumn = hintFor(eventsSchema)?.primaryTime ?? firstWithRole(eventsClassified, "time")?.mnemonic ?? null;
+  const intervalsThreadCol = matchThread ? preferredThreadColumn(intervalsClassified)?.mnemonic ?? null : null;
+  const eventsThreadCol = matchThread ? preferredThreadColumn(eventsClassified)?.mnemonic ?? null : null;
 
   if (!startColumn || !durationColumn) {
     throw new Error(
@@ -241,8 +269,9 @@ export async function correlate(
   const threadMismatchWarning =
     matchThread && totalMatchedEvents === 0 && temporalCandidates > 0
       ? `${temporalCandidates} event(s) fall within an interval's time window but were excluded because their ` +
-        "thread identity didn't match — these two schemas may record thread identity differently. Retry with " +
-        "matchThread:false before concluding there's no causation."
+        `thread identity ("${intervalsThreadCol}" vs "${eventsThreadCol}") didn't match. Check these are the ` +
+        "columns you expect (a schema with both a process and a thread column can resolve to either) — " +
+        "then retry with matchThread:false if they genuinely differ before concluding there's no causation."
       : undefined;
 
   return {
@@ -255,6 +284,8 @@ export async function correlate(
     startColumn,
     durationColumn,
     timestampColumn,
+    intervalsThreadColumn: intervalsThreadCol,
+    eventsThreadColumn: eventsThreadCol,
     totalIntervals: intervalRows.length,
     totalEvents: events.length,
     totalMatchedEvents,

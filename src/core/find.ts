@@ -12,7 +12,7 @@
  *   FM slow request → [{ col: "duration",      op: "gt",       val: 5000000000 }]  // >5 s in ns
  */
 import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
-import { classifyWithHints } from "../engine/roleHints.js";
+import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesTimeRange } from "./tableFilter.js";
 import type { NormalizedRow } from "../engine/parseTable.js";
@@ -185,8 +185,10 @@ export async function findRows(
   const table = await getTable(sessionId, run, schema, position);
 
   const classified = classifyWithHints(schema, table.cols);
-  const timeColDef = firstWithRole(classified, "time");
-  const timeColumn = timeColDef?.mnemonic ?? null;
+  // Pinned primaryTime wins — a schema can have 2+ time-role columns (e.g.
+  // InstructionsTable's start + session-start), so falling straight to
+  // firstWithRole would only be correct by coincidence of column order.
+  const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
   const allMnemonics = table.cols.map((c) => c.mnemonic);
   const columnsShown =
