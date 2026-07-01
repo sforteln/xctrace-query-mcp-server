@@ -10,6 +10,17 @@ Every Instruments trace has the same shape underneath: `run[] → instrument[] �
 - **Node.js ≥ 22**
 - **Xcode** installed (the server shells out to `xcrun xctrace` to export trace data). Xcode is a runtime CLI dependency only — not the build environment.
 
+## Memory
+
+`.trace` files are archives of very large XML tables — a single schema's export can be hundreds of megabytes to gigabytes of XML, and the server parses each table's rows fully into memory (cached for the life of the session so it isn't re-parsed on every call). Node's default heap ceiling (~4 GB on most systems) isn't always enough for one of these tables on a busy or long recording, and running out crashes the whole process — not just the one call that tripped it.
+
+To avoid that, the server re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
+
+Override it if needed:
+- Set `INSTRUMENTS_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
+- Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
+
+This raises the ceiling; it doesn't remove the underlying cost of holding a fully-parsed large table in memory. For an especially large or long recording, prefer narrower queries (a specific `run`, a `timeRange` where the tool supports one) over describing or aggregating an entire huge schema at once.
 
 ## Install
 ### From source (until the package is published on npm)
