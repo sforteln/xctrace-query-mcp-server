@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { openTrace, summary } from "./engine/session.js";
+import { openTrace, summary, getSession, closeSession } from "./engine/session.js";
 import { describeSchema } from "./core/schema.js";
 import { listInstruments } from "./core/listInstruments.js";
 import { queryTable } from "./core/query.js";
@@ -183,6 +183,31 @@ export function createServer(): McpServer {
         };
         const response = envelope(payload, actionsAfterOpen(result.sessionId));
         return text(toMcpText(response));
+      })
+  );
+
+  // ── close_trace ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "close_trace",
+    {
+      title: "Close Trace",
+      description:
+        "Close a session opened by open_trace and free its cached tables from memory. " +
+        "Sessions are never evicted automatically — each open_trace call adds a new session " +
+        "that persists for the life of the server process, so closing ones you're done with " +
+        "matters on a long-running server that opens many traces (large tables like " +
+        "swiftui-updates can hold gigabytes). Safe to call even if you're not sure whether " +
+        "you still need the session — open_trace on the same path again returns a fresh one. " +
+        "⚠️ Not for pausing — there is no way to reopen a closed sessionId; call open_trace again instead.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace, to close."),
+      },
+    },
+    async ({ sessionId }) =>
+      safeToolWithLog("close_trace", { sessionId }, async () => {
+        getSession(sessionId); // throws a structured error if sessionId is invalid/already closed
+        closeSession(sessionId);
+        return text(JSON.stringify({ closed: true, sessionId }));
       })
   );
 
