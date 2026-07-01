@@ -104,7 +104,9 @@ function buildCellDetail(
     ...(unit ? { unit } : {}),
   };
 
-  // Track-detail backtrace: already symbolicated, show frames directly.
+  // Inline pre-symbolicated backtrace: track-detail (Allocations/Leaks) or a
+  // schema-table column using the same shape (e.g. core-data-fetch) — either
+  // way, frames are already resolved, no call_tree symbolication needed.
   if (cell.resolvedFrames) {
     const frames = cell.resolvedFrames;
     return {
@@ -113,7 +115,7 @@ function buildCellDetail(
         topPc: frames[0]?.name ?? null,
         frameCount: frames.length,
         process: null,
-        note: "Symbolicated inline backtrace from Instruments track-detail.",
+        note: "Already symbolicated inline — no call_tree step needed.",
         resolvedFrames: frames,
       },
     };

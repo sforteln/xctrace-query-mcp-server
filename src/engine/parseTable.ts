@@ -42,9 +42,13 @@ export interface Cell {
   /** Nested child cells, keyed by their tag name (for compound types like thread, process). */
   children?: Record<string, Cell | null>;
   /**
-   * Resolved call frames from a track-detail inline backtrace (already
-   * symbolicated — no separate symbolicate step needed).
-   * Present only on backtrace cells in track-detail rows.
+   * Resolved call frames from an inline pre-symbolicated backtrace (already
+   * symbolicated — no separate symbolicate step needed). Present on
+   * track-detail backtrace cells (Allocations/Leaks) AND on schema-table
+   * "backtrace"-engineering-type columns that use the same inline
+   * <frame name=... addr=...><binary .../></frame> shape (e.g.
+   * core-data-fetch's "Caller" column) — NOT present on the older kperf-bt
+   * raw-address format, which needs call_tree's cross-row symbolication.
    */
   resolvedFrames?: ResolvedFrame[];
 }
@@ -115,6 +119,61 @@ function coerceRaw(text: string): number | string {
 }
 
 /**
+ * Parse one inline resolved <frame name=... addr=...> or <binary name=...
+ * path=.../> element into a synthetic Cell, caching it under `cache` the
+ * same way any other cell is cached. Frame/binary ids share the same
+ * per-node id space as every other cell in the document (confirmed against
+ * real traces — a later backtrace can reference an earlier frame's id
+ * directly, e.g. `<backtrace><frame ref="6"/>...`), so reusing the existing
+ * RefCache instead of a separate frame-scoped cache resolves repeats
+ * correctly with no new cache plumbing.
+ *
+ * This is the schema-table counterpart of parseTrackDetail.ts's
+ * parseBacktrace/parseBinary — same XML shape, different document format
+ * (core-data-fetch's "Caller" column uses this despite being schema-table,
+ * not track-detail).
+ */
+function parseFrameOrBinaryCell(
+  type: "frame" | "binary",
+  node: Record<string, any>,
+  cache: RefCache
+): Cell {
+  const refAttr = node["@_ref"];
+  if (refAttr !== undefined) {
+    const cached = cache.get(Number(refAttr));
+    if (cached) return cached;
+  }
+  const idAttr = node["@_id"];
+  const cell: Cell =
+    type === "frame"
+      ? {
+          type,
+          fmt: String(node["@_name"] ?? ""),
+          raw: String(node["@_addr"] ?? ""),
+          ...(asArray<Record<string, any>>(node?.binary).length > 0
+            ? { children: { binary: parseFrameOrBinaryCell("binary", asArray<Record<string, any>>(node.binary)[0], cache) } }
+            : {}),
+        }
+      : { type, fmt: String(node["@_name"] ?? ""), raw: String(node["@_path"] ?? "") };
+  if (idAttr !== undefined) cache.set(Number(idAttr), cell);
+  return cell;
+}
+
+/** Extract every <frame> under a resolved-shape <backtrace> element, in order. */
+function parseResolvedFrames(backtraceNode: Record<string, any>, cache: RefCache): ResolvedFrame[] {
+  return asArray<Record<string, any>>(backtraceNode.frame).map((frameNode) => {
+    const frameCell = parseFrameOrBinaryCell("frame", frameNode, cache);
+    const binaryCell = frameCell.children?.binary;
+    return {
+      name: frameCell.fmt,
+      addr: String(frameCell.raw),
+      binaryName: binaryCell?.fmt || null,
+      binaryPath: (binaryCell?.raw as string) || null,
+    };
+  });
+}
+
+/**
  * Parse one XML element (a single cell or nested compound node) into a Cell,
  * resolving any `ref` attribute against `cache` and registering new `id`s.
  *
@@ -145,6 +204,24 @@ function parseCell(
   const idAttr = attrs["@_id"];
   const id = idAttr !== undefined ? Number(idAttr) : undefined;
   const fmt = String(attrs["@_fmt"] ?? "");
+
+  // ── backtrace with inline resolved frames (schema-table variant of the
+  // shape parseTrackDetail.ts handles for Allocations/Leaks) — extract every
+  // frame, not just the first. Distinct from the older kperf-bt raw-address
+  // shape (different children: text-address/process), which falls through
+  // to the generic compound handling below unchanged.
+  if (tagName === "backtrace" && attrs.frame !== undefined) {
+    const frames = parseResolvedFrames(attrs, cache);
+    const topName = frames[0]?.name ?? "";
+    const cell: Cell = {
+      type: tagName,
+      fmt: frames.length > 0 ? `${frames.length} frames, top: ${topName}` : "0 frames",
+      raw: frames.length,
+      resolvedFrames: frames,
+    };
+    if (id !== undefined) cache.set(id, cell);
+    return cell;
+  }
 
   // Collect child nodes (anything not starting with @_ is either a child tag
   // or the "#text" key for text content).

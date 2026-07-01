@@ -235,13 +235,19 @@ export async function callTree(
   const hasTaggedBt = cols.some(c => String(c["engineering-type"] ?? "") === "tagged-backtrace");
 
   if (!hasTaggedBt) {
+    // A plain "backtrace"-typed column (distinct from "tagged-backtrace")
+    // carries one already-resolved stack per row, not a sample tree to
+    // aggregate — get_row already returns it directly, no call_tree needed.
+    const hasResolvedBt = cols.some((c) => String(c["engineering-type"] ?? "") === "backtrace");
     return {
       schema, run,
       totalSamples: 0,
       totalWeightFmt: "0 ns",
       threadFilter: thread ?? null,
       roots: [],
-      note: `Schema "${schema}" has no tagged-backtrace column. For Time Profiler, use schema "time-profile" which carries inline symbolicated frames.`,
+      note: hasResolvedBt
+        ? `Schema "${schema}" has one resolved backtrace per row, not a sample tree to aggregate — call get_row on a specific row instead of call_tree.`
+        : `Schema "${schema}" has no tagged-backtrace column. For Time Profiler, use schema "time-profile" which carries inline symbolicated frames.`,
     };
   }
 
