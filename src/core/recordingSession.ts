@@ -18,7 +18,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawnRecord } from "../engine/record.js";
-import { defaultOutputPath, writeRecordingOptionsFile, type RecordingIntent } from "./recording.js";
+import {
+  defaultOutputPath,
+  writeRecordingOptionsFile,
+  collectPrivacyNotices,
+  type RecordingIntent,
+} from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
 import type { ChildProcess } from "node:child_process";
 
@@ -52,6 +57,19 @@ export interface StartSessionOptions {
   launch?: string;
   device?: string;
   timeLimit?: string;
+  /**
+   * Extra instruments to compose on top of intent.template, via repeated
+   * `--instrument <name>` — merged with any extraInstruments the intent
+   * itself already declares (e.g. leaks-backtraces' built-in "Leaks").
+   */
+  instruments?: string[];
+  /**
+   * Raw `--template <name|path>` override, for a custom or uncurated
+   * template the `type` enum doesn't cover. Overrides intent.template but
+   * keeps the intent's other metadata (label, note, launchRequired,
+   * recordingOptions) — pass a minimal ad-hoc intent if you don't want that.
+   */
+  template?: string;
 }
 
 export interface StartSessionResult {
@@ -73,7 +91,7 @@ export interface StartSessionResult {
 export async function startSession(
   opts: StartSessionOptions
 ): Promise<StartSessionResult> {
-  const { intent, attach, launch, device, timeLimit } = opts;
+  const { intent, attach, launch, device, timeLimit, instruments, template } = opts;
 
   if (intent.launchRequired && launch === undefined) {
     throw new XctraceError(
@@ -97,13 +115,29 @@ export async function startSession(
     );
   }
 
-  const tracePath = await defaultOutputPath(intent.template);
+  // `template` overrides intent.template (a raw passthrough for custom/
+  // uncurated templates); `instruments` is purely additive on top of
+  // whichever template is used, merged with any the intent already declares.
+  const resolvedTemplate = template ?? intent.template;
+  const resolvedExtraInstruments = [...(intent.extraInstruments ?? []), ...(instruments ?? [])];
+  const resolvedLabel =
+    instruments && instruments.length > 0 ? `${intent.label} + ${instruments.join(" + ")}` : intent.label;
+  // intent.privacyNotice already covers intent.template (curated, detailed
+  // text) — only scan ad-hoc additions here. Still de-duped below since a
+  // caller-supplied `template` that happens to match the intent's own can
+  // otherwise show the identical notice twice.
+  const adHocNotices = collectPrivacyNotices([...(instruments ?? []), ...(template ? [template] : [])]);
+  const resolvedPrivacyNotice =
+    [...new Set([intent.privacyNotice, ...adHocNotices].filter((n): n is string => Boolean(n)))].join("\n\n") ||
+    undefined;
+
+  const tracePath = await defaultOutputPath(resolvedTemplate);
   const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, intent.recordingOptions);
   const recordingId = randomUUID();
 
   const handle = spawnRecord({
-    template: intent.template,
-    extraInstruments: intent.extraInstruments,
+    template: resolvedTemplate,
+    extraInstruments: resolvedExtraInstruments,
     attach,
     launch,
     device,
@@ -125,8 +159,8 @@ export async function startSession(
   const rec: ActiveRecording = {
     recordingId,
     tracePath,
-    template: intent.template,
-    instrumentsUsed: intent.label,
+    template: resolvedTemplate,
+    instrumentsUsed: resolvedLabel,
     note: intent.note,
     status: "recording",
     startedAt: Date.now(),
@@ -167,10 +201,10 @@ export async function startSession(
     recordingId,
     status: "recording",
     tracePath,
-    template: intent.template,
-    instrumentsUsed: intent.label,
+    template: resolvedTemplate,
+    instrumentsUsed: resolvedLabel,
     ...(intent.note ? { note: intent.note } : {}),
-    ...(intent.privacyNotice ? { privacyNotice: intent.privacyNotice } : {}),
+    ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
   };
 }
 

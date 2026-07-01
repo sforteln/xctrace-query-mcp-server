@@ -6,13 +6,13 @@
  * the two-Leaks behavior: Leaks alone yields no backtraces; Allocations+Leaks
  * together gives leaked objects their responsible frames.
  *
- * Each MCP recording tool calls startRecording() with the resolved intent.
- * The output path is auto-generated in the server-owned recordings directory.
+ * The interactive start_recording/stop_recording MCP tools (recordingSession.ts)
+ * call startSession() with the resolved intent. The output path is
+ * auto-generated in the server-owned recordings directory.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { record } from "../engine/record.js";
 import { XctraceError } from "../engine/xctrace.js";
 import { openTrace } from "../engine/session.js";
 import type { RunSummary, InstrumentSummary, TimeRange } from "../engine/session.js";
@@ -149,7 +149,11 @@ export const RECORDING_INTENTS = {
     note:
       "Records Core Data and SwiftData object faults, relationship faults, fetches, and saves. " +
       "After opening, query 'core-data-fault', 'core-data-relationship-fault', " +
-      "'core-data-fetch', and 'core-data-save' schemas.",
+      "'core-data-fetch', and 'core-data-save' schemas. " +
+      "To attribute this activity to the UI event that triggered it, pass " +
+      "instruments: [\"SwiftUI\"] to start_recording — each row's Caller backtrace already " +
+      "resolves the full call chain (e.g. a SwiftUI view body update through AttributeGraph " +
+      "into the fetch), readable directly via get_row, no extra correlation step needed.",
     privacyNotice:
       "Data Persistence recordings capture entity names, fetch predicates, and object contents. " +
       "Database records including user-generated content may be stored in the trace.",
@@ -168,6 +172,60 @@ export const RECORDING_INTENTS = {
       "Inform the user before starting — xctrace will also log this data to system logs.",
   },
 } satisfies Record<string, RecordingIntent>;
+
+/**
+ * Privacy notices keyed by template OR instrument name. Distinct from
+ * RecordingIntent.privacyNotice above (which is the curated, more detailed
+ * text for a whole intent's base template): this covers ad-hoc composition —
+ * extraInstruments, a caller-supplied `instruments` list, or a raw `template`
+ * override — so e.g. composing `instruments: ["Foundation Models"]` on top of
+ * an unrelated intent still surfaces a warning, not just the built-in
+ * foundation-models intent itself.
+ */
+const SENSITIVE_NAME_NOTICES: Record<string, string> = {
+  Network:
+    "Network recordings capture all HTTP/HTTPS traffic including request bodies, " +
+    "response payloads, cookies, and authorization headers. API keys, session tokens, " +
+    "and user data may be stored in the trace.",
+  "Foundation Models":
+    "This recording captures ALL Foundation Models prompts and responses in unencrypted form, " +
+    "including any sensitive or personally identifying information such as emails, messages, " +
+    "phone numbers, usernames, access tokens, and passwords. " +
+    "Inform the user before starting — xctrace will also log this data to system logs.",
+  "Data Persistence":
+    "Data Persistence recordings capture entity names, fetch predicates, and object contents. " +
+    "Database records including user-generated content may be stored in the trace.",
+  "Data Fetches":
+    "Core Data/SwiftData fetch recordings capture entity names and fetch predicates, " +
+    "which may include user-generated content.",
+  "Data Faults":
+    "Core Data/SwiftData fault recordings capture entity and relationship names tied to " +
+    "specific managed objects, which may include user-generated content.",
+  "Data Saves":
+    "Core Data/SwiftData save recordings capture entity names tied to specific managed " +
+    "objects, which may include user-generated content.",
+};
+
+/**
+ * Collect distinct privacy notices for a set of template/instrument names,
+ * in first-seen order. Callers typically pass extraInstruments/instruments/
+ * a raw template override — NOT the base intent's own template, since that's
+ * already covered by RecordingIntent.privacyNotice (more detailed, curated
+ * text) and would otherwise show a redundant second notice.
+ */
+export function collectPrivacyNotices(names: (string | undefined)[]): string[] {
+  const notices: string[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    if (!name) continue;
+    const notice = SENSITIVE_NAME_NOTICES[name];
+    if (notice && !seen.has(notice)) {
+      seen.add(notice);
+      notices.push(notice);
+    }
+  }
+  return notices;
+}
 
 // ─── Output path ──────────────────────────────────────────────────────────────
 
@@ -211,87 +269,11 @@ export async function writeRecordingOptionsFile(
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export interface StartRecordingOptions {
-  intent: RecordingIntent;
-  attach?: string;
-  launch?: string;
-  device?: string;
-  timeLimit?: string;
-}
-
 export interface OpenedSession {
   sessionId: string;
   runs: RunSummary[];
   instruments: InstrumentSummary[];
   timeRange: TimeRange | null;
-}
-
-export interface StartRecordingResult {
-  /** Path of the produced .trace bundle. */
-  tracePath: string;
-  /** xctrace template used. */
-  template: string;
-  /** Friendly description of the instruments that were active. */
-  instrumentsUsed: string;
-  /** Extra context about what was recorded and why. */
-  note?: string;
-  /** Data-sensitivity warning for templates that capture PII or secrets. */
-  privacyNotice?: string;
-  /**
-   * Automatically-opened session — present when openTrace succeeded.
-   * Pass sessionId to list_instruments / describe_schema.
-   */
-  session?: OpenedSession;
-  /** Structured error from openTrace, present when auto-open failed. */
-  openError?: object;
-}
-
-/**
- * Resolve an intent, generate an output path, and run xctrace record.
- * Auto-opens the resulting trace and returns a ready-to-use sessionId.
- *
- * @throws {XctraceError} — structured error for any xctrace or validation failure.
- */
-export async function startRecording(
-  opts: StartRecordingOptions
-): Promise<StartRecordingResult> {
-  const { intent, attach, launch, device, timeLimit } = opts;
-
-  // Enforce launch-required for App Launch (and any future launch-only intent).
-  if (intent.launchRequired && launch === undefined) {
-    throw new XctraceError(
-      "record-failed",
-      `${intent.label} requires a launch path (the --launch flag). ` +
-        (intent.note ?? ""),
-      {}
-    );
-  }
-
-  const outputPath = await defaultOutputPath(intent.template);
-  const recordingOptionsFile = await writeRecordingOptionsFile(outputPath, intent.recordingOptions);
-
-  // Delegate to the engine wrapper — it validates attach/launch exclusivity
-  // and maps every xctrace failure to a structured XctraceError.
-  await record({
-    template: intent.template,
-    extraInstruments: intent.extraInstruments,
-    attach,
-    launch,
-    device,
-    timeLimit,
-    output: outputPath,
-    recordingOptionsFile,
-  });
-
-  const base: StartRecordingResult = {
-    tracePath: outputPath,
-    template: intent.template,
-    instrumentsUsed: intent.label,
-    ...(intent.note ? { note: intent.note } : {}),
-    ...(intent.privacyNotice ? { privacyNotice: intent.privacyNotice } : {}),
-  };
-
-  return { ...base, ...(await tryOpenTrace(outputPath)) };
 }
 
 // ─── Auto-open helper ─────────────────────────────────────────────────────────

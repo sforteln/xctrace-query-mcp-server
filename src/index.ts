@@ -907,7 +907,31 @@ export function createServer(): McpServer {
   const INTERACTIVE_RECORD_INPUTS = {
     type: z
       .enum(intentKeys)
-      .describe(`Which Instruments template to record with. Options: ${intentDescriptions}.`),
+      .optional()
+      .describe(
+        `Which Instruments template to record with. Options: ${intentDescriptions}. ` +
+        "Optional if `template` is given instead — required otherwise."
+      ),
+    instruments: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Extra instruments to compose on top of the base template via repeated " +
+        "`--instrument <name>` (e.g. [\"SwiftUI\"] on type: \"core-data\" to attribute " +
+        "SwiftData fetches/faults to the SwiftUI update that triggered them — get_row on " +
+        "the resulting core-data-fetch/fault row will show the full resolved call stack " +
+        "including the triggering SwiftUI frame). Names must match `xcrun xctrace list " +
+        "instruments` exactly, e.g. \"SwiftUI\", \"Data Fetches\", \"Network\"."
+      ),
+    template: z
+      .string()
+      .optional()
+      .describe(
+        "Raw `--template <name|path>` override for a custom or uncurated template `type` " +
+        "doesn't cover. Overrides the base template while keeping type's other behavior " +
+        "(privacy notice, launchRequired) when both are given. Provide this OR `type` — " +
+        "one of the two is required."
+      ),
     attach: z
       .string()
       .optional()
@@ -937,15 +961,29 @@ export function createServer(): McpServer {
         "flushes data and writes a valid .trace. Then pass the tracePath to open_trace.\n\n" +
         "For time-limited recordings, set timeLimit and the process auto-stops; " +
         "stop_recording still works (it will see the recording is already done).\n\n" +
+        "Pass `instruments` to compose extra instruments onto `type`'s base template " +
+        "(e.g. cross-instrument causation questions like \"did this SwiftUI update cause " +
+        "this SwiftData fetch\"), or `template` for a fully custom/uncurated template.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
-    async ({ type, attach, launch, timeLimit, device }) =>
-      safeToolWithLog("start_recording", { type, attach, launch, timeLimit, device }, async () => {
-        const intent = RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS];
-        const result = await startSession({ intent, attach, launch, device, timeLimit });
+    async ({ type, instruments, template, attach, launch, timeLimit, device }) =>
+      safeToolWithLog("start_recording", { type, instruments, template, attach, launch, timeLimit, device }, async () => {
+        if (type === undefined && template === undefined) {
+          return text(
+            JSON.stringify({
+              error: "one of `type` or `template` is required",
+              hint: `Pass type (one of: ${intentKeys.join(", ")}) or a raw template name/path.`,
+            })
+          );
+        }
+        const intent =
+          type !== undefined
+            ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
+            : { label: template!, template: template!, launchRequired: false };
+        const result = await startSession({ intent, instruments, template, attach, launch, device, timeLimit });
         return text(
           JSON.stringify(
             {
