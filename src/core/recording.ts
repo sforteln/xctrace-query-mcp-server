@@ -102,7 +102,15 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records Allocations + Leaks together so leaked objects carry responsible frames. " +
-      'Use "leaks" for a faster Leaks-only recording (leak list, no stacks).',
+      'Use "leaks" for a faster Leaks-only recording (leak list, no stacks). ' +
+      "Prefer launch over attach when you actually need to see WHERE a leaked object " +
+      "came from: malloc stack logging only captures allocations made DURING the " +
+      "recording, so with attach, anything already live when Instruments attaches has " +
+      "no stack in principle, not from a symbolication failure — confirmed both by " +
+      "get_row's PRE-ATTACHMENT label on Leaks/Leaks (join to Allocations/Allocations " +
+      'List shows timestamp 0) and by Instruments.app\'s own UI ("No stack trace is ' +
+      'available for this leak. It may have been allocated before the recording ' +
+      'started."). Attach is fine when you only need the leak list/counts, not the callsite.',
   },
   hangs: {
     label: "Activity Monitor (Hangs & Hitches)",

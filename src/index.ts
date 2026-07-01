@@ -1034,8 +1034,16 @@ export function createServer(): McpServer {
   // Derive the type enum directly from RECORDING_INTENTS so adding a new intent
   // there is the only change needed — this file never needs to be updated.
   const intentKeys = Object.keys(RECORDING_INTENTS) as [string, ...string[]];
+  // Most intents just need their label here — full nuance lives in intent.note,
+  // surfaced in the response after the call. leaks-backtraces gets a short
+  // caveat inline instead, since attach-vs-launch is decided in THIS SAME call
+  // (alongside `type`) — by the time intent.note comes back in the response,
+  // the choice is already made and can't be changed without restarting.
+  const INTENT_UPFRONT_CAVEATS: Partial<Record<string, string>> = {
+    "leaks-backtraces": " (prefer launch over attach if you need to see WHERE a leak came from — attach can't symbolicate objects already live before it attached)",
+  };
   const intentDescriptions = Object.entries(RECORDING_INTENTS)
-    .map(([k, v]) => `"${k}" → ${v.label}`)
+    .map(([k, v]) => `"${k}" → ${v.label}${INTENT_UPFRONT_CAVEATS[k] ?? ""}`)
     .join(", ");
 
   const INTERACTIVE_RECORD_INPUTS = {
