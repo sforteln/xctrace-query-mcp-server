@@ -126,6 +126,23 @@ export interface ExpandedTemplates {
 }
 
 /**
+ * A caller reaching for `templates` sometimes writes a `type` enum key
+ * (e.g. "swift-concurrency") instead of the real xctrace template name
+ * ("Swift Concurrency") the two are easy to confuse — verified live, this
+ * exact mistake happened in a real cross-AI conversation. Every `type` key
+ * already knows its own real template name, so there's no reason to make
+ * the caller get the casing/spelling exactly right for anything already
+ * curated — resolve a recognized `type` key transparently. Anything else
+ * passes through unchanged, assumed to already be a real template name
+ * (e.g. an uncurated one no `type` covers) — if it's wrong, that's now a
+ * genuine "check `xcrun xctrace list templates`" case, not a trap we set.
+ */
+export function resolveTemplateName(name: string): string {
+  const intent = (RECORDING_INTENTS as Record<string, RecordingIntent>)[name];
+  return intent ? intent.template : name;
+}
+
+/**
  * Expand a caller's explicit `templates` list — additional WHOLE templates to
  * layer onto the base one — into the real union of instruments xctrace needs,
  * plus any recordingOptions those templates bake in. Each name is expanded to
@@ -144,7 +161,8 @@ export function expandTemplates(
   const recordingOptions: Record<string, Record<string, unknown>> = {};
   const notes: string[] = [];
 
-  for (const name of names) {
+  for (const rawName of names) {
+    const name = resolveTemplateName(rawName);
     const bundle = TEMPLATE_BUNDLES[name] ?? [];
     const expansion = [name, ...bundle];
     const added: string[] = [];
@@ -158,11 +176,12 @@ export function expandTemplates(
     const opts = templateRecordingOptions(name);
     if (opts) Object.assign(recordingOptions, opts);
 
+    const resolvedNote = name !== rawName ? ` ("${rawName}" is a \`type\` key — resolved to its real template)` : "";
     notes.push(
       bundle.length > 0
         ? `template: "${name}" expanded to ${[name, ...bundle].join(" + ")}` +
-          `${opts ? " plus its own recording options" : ""}.`
-        : `template: "${name}" has no known extra bundle — recorded as its headline instrument only.`
+          `${opts ? " plus its own recording options" : ""}${resolvedNote}.`
+        : `template: "${name}" has no known extra bundle — recorded as its headline instrument only${resolvedNote}.`
     );
   }
 

@@ -40,6 +40,7 @@ import { listTraces, findTrace } from "./core/discovery.js";
 import {
   RECORDING_INTENTS,
   tryOpenTrace,
+  resolveTemplateName,
 } from "./core/recording.js";
 import {
   startSession,
@@ -1184,10 +1185,12 @@ export function createServer(): McpServer {
         "and layout tracing, not just a bare instrument; (2) ALONE, with no `type`/`template` " +
         "at all — a flat, symmetric list of 2+ templates with no privileged \"base\", e.g. " +
         "templates: [\"Swift Concurrency\", \"SwiftUI\"] to start both together directly. " +
-        "⚠️ Entries must be the REAL xctrace template name, properly cased/spaced (\"Swift " +
+        "Entries are normally the REAL xctrace template name, properly cased/spaced (\"Swift " +
         "Concurrency\", \"SwiftUI\", \"Time Profiler\") — matching `xcrun xctrace list " +
-        "templates` — NOT a `type` enum key (\"swift-concurrency\" is a `type` value, not a " +
-        "valid `templates` entry; passing it here won't expand a bundle and will likely fail). " +
+        "templates` — but a `type` enum key (e.g. \"swift-concurrency\") also works here and " +
+        "resolves to its real template automatically, so don't worry about getting the exact " +
+        "spelling/casing right for anything already covered by `type`. For a template `type` " +
+        "doesn't cover, use the exact name from `xcrun xctrace list templates`. " +
         "Check the response's compositionNote for exactly what each name expanded to."
       ),
     template: z
@@ -1234,9 +1237,9 @@ export function createServer(): McpServer {
         "either on top of `type`/`template`, or used ALONE (no `type` needed) to start two " +
         "or more templates together, e.g. templates: [\"Swift Concurrency\", \"SwiftUI\"] — " +
         "or `template` for a single fully custom/uncurated base template. `templates` entries " +
-        "are real xctrace template names (\"Swift Concurrency\", properly cased/spaced), NOT " +
-        "`type` enum keys (\"swift-concurrency\") — the two look similar but aren't " +
-        "interchangeable.\n\n" +
+        "are normally real xctrace template names (\"Swift Concurrency\", properly cased/" +
+        "spaced) — a `type` enum key (\"swift-concurrency\") also works there and resolves " +
+        "automatically, so don't worry about exact spelling for anything `type` already covers.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
@@ -1262,7 +1265,10 @@ export function createServer(): McpServer {
             );
           }
           const usingTemplatesAsBase = type === undefined && template === undefined;
-          const baseTemplate = template ?? (usingTemplatesAsBase ? templates![0] : undefined);
+          // resolveTemplateName tolerates a `type` key landing here by mistake
+          // (e.g. "swift-concurrency" instead of "Swift Concurrency") — same
+          // normalization expandTemplates() applies to every other entry.
+          const baseTemplate = template ?? (usingTemplatesAsBase ? resolveTemplateName(templates![0]) : undefined);
           const additionalTemplates = usingTemplatesAsBase ? templates!.slice(1) : templates;
           const intent =
             type !== undefined
