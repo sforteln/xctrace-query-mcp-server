@@ -87,6 +87,7 @@ export const VERIFIED_PAIRS = new Set<string>([
   // ── xcode-27.0 track-detail ──────────────────────────────────────────────
   "27.0:Allocations/Allocations List",
   "27.0:Leaks/Leaks",
+  "27.0:VM Tracker/Regions Map",
 ]);
 
 // ─── Types ────────────────────────────────────────────────────────────────────

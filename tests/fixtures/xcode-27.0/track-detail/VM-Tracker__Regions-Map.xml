@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<trace-query-result>
+<node xpath='//trace-toc[1]/run[1]/tracks[1]/track[1]/details[1]/detail[1]'><row path="MyApp" address-range="0x1005e8000 - 0x1005ec000" dirty-size="0" resident-size="16384" virtual-size="16384" type="__TEXT" swapped-size="0" protections="r-x/r-x" resident-%="100.00"/>
+<row path="MyApp" address-range="0x1005ec000 - 0x1005f0000" dirty-size="4096" resident-size="16384" virtual-size="16384" type="__DATA" swapped-size="0" protections="rw-/rw-" resident-%="100.00"/>
+<row path="" address-range="0x600000000000 - 0x600000004000" dirty-size="0" resident-size="0" virtual-size="16384" type="MALLOC_NANO" swapped-size="0" protections="rw-/rwx" resident-%="0.00"/>
+</node></trace-query-result>

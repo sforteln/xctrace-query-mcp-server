@@ -18,6 +18,28 @@ interface BuilderFrame {
   textChunks: string[];
 }
 
+/**
+ * Sentinel a caller may substitute for a literal percent sign before feeding
+ * text to a STRICT sax stream (see parseTrackDetail.ts's
+ * PercentAttributeNameSanitizer — some real xctrace track-detail exports use
+ * a percent sign inside a plain, unquoted attribute NAME, e.g. VM Tracker's
+ * "resident-" + percent column, which is not a legal XML NameChar and makes
+ * sax's strict tokenizer throw before an opentag event is ever emitted). This
+ * builder reverses the substitution wherever it could have landed in real
+ * data — attribute/tag names and text content — so callers that never
+ * introduce the sentinel (e.g. parseTable.ts's streaming path) are
+ * unaffected: `.includes()` below is always false for them.
+ *
+ * Must be a legal XML NameChar sequence (letters/digits/underscore only, no
+ * whitespace or punctuation) so a substitution landing mid-attribute-name
+ * still tokenizes as one valid name.
+ */
+export const PERCENT_PLACEHOLDER = "_PCT_";
+
+function unsanitize(s: string): string {
+  return s.includes(PERCENT_PLACEHOLDER) ? s.split(PERCENT_PLACEHOLDER).join("%") : s;
+}
+
 export class MiniXmlBuilder {
   private stack: BuilderFrame[] = [];
   /** Populated once the outermost captured tag closes (onCloseTag returns true). */
@@ -30,14 +52,14 @@ export class MiniXmlBuilder {
       // parser config in this codebase) trims attribute values too, not just
       // text content — match it so e.g. fmt="Suspended for " (real trailing
       // space in the XML) comes out the same "Suspended for" both parsers give.
-      obj["@_" + k] = v.trim();
+      obj["@_" + unsanitize(k)] = unsanitize(v.trim());
     }
-    this.stack.push({ tagName: tag, obj, textChunks: [] });
+    this.stack.push({ tagName: unsanitize(tag), obj, textChunks: [] });
   }
 
   onText(text: string): void {
     const top = this.stack[this.stack.length - 1];
-    if (top) top.textChunks.push(text);
+    if (top) top.textChunks.push(unsanitize(text));
   }
 
   /** Returns true when this close matched the outermost captured tag (capture complete). */

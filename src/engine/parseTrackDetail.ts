@@ -24,8 +24,10 @@ import { XMLParser } from "fast-xml-parser";
 // Default import — see the comment in parseTable.ts for why `import * as sax`
 // resolves to an empty namespace object at runtime under NodeNext/ESM output.
 import sax from "sax";
+import { Transform } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
-import { MiniXmlBuilder } from "./saxTreeBuilder.js";
+import { MiniXmlBuilder, PERCENT_PLACEHOLDER } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
 import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame } from "./parseTable.js";
 
@@ -246,6 +248,52 @@ export function parseTrackDetailXml(xml: string, syntheticSchema: string): Parse
 }
 
 /**
+ * Rewrites every literal `%` OUTSIDE a quoted attribute value to
+ * {@link PERCENT_PLACEHOLDER} before the bytes reach sax's STRICT tokenizer.
+ *
+ * Confirmed live against a real VM Tracker recording: Regions Map exports a
+ * plain, unquoted attribute NAME containing `%` (`resident-%="100.00"`) —
+ * `%` is not a legal XML NameChar, so sax's strict mode throws "Invalid
+ * attribute name" the instant it reads that byte, before ever emitting an
+ * opentag event we could patch after the fact. fast-xml-parser (the
+ * non-streaming path, parseTrackDetailXml) tolerates this fine — Apple ships
+ * it and Instruments.app reads it, so this is a strict-tokenizer-specific
+ * gap, not genuinely malformed data. `%` inside a QUOTED attribute value
+ * (e.g. a percentage string like "16.5%") was never the problem — quoted
+ * content already parses fine — so this only rewrites the unquoted regions
+ * where attribute/tag names live, tracked with a single quote-state flag
+ * that persists correctly across chunk boundaries. MiniXmlBuilder reverses
+ * the substitution back to `%` once sax hands back parsed names/text.
+ */
+class PercentAttributeNameSanitizer extends Transform {
+  private decoder = new StringDecoder("utf8");
+  private inQuote: '"' | "'" | null = null;
+
+  _transform(chunk: Buffer, _encoding: string, callback: (error?: Error | null, data?: string) => void): void {
+    const text = this.decoder.write(chunk);
+    let out = "";
+    for (const ch of text) {
+      if (this.inQuote) {
+        if (ch === this.inQuote) this.inQuote = null;
+        out += ch;
+      } else if (ch === '"' || ch === "'") {
+        this.inQuote = ch;
+        out += ch;
+      } else if (ch === "%") {
+        out += PERCENT_PLACEHOLDER;
+      } else {
+        out += ch;
+      }
+    }
+    callback(null, out);
+  }
+
+  _flush(callback: (error?: Error | null, data?: string) => void): void {
+    callback(null, this.decoder.end());
+  }
+}
+
+/**
  * Streaming counterpart to {@link parseTrackDetailXml}. Column discovery is
  * inherently two-pass (the attribute set is only known after seeing every
  * row), so this buffers each <row>'s mini-DOM via {@link MiniXmlBuilder} as
@@ -346,6 +394,10 @@ export function parseTrackDetailStream(
       settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
     });
 
-    stdout.pipe(saxStream);
+    const sanitizer = new PercentAttributeNameSanitizer();
+    sanitizer.on("error", (err: Error) => {
+      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
+    });
+    stdout.pipe(sanitizer).pipe(saxStream);
   });
 }

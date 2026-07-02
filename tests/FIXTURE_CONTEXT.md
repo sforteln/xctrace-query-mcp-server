@@ -41,6 +41,11 @@ tests/fixtures/xcode-27.0/
     SwiftUILayoutUpdates2.xml     SYNTHETIC — swiftui-layout-updates + depth column; 3 rows covering depth 0/1/2
   track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
+    VM-Tracker__Regions-Map.xml   SYNTHETIC — real column shape (verified live against allocWithVM2.trace),
+                                  fake path/address values; exists specifically to regression-test the
+                                  `resident-%` attribute NAME (not value) — `%` is not a legal XML NameChar,
+                                  which made sax's strict streaming parser throw "Invalid attribute name"
+                                  until parseTrackDetail.ts's PercentAttributeNameSanitizer was added
 ```
 
 `__` in track-detail filenames encodes `/` (trackName/detailName).
