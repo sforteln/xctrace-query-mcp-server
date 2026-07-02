@@ -133,6 +133,14 @@ AI:     [calls find_fm_requests, emptyContext true]
 ---
 The server always returns a `suggestedStart` in the `open_trace` response  a pre-filled tool call that gets you to the key data in one step for the most common instruments. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
 
+## Instrument your app with signposts
+
+Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
+
+Points of Interest is bundled for free in most templates (Time Profiler, SwiftUI, Swift Concurrency, Allocations, Leaks, Network, CPU Counters, Processor Trace all include it automatically — `start_recording`'s response tells you when it isn't). For the templates that don't bundle it (Hangs, Animation Hitches, Core Data, Foundation Models, App Launch), pass `instruments: ["Points of Interest"]` explicitly.
+
+Once you have both, use `correlate()` — signposts show up as `os-signpost` (raw begin/end/event signposts), `OSSignpostIntervals` (paired begin→end durations), and `PointsOfInterestEvents` (discrete events). Correlating one of these against whatever you're actually investigating (a hang interval, a CPU sample, a SwiftData fetch) answers "which of my named operations was active when this happened" directly, instead of inferring it from timestamps by hand.
+
 ## If the AI seems stuck
 These prompts reliably get things moving again:
 - **"What does suggestedStart say?"** — The `open_trace` response includes a ready-to-run first call. Ask the AI to read it and follow it.

@@ -465,15 +465,19 @@ export function createServer(): McpServer {
         "intervals (schema A, e.g. swiftui-updates' [start, start+duration] windows) — the " +
         "cross-instrument causation primitive. Matched on the same thread by default, since " +
         "two unrelated interval/event pairs can otherwise overlap in time by coincidence; " +
-        "pass matchThread:false to correlate on time alone (weaker evidence) — confirmed in " +
-        "practice that some instrument pairs record thread identity differently, which makes " +
-        "matchThread:true silently return zero matches even when events genuinely fall inside " +
-        "the intervals; a threadMismatchWarning field flags exactly this case. Grouped by an " +
+        "pass matchThread:false to correlate on time alone (weaker evidence). A " +
+        "threadMismatchWarning field flags when matchThread:true finds zero matches despite " +
+        "temporal candidates existing — historically caused by picking the wrong thread-role " +
+        "column on a schema exposing more than one (e.g. process vs thread), now resolved " +
+        "generically, but the warning stays as a safety net for any future case. Grouped by an " +
         "intervals-schema label column (e.g. view-name) so the result reads as a direct " +
         "answer — 'SidebarView.body contained 445 Feature fetches' — not a raw per-interval " +
         "dump. Both schemas must already be in the SAME trace on the SAME clock — use " +
         "start_recording's `instruments` param to compose them into one recording; two " +
-        "separate recordings can never be correlated this way. " +
+        "separate recordings can never be correlated this way. Points of Interest's signpost " +
+        "schemas (os-signpost, OSSignpostIntervals, PointsOfInterestEvents) pair especially " +
+        "well here if the app calls os_signpost around its own operations — correlate them " +
+        "against whatever's being investigated to see which named app operation was active. " +
         "`run` defaults to the most recent run. " +
         "⚠️ Not for aggregating within one schema — use aggregate for that.",
       inputSchema: {
