@@ -67,6 +67,16 @@ export interface AggregateResult {
   groups: AggregateGroup[];
   /** Unit of the measure column, absent for count op. */
   unit?: WeightUnit;
+  /**
+   * Set when the TOP group's key is an empty string — a schema where identity
+   * is split across columns by row type (e.g. swiftui-updates: View Body rows
+   * carry it in "description", Layout rows in "view-name") will silently
+   * dump the wrong row type's rows into one blank bucket at the top, looking
+   * like a real answer. Confirmed a recurring, generalizable trap (found
+   * independently 3 times this project) — not schema-specific by nature, so
+   * detected generically here rather than hardcoded per schema.
+   */
+  note?: string;
 }
 
 // ─── Value formatting ─────────────────────────────────────────────────────────
@@ -179,6 +189,27 @@ export async function aggregateTable(
     rowCount,
   }));
 
+  // A blank top group means groupBy chose the wrong column for at least some
+  // row types — the result LOOKS like a real answer, which is exactly the
+  // trap. See the note on AggregateResult.note for why this is generic, not
+  // schema-hardcoded.
+  let note: string | undefined;
+  const topGroup = resultGroups[0];
+  if (topGroup && topGroup.key === "") {
+    const pct = totalRows > 0 ? Math.round((topGroup.rowCount / totalRows) * 1000) / 10 : 0;
+    const schemaNote =
+      schema === "swiftui-updates" || schema === "SwiftUIFilteredUpdates"
+        ? " For this schema specifically: View Body Update rows carry their identity in " +
+          "\"description\" (view-name is empty for them); Layout Update rows carry it in " +
+          "\"view-name\" instead (description is that row's sub-operation, not a view). Try " +
+          "groupBy: \"description\" for view-body rows."
+        : " Check describe_schema's role classification, or try a different groupBy column — " +
+          "this schema may split identity across more than one column depending on row type.";
+    note =
+      `The top group by "${groupBy}" is empty (${topGroup.rowCount}/${totalRows} rows, ${pct}%) — ` +
+      `"${groupBy}" may not carry identity for every row type in this schema.${schemaNote}`;
+  }
+
   return {
     schema,
     run,
@@ -190,5 +221,6 @@ export async function aggregateTable(
     totalRows,
     groups: resultGroups,
     ...(op !== "count" && unit ? { unit } : {}),
+    ...(note ? { note } : {}),
   };
 }

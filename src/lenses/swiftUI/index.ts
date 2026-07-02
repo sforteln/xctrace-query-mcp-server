@@ -144,7 +144,9 @@ const swiftUILens: Lens = {
         description:
           "List SwiftUI View Body re-evaluation events from the pre-filtered 'SwiftUIFilteredUpdates' table " +
           "(body-only instance). Each row is one view body re-evaluation; " +
-          "sort by downstream-cost desc to find the most expensive calls. " +
+          "sort by duration desc to find what actually blocked the main thread (this update's own " +
+          "inclusive wall time) — sort by downstream-cost desc instead for which update triggered the " +
+          "most cascading work in OTHER views; the two can diverge sharply and rank differently. " +
           "`run` defaults to the most recent run. " +
           "⚠️ Not for layout or environment events — use `list_swiftui_layout_env_updates` for those, " +
           "or `list_swiftui_representable_updates` for UIKit/AppKit bridge updates.",
@@ -226,11 +228,11 @@ const swiftUILens: Lens = {
                 run,
                 kind: "view-body",
                 groupBy: "view-name",
-                measure: "downstream-cost",
+                measure: "duration",
                 op: "sum",
                 topN: 20,
               },
-              description: "Summarize view body re-evaluations by view name and downstream cost.",
+              description: "Summarize view body re-evaluations by view name and total main-thread time.",
             }
           );
           return text(toMcpText(envelope(result, actions)));
@@ -328,11 +330,11 @@ const swiftUILens: Lens = {
                 run,
                 kind: "representable",
                 groupBy: "view-name",
-                measure: "downstream-cost",
+                measure: "duration",
                 op: "sum",
                 topN: 20,
               },
-              description: "Summarize representable updates by view name and downstream cost.",
+              description: "Summarize representable updates by view name and total main-thread time.",
             }
           );
           return text(toMcpText(envelope(result, actions)));
@@ -347,7 +349,8 @@ const swiftUILens: Lens = {
         description:
           "List SwiftUI Layout, Environment, and other non-body update events from the pre-filtered 'SwiftUIFilteredUpdates' table — " +
           "every update except View Body re-evaluations and Representable (UIKit/AppKit) bridge updates. " +
-          "Sort by downstream-cost desc to surface the most impactful layout and environment passes. " +
+          "Sort by duration desc to find what blocked the main thread, or downstream-cost desc for " +
+          "which pass triggered the most cascading work elsewhere — they can diverge sharply. " +
           "`run` defaults to the most recent run. " +
           "⚠️ Not for view body or Representable events — use `list_swiftui_view_body_updates` or `list_swiftui_representable_updates` for those.",
         inputSchema: {
@@ -430,11 +433,11 @@ const swiftUILens: Lens = {
                 run,
                 kind: "other",
                 groupBy: "category",
-                measure: "downstream-cost",
+                measure: "duration",
                 op: "sum",
                 topN: 20,
               },
-              description: "Break down layout and environment updates by category.",
+              description: "Break down layout and environment updates by category and total main-thread time.",
             }
           );
           return text(toMcpText(envelope(result, actions)));
@@ -448,8 +451,10 @@ const swiftUILens: Lens = {
         title: "Aggregate SwiftUI Filtered Updates",
         description:
           "Group and sum/count/avg one of the three pre-filtered 'SwiftUIFilteredUpdates' instances " +
-          "by any column — e.g. groupBy view-name and measure downstream-cost to find which views " +
-          "cost the most, or groupBy update-type with op count for a frequency breakdown. " +
+          "by any column — e.g. groupBy view-name and measure duration to find which views cost the " +
+          "most main-thread time (use this for hang/stutter investigations), measure downstream-cost " +
+          "instead for which views trigger the most cascading work in others — these diverge sharply " +
+          "and rank differently, or groupBy update-type with op count for a frequency breakdown. " +
           "Resolves the schema's position automatically from `kind`, so the caller never needs to " +
           "know SwiftUIFilteredUpdates exists 3× in the trace or pass a raw position. " +
           "`run` defaults to the most recent run. " +
@@ -468,7 +473,12 @@ const swiftUILens: Lens = {
           measure: z
             .string()
             .optional()
-            .describe("Mnemonic of the weight column to aggregate, e.g. downstream-cost. Required for sum/avg; ignored for count."),
+            .describe(
+              "Mnemonic of the weight column to aggregate. Use \"duration\" (this update's own inclusive " +
+              "wall time) to find what blocked the main thread; use \"downstream-cost\" (time propagated " +
+              "to dependents) to find which updates cause the most cascading work elsewhere — they can " +
+              "rank very differently. Required for sum/avg; ignored for count."
+            ),
           op: z.enum(["sum", "count", "avg"]).optional().describe("Aggregation operation (default: sum)."),
           topN: z
             .number()
@@ -550,7 +560,7 @@ const swiftUILens: Lens = {
         },
         {
           tool: "aggregate_swiftui_filtered_updates",
-          args: { sessionId, run, kind: "other", groupBy: "view-name", measure: "downstream-cost", op: "sum", topN: 20 },
+          args: { sessionId, run, kind: "other", groupBy: "view-name", measure: "duration", op: "sum", topN: 20 },
           description: "Aggregate one of the three instances directly by any column (view-name, update-type, category, ...).",
         },
       ];
@@ -568,10 +578,10 @@ const swiftUILens: Lens = {
           sessionId,
           schema: SWIFTUI_UPDATES_SCHEMA,
           run,
-          sort: { by: "downstream-cost", dir: "desc" },
+          sort: { by: "duration", dir: "desc" },
           limit: 20,
         },
-        hint: "SwiftUI trace — sorted by downstream-cost shows the most expensive updates by total subtree impact; check view-name, severity, and root-causes (use the columns param to include them — excluded from the default to keep responses small). The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present as three pre-filtered instances (view-body/representable/other) — use aggregate_swiftui_filtered_updates(kind=...) to compare them directly.",
+        hint: "SwiftUI trace — sorted by duration shows what actually blocked the main thread longest (this update's own inclusive wall time); sort by downstream-cost instead to find which update triggered the most cascading work in OTHER views — the two can diverge sharply and rank very differently, so pick the one that matches the question. Check view-name, severity, and root-causes (use the columns param to include them — excluded from the default to keep responses small). The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present as three pre-filtered instances (view-body/representable/other) — use aggregate_swiftui_filtered_updates(kind=...) to compare them directly.",
       };
     }
 
@@ -588,11 +598,11 @@ const swiftUILens: Lens = {
           run,
           kind: "other",
           groupBy: "view-name",
-          measure: "downstream-cost",
+          measure: "duration",
           op: "sum",
           topN: 10,
         },
-        hint: "SwiftUI filtered-updates trace — SwiftUIFilteredUpdates exists as three pre-filtered instances (view-body/representable/other), starting here with 'other' (Layout, Environment, and everything else) aggregated by view-name and downstream-cost. Switch kind to 'view-body' or 'representable' for the other instances, or use list_swiftui_view_body_updates / list_swiftui_representable_updates / list_swiftui_layout_env_updates to read individual rows.",
+        hint: "SwiftUI filtered-updates trace — SwiftUIFilteredUpdates exists as three pre-filtered instances (view-body/representable/other), starting here with 'other' (Layout, Environment, and everything else) aggregated by view-name and total main-thread duration. Switch kind to 'view-body' or 'representable' for the other instances, or measure to downstream-cost for cascading impact on other views instead of this update's own time. Use list_swiftui_view_body_updates / list_swiftui_representable_updates / list_swiftui_layout_env_updates to read individual rows.",
       };
     }
 

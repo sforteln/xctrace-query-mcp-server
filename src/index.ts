@@ -244,8 +244,11 @@ export function createServer(): McpServer {
       title: "List Instruments",
       description:
         "List every instrument (schema/table) in a trace, grouped by run. " +
-        "Returns schema names, row counts (if already fetched), schema documentation, " +
+        "Returns schema names, row counts, schema documentation, " +
         "and a crossRunDiff note when runs differ — e.g. 'run 3 adds: time-sample, context-switch-sample'. " +
+        "rowCount is `null` until that table is actually fetched (via query/aggregate/find/get_row), " +
+        "then becomes a real number — `0` means genuinely fetched and confirmed empty, not unfetched; " +
+        "don't read `null` as \"no rows\". " +
         "Cheap: no xctrace calls. " +
         "Use this when open_trace did not return a suggestedStart, when you need cross-run comparison, " +
         "or when you want schema documentation before querying.",
@@ -395,7 +398,10 @@ export function createServer(): McpServer {
         "the workhorse for most profiling questions. Returns the top N groups sorted heaviest-first " +
         "with values formatted in the correct unit (s/ms/µs, MB/KB/B, count). " +
         "Examples: top threads by sample count (Time Profiler), total duration per agent " +
-        "(Foundation Models), largest allocation groups. `run` defaults to the most recent run. " +
+        "(Foundation Models), largest allocation groups. A `note` fires if the top group's key is " +
+        "empty — a plausible-looking but wrong result on schemas that split row identity across " +
+        "more than one column by row type (e.g. swiftui-updates); try a different groupBy. " +
+        "`run` defaults to the most recent run. " +
         "⚠️ Not for reading individual rows — use query or find to access specific rows.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
@@ -587,7 +593,11 @@ export function createServer(): McpServer {
             endNs: z.number().optional(),
           })
           .optional()
-          .describe("Restrict samples to a time window (nanoseconds)."),
+          .describe(
+            "Restrict samples to a time window (nanoseconds). Every schema in a session shares one " +
+            "clock — a raw start/duration/timestamp value read from any other schema's row (via " +
+            "get_row or query) is directly usable here with no conversion."
+          ),
         view: z
           .enum(["tree", "hot", "spine"])
           .optional()
