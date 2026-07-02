@@ -400,7 +400,9 @@ export function createServer(): McpServer {
         "Examples: top threads by sample count (Time Profiler), total duration per agent " +
         "(Foundation Models), largest allocation groups. A `note` fires if the top group's key is " +
         "empty — a plausible-looking but wrong result on schemas that split row identity across " +
-        "more than one column by row type (e.g. swiftui-updates); try a different groupBy. " +
+        "more than one column by row type (e.g. swiftui-updates); try a different groupBy. Also " +
+        "fires on a handful of schemas (e.g. hitches-renders' frame-color) whose groupBy column is " +
+        "a verified overlapping label, not a partition — sum/avg across it double-counts. " +
         "`run` defaults to the most recent run. " +
         "⚠️ Not for reading individual rows — use query or find to access specific rows.",
       inputSchema: {

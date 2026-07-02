@@ -102,6 +102,42 @@ export function formatValue(value: number, unit: WeightUnit | undefined, op: Agg
   }
 }
 
+/**
+ * groupBy columns known to be an OVERLAPPING label rather than a partition —
+ * the same underlying row can appear under more than one group with an
+ * identical measure value, so sum/avg across the whole result silently
+ * double-counts. Verified live: hitches-renders' frame-color is a severity/
+ * phase tint on a frame (keyed by swap-id), not a distinct-frame split — the
+ * same swap-id/duration showed up under both "Blue" and "Red". Unlike the
+ * blank-bucket check above, this can't be detected generically (it requires
+ * knowing which OTHER column is the row's real identity key for a given
+ * schema), so it's a small curated table — same tradeoff as WAIT_FRAME_NAMES
+ * in callTree.ts, extend only after verifying live, not by guessing from a
+ * column name that merely sounds similar.
+ */
+const NON_PARTITIONING_GROUPBY: Record<string, Record<string, string>> = {
+  "hitches-renders": {
+    "frame-color": "frame-color is a severity/phase tint on a frame (keyed by swap-id), not a " +
+      "partition — the same swap-id can appear under multiple colors with identical duration. " +
+      "Summing/averaging across frame-color double-counts; dedupe on swap-id first, or read per-row instead.",
+  },
+  "hitches-gpu": {
+    "frame-color": "frame-color is a severity/phase tint on a frame (keyed by swap-id), not a " +
+      "partition — the same swap-id can appear under multiple colors with identical duration. " +
+      "Summing/averaging across frame-color double-counts; dedupe on swap-id first, or read per-row instead.",
+  },
+  "hitches-frame-lifetimes": {
+    "frame-color": "frame-color is a severity/phase tint on a frame (keyed by swap-id), not a " +
+      "partition — the same swap-id can appear under multiple colors with identical duration. " +
+      "Summing/averaging across frame-color double-counts; dedupe on swap-id first, or read per-row instead.",
+  },
+  "hitches-updates": {
+    "frame-color": "frame-color is a severity/phase tint on a frame (keyed by swap-id), not a " +
+      "partition — the same swap-id can appear under multiple colors with identical duration. " +
+      "Summing/averaging across frame-color double-counts; dedupe on swap-id first, or read per-row instead.",
+  },
+};
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function aggregateTable(
@@ -189,11 +225,12 @@ export async function aggregateTable(
     rowCount,
   }));
 
+  const notes: string[] = [];
+
   // A blank top group means groupBy chose the wrong column for at least some
   // row types — the result LOOKS like a real answer, which is exactly the
   // trap. See the note on AggregateResult.note for why this is generic, not
   // schema-hardcoded.
-  let note: string | undefined;
   const topGroup = resultGroups[0];
   if (topGroup && topGroup.key === "") {
     const pct = totalRows > 0 ? Math.round((topGroup.rowCount / totalRows) * 1000) / 10 : 0;
@@ -205,10 +242,20 @@ export async function aggregateTable(
           "groupBy: \"description\" for view-body rows."
         : " Check describe_schema's role classification, or try a different groupBy column — " +
           "this schema may split identity across more than one column depending on row type.";
-    note =
+    notes.push(
       `The top group by "${groupBy}" is empty (${topGroup.rowCount}/${totalRows} rows, ${pct}%) — ` +
-      `"${groupBy}" may not carry identity for every row type in this schema.${schemaNote}`;
+      `"${groupBy}" may not carry identity for every row type in this schema.${schemaNote}`
+    );
   }
+
+  // Known-overlapping groupBy column (e.g. hitches-renders' frame-color) —
+  // only worth warning about when the caller is actually summing/averaging
+  // a measure across it, since count-by-group is safe regardless.
+  if ((op === "sum" || op === "avg") && NON_PARTITIONING_GROUPBY[schema]?.[groupBy]) {
+    notes.push(NON_PARTITIONING_GROUPBY[schema][groupBy]);
+  }
+
+  const note = notes.length > 0 ? notes.join(" ") : undefined;
 
   return {
     schema,
