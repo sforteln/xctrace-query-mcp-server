@@ -23,7 +23,7 @@ import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
 const server = createServer();
 
 type InputSchema = {
-  properties?: Record<string, { description?: string; [k: string]: unknown }>;
+  shape?: Record<string, { description?: string; [k: string]: unknown }>;
 };
 type RegisteredTool = { description: string; inputSchema: InputSchema };
 type ToolRegistry = Record<string, RegisteredTool>;
@@ -88,7 +88,7 @@ describe("Structural: tool description shape", () => {
     }
 
     it(`${name}: no param description ≥20 chars is a substring of the tool description`, () => {
-      const props = tool.inputSchema?.properties ?? {};
+      const props = tool.inputSchema?.shape ?? {};
       const violations: string[] = [];
       for (const [param, schema] of Object.entries(props)) {
         const paramDesc = (schema as { description?: string }).description ?? "";
