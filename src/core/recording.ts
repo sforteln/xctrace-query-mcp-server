@@ -142,7 +142,18 @@ export const RECORDING_INTENTS = {
     label: "Network",
     template: "Network",
     launchRequired: false,
-    note: "The Network template already bundles Points of Interest for free.",
+    note:
+      "The Network template already bundles Points of Interest for free. It fuses TWO independent " +
+      "sources with DIFFERENT scoping: (1) per-process CFNetwork/URLSession client tables — respect " +
+      "attach/launch, but only capture OUTBOUND URLSession/CFNetwork client activity, so they're empty " +
+      "for a socket server or any non-URLSession networking (verified live: empty for an MCP server " +
+      "that only accepts inbound connections). (2) NetworkConnectionStats/network-connection-update/" +
+      "network-connection-detected — a system-wide interface tap that IGNORES attach/launch entirely " +
+      "and records every process on the interface; scope these with a pid/process filter via " +
+      "find/aggregate instead. Also: loopback traffic (localhost/127.0.0.1/::1) is NEVER captured — " +
+      "the tap is bound to physical interfaces (e.g. en0/Wi-Fi), not loopback. To profile a localhost-" +
+      "only client+server pair, drive the traffic from ANOTHER host on the same network so it crosses " +
+      "a physical interface instead.",
     privacyNotice:
       "Network recordings capture all HTTP/HTTPS traffic including request bodies, " +
       "response payloads, cookies, and authorization headers. " +
