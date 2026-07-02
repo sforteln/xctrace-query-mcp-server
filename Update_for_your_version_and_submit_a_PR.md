@@ -302,7 +302,9 @@ This section is the brief for PR 2. A PR 2 without a PR 1 schema analysis will b
 
 **If you can't answer these, stop and ask the user.** The user recorded the trace because they understand the domain. A lens that confidently surfaces the wrong signal is worse than no lens at all.
 
-Once you can answer all four, add the lens in `src/lenses/`. The PR description must include a "Heuristic" section that justifies why the lens surfaces the right signal.
+**Verify column claims against a real recording, not `--show-recording-options` or the schema name.** That command only lists configurable option keys, not the actual column/schema shape — record a real trace and read the TOC/export before asserting what a schema does or doesn't carry. Guessing from a name or a template's options JSON has produced real, shipped-then-caught mistakes in this project (an instrument assumed to have no diagnostic value on its own, based on the pattern of similar-looking instruments, turned out to carry its own resolved backtrace once actually recorded).
+
+Once you can answer all four, add the lens in `src/lenses/`. Read `aidocs/howHintsWork.md` first — it covers the established design patterns for `nextActions`/`quickStart` (auto-derived vs. curated hints, table-wide vs. per-row, proactive `RECORDING_INTENTS` notes vs. reactive lens hints, when a hint belongs in a core verb instead of a lens) so a new lens follows the same shape as the existing ones rather than reinventing it. The PR description must include a "Heuristic" section that justifies why the lens surfaces the right signal.
 
 ---
 
