@@ -29,6 +29,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { MiniXmlBuilder, PERCENT_PLACEHOLDER } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
+import { assertMemoryBudget, MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
 import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame, SchemaMeta } from "./parseTable.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
@@ -394,7 +395,7 @@ interface CollectResult {
  * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
  *         on malformed XML.
  */
-function collectTrackDetailNodes(stdout: Readable, countOnly: boolean): Promise<CollectResult> {
+function collectTrackDetailNodes(stdout: Readable, countOnly: boolean, schemaLabel: string): Promise<CollectResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -461,6 +462,25 @@ function collectTrackDetailNodes(stdout: Readable, countOnly: boolean): Promise<
             // Deliberately not appended anywhere — this is the whole point.
           } else {
             currentNodeRows!.push(result);
+            // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE process,
+            // not just this call, so this must fire well before that point.
+            if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
+              try {
+                assertMemoryBudget(rowCount, schemaLabel);
+              } catch (err) {
+                settleReject(err as XctraceError);
+                // sax's stream wrapper predates .destroy() (built on the
+                // legacy Stream base, not Writable/Duplex) — stopping the
+                // SOURCE is enough: no more writes reach saxStream, so it
+                // goes inert and is garbage-collected with nothing else to
+                // release. The sanitizer sits between the two — destroying
+                // stdout stops it from feeding the sanitizer, which stops
+                // feeding saxStream.
+                stdout.destroy();
+                activeBuilder = null;
+                return;
+              }
+            }
           }
           activeBuilder = null;
         }
@@ -505,7 +525,7 @@ export async function parseTrackDetailStream(
   stdout: Readable,
   syntheticSchema: string
 ): Promise<ParsedTable> {
-  const { nodes } = await collectTrackDetailNodes(stdout, false);
+  const { nodes } = await collectTrackDetailNodes(stdout, false, syntheticSchema);
   return buildParsedTable(nodes, syntheticSchema);
 }
 
@@ -515,7 +535,7 @@ export async function parseTrackDetailStream(
  * countOnly mode) — for callers like describe_schema that never touch a
  * single row.
  */
-export async function parseTrackDetailStreamMeta(stdout: Readable): Promise<SchemaMeta> {
-  const { discovery, rowCount } = await collectTrackDetailNodes(stdout, true);
+export async function parseTrackDetailStreamMeta(stdout: Readable, syntheticSchema: string): Promise<SchemaMeta> {
+  const { discovery, rowCount } = await collectTrackDetailNodes(stdout, true, syntheticSchema);
   return buildSchemaMetaFromDiscovery(discovery, rowCount);
 }

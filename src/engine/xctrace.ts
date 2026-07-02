@@ -28,7 +28,8 @@ export type XctraceErrorKind =
   | "target-not-found"   // --attach target process/app not found
   | "bad-template"       // --template name does not exist
   | "permission-denied"  // Instruments/DTServiceHub authorization not granted
-  | "ambiguous-schema";  // schema appears multiple times in this run — needs a position
+  | "ambiguous-schema"   // schema appears multiple times in this run — needs a position
+  | "table-too-large";   // aborted mid-parse — approaching the process's heap limit
 
 export interface XctraceErrorDetails {
   /** The argv passed to xcrun, for diagnostics (no secrets — just paths/flags). */
@@ -59,6 +60,12 @@ export interface XctraceErrorDetails {
     category: string | null;
     codes: string | null;
   }>;
+  /** Present for "table-too-large" — how far the parse got before aborting. */
+  rowsParsedBeforeAbort?: number;
+  /** Present for "table-too-large" — heap usage at abort time, for diagnosis. */
+  heapUsedMb?: number;
+  /** Present for "table-too-large" — the process's actual configured heap ceiling. */
+  heapLimitMb?: number;
 }
 
 /**

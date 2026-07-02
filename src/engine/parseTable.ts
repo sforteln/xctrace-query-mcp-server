@@ -21,6 +21,7 @@ import sax from "sax";
 import type { Readable } from "node:stream";
 import { MiniXmlBuilder } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
+import { assertMemoryBudget, MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
 
 /** A resolved call frame from a track-detail inline backtrace. */
 export interface ResolvedFrame {
@@ -538,6 +539,23 @@ function parseTableStreamInternal(
                 return true;
               })();
               if (inWindow) rows.push(row);
+
+              // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE process,
+              // not just this call, so this must fire well before that point.
+              if (rows.length % MEMORY_CHECK_INTERVAL === 0) {
+                try {
+                  assertMemoryBudget(rows.length, schemaName);
+                } catch (err) {
+                  settleReject(err as XctraceError);
+                  // sax's stream wrapper predates .destroy() (it's built on
+                  // the legacy Stream base, not Writable/Duplex) — stopping
+                  // the SOURCE is enough: no more writes reach saxStream, so
+                  // it goes inert and is garbage-collected with nothing else
+                  // to release.
+                  stdout.destroy();
+                  return;
+                }
+              }
             }
           }
           activeBuilder = null;

@@ -358,7 +358,7 @@ export async function getSchemaMeta(
       const { trackName, detailName } = modelEntry.trackDetail;
       const xpath = buildTrackDetailXPath(run, trackName, detailName);
       const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-      [meta] = await Promise.all([parseTrackDetailStreamMeta(stdout), done]);
+      [meta] = await Promise.all([parseTrackDetailStreamMeta(stdout, schema), done]);
     } else {
       const xpath = buildTableXPath(run, schema);
       const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
