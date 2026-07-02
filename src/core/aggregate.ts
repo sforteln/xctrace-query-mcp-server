@@ -10,10 +10,11 @@
  * derived from the measure column's inferred role, so the agent sees "1.23 s"
  * not "1234567890".
  */
-import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesFilter, matchesTimeRange } from "./tableFilter.js";
+import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
 import type { WeightUnit } from "../engine/roleInference.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -156,10 +157,19 @@ export async function aggregateTable(
   } = opts;
 
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, schema, position);
+
+  // An exact repeat of this call returns instantly — see callCache.ts's
+  // header comment for why this matters beyond simple speedup.
+  const cacheKey = callCacheKey("aggregate", run, schema, { position, groupBy, measure, op, topN, filter, timeRange });
+  const cached = getCachedCall<AggregateResult>(sessionId, cacheKey);
+  if (cached) return cached;
+
+  // Column shape only, no row data yet — enough to classify and pick which
+  // mnemonics are actually needed (see correlate.ts's matching comment).
+  const meta = await getSchemaMeta(sessionId, run, schema, position);
 
   // Resolve unit for the measure column.
-  const classified = classifyWithHints(schema, table.cols);
+  const classified = classifyWithHints(schema, meta.cols);
   const measureClassified = measure
     ? classified.find((c) => c.mnemonic === measure)
     : undefined;
@@ -169,6 +179,21 @@ export async function aggregateTable(
   // the matching comment in find.ts for why firstWithRole alone isn't safe
   // when a schema has 2+ time-role columns.
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
+
+  // Project down to only groupBy/measure/filter/time columns and narrow to
+  // timeRange DURING the parse — unlike query.ts/find.ts, aggregate never
+  // exposes a per-row tableIndex a caller could use to re-fetch from the
+  // full table, so there's no index-alignment contract to protect here.
+  const wanted = new Set<string>([
+    groupBy,
+    ...(measure ? [measure] : []),
+    ...Object.keys(filter ?? {}),
+    ...(timeColumn ? [timeColumn] : []),
+  ]);
+  const table =
+    position === undefined
+      ? await getProjectedTable(sessionId, run, schema, wanted, timeColumn ?? undefined, timeRange)
+      : await getTable(sessionId, run, schema, position);
 
   // --- Pre-filter ---
   let rows = table.rows;
@@ -257,7 +282,7 @@ export async function aggregateTable(
 
   const note = notes.length > 0 ? notes.join(" ") : undefined;
 
-  return {
+  const result: AggregateResult = {
     schema,
     run,
     groupBy,
@@ -270,4 +295,7 @@ export async function aggregateTable(
     ...(op !== "count" && unit ? { unit } : {}),
     ...(note ? { note } : {}),
   };
+
+  setCachedCall(sessionId, cacheKey, result);
+  return result;
 }

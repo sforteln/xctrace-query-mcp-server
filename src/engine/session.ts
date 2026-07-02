@@ -66,6 +66,10 @@ export interface TraceSession {
   /** Per-(run,schema) parsed table cache. Key: `${run}:${schema}`. This is the
    *  real load-once cache — parsed tables are reused across tool calls. */
   tableCache: Map<string, ParsedTable>;
+  /** Memoized query/aggregate/find results keyed by callCache.ts's cacheKey —
+   *  see that module's header comment for why this exists (client-side
+   *  timeouts vs. server-side completion). */
+  callCache: Map<string, unknown>;
   /** Structured schema model: TOC metadata + lazily-populated column definitions. */
   schemaModel: SchemaModel;
   /** Xcode version that produced this trace (e.g. "16.2"). Null if xcodebuild unavailable. */
@@ -166,6 +170,7 @@ export async function openTrace(
     instruments,
     timeRange: null,
     tableCache: new Map(),
+    callCache: new Map(),
     schemaModel: buildSchemaModel(toc.runs),
     xcodeVersion,
   };

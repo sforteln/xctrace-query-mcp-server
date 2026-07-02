@@ -11,10 +11,11 @@
  *   FM needsReform  → [{ col: "response",      op: "contains", val: "needsReformulation\": true" }]
  *   FM slow request → [{ col: "duration",      op: "gt",       val: 5000000000 }]  // >5 s in ns
  */
-import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesTimeRange } from "./tableFilter.js";
+import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
 import type { NormalizedRow } from "../engine/parseTable.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -182,19 +183,44 @@ export async function findRows(
   const limit = Math.min(opts.limit ?? 50, 500);
   const run = opts.run ?? sessionLastRun(sessionId);
 
-  const table = await getTable(sessionId, run, schema, position);
+  // An exact repeat of this call returns instantly — see callCache.ts's
+  // header comment for why this matters beyond simple speedup.
+  const cacheKey = callCacheKey("find", run, schema, { position, where, columns, sort, offset, limit, timeRange });
+  const cached = getCachedCall<FindResult>(sessionId, cacheKey);
+  if (cached) return cached;
 
-  const classified = classifyWithHints(schema, table.cols);
+  // Column shape only, no row data yet — enough to classify and pick which
+  // mnemonics are actually needed (see correlate.ts's matching comment).
+  const meta = await getSchemaMeta(sessionId, run, schema, position);
+
+  const classified = classifyWithHints(schema, meta.cols);
   // Pinned primaryTime wins — a schema can have 2+ time-role columns (e.g.
   // InstructionsTable's start + session-start), so falling straight to
   // firstWithRole would only be correct by coincidence of column order.
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
-  const allMnemonics = table.cols.map((c) => c.mnemonic);
+  const allMnemonics = meta.cols.map((c) => c.mnemonic);
   const columnsShown =
     columns && columns.length > 0
       ? columns.filter((m) => allMnemonics.includes(m))
       : allMnemonics;
+
+  // Project down to only display/condition/sort/time columns. Deliberately
+  // NOT passing timeRange to getProjectedTable (unlike aggregate.ts) —
+  // narrowing during the parse would shift which array index each surviving
+  // row lands at, and `tableIndex` below is a public contract get_row relies
+  // on to re-fetch this exact row from the FULL, unfiltered table. Only
+  // position-less (unambiguous) schemas get the fast path.
+  const wanted = new Set<string>([
+    ...columnsShown,
+    ...where.map((c) => c.col),
+    ...(sort?.by ? [sort.by] : []),
+    ...(timeColumn ? [timeColumn] : []),
+  ]);
+  const table =
+    position === undefined
+      ? await getProjectedTable(sessionId, run, schema, wanted)
+      : await getTable(sessionId, run, schema, position);
 
   // Pre-compile regex patterns.
   const regexCache = new Map<string, RegExp>();
@@ -238,7 +264,7 @@ export async function findRows(
     return { index: offset + pageIdx, tableIndex, cells };
   });
 
-  return {
+  const result: FindResult = {
     schema,
     run,
     conditions: where,
@@ -250,4 +276,7 @@ export async function findRows(
     rows,
     columnsShown,
   };
+
+  setCachedCall(sessionId, cacheKey, result);
+  return result;
 }

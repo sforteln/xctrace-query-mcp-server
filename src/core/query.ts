@@ -6,10 +6,11 @@
  * deferred to getRow. Role awareness lets callers specify a timeRange window
  * without knowing which column carries timestamps.
  */
-import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { matchesFilter, matchesTimeRange, compareRows } from "./tableFilter.js";
+import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
 import type { NormalizedRow } from "../engine/parseTable.js";
 
 const DEFAULT_LIMIT = 20;
@@ -94,21 +95,50 @@ export async function queryTable(
   // Resolve run — default to last run when omitted.
   const run = opts.run ?? sessionLastRun(sessionId);
 
-  // Fetch (or hit cache for) the parsed table.
-  const table = await getTable(sessionId, run, schema, position);
+  // An exact repeat of this call (same schema/run/filter/sort/columns/page)
+  // returns instantly — see callCache.ts's header comment for why this
+  // matters beyond simple speedup (client-side timeouts vs. server-side
+  // completion on multi-minute schemas).
+  const cacheKey = callCacheKey("query", run, schema, { position, filter, columns, timeRange, sort, offset, limit });
+  const cached = getCachedCall<QueryResult>(sessionId, cacheKey);
+  if (cached) return cached;
 
-  // Find the primary time column for timeRange filtering. Pinned primaryTime
-  // wins — see the matching comment in find.ts for why firstWithRole alone
-  // isn't safe when a schema has 2+ time-role columns.
-  const classified = classifyWithHints(schema, table.cols);
+  // Column shape only, no row data yet — enough to classify and pick which
+  // mnemonics are actually needed before paying for a potentially huge
+  // fetch (see correlate.ts's matching comment / PMT:still-wisp).
+  const meta = await getSchemaMeta(sessionId, run, schema, position);
+  const classified = classifyWithHints(schema, meta.cols);
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
   // Determine which column mnemonics to include in the response.
-  const allMnemonics = table.cols.map((c) => c.mnemonic);
+  const allMnemonics = meta.cols.map((c) => c.mnemonic);
   const columnsShown =
     columns && columns.length > 0
       ? columns.filter((m) => allMnemonics.includes(m))
       : allMnemonics;
+
+  // Project down to only the columns this call actually touches — display
+  // columns, filter/sort keys, and (if this schema has one) the time column
+  // used for timeRange, PLUS the filter/sort mnemonics even when the caller
+  // didn't ask for them in `columns` (matchesFilter/compareRows need the
+  // cell present, an absent one silently reads as "doesn't match"/"equal").
+  // Deliberately NOT passing timeRange to getProjectedTable here (unlike
+  // aggregate.ts) — narrowing during the parse would change which array
+  // index each surviving row lands at, and `tableIndex` below is a public
+  // contract get_row relies on to re-fetch this exact row from the FULL,
+  // unfiltered table. Only position-less (unambiguous) schemas get the fast
+  // path; getProjectedTable doesn't support `position`, so an ambiguous
+  // schema falls back to the full fetch, same as before this change.
+  const wanted = new Set<string>([
+    ...columnsShown,
+    ...Object.keys(filter ?? {}),
+    ...(sort?.by ? [sort.by] : []),
+    ...(timeColumn ? [timeColumn] : []),
+  ]);
+  const table =
+    position === undefined
+      ? await getProjectedTable(sessionId, run, schema, wanted)
+      : await getTable(sessionId, run, schema, position);
 
   // Track raw table positions through filter + sort so get_row can use them.
   type IndexedRow = { row: NormalizedRow; tableIndex: number };
@@ -146,7 +176,7 @@ export async function queryTable(
     return { index: offset + pageIdx, tableIndex, cells };
   });
 
-  return {
+  const result: QueryResult = {
     schema,
     run,
     totalRows,
@@ -159,4 +189,7 @@ export async function queryTable(
     timeColumn,
     hasBacktrace: classified.some((c) => c.roleInfo.role === "backtrace"),
   };
+
+  setCachedCall(sessionId, cacheKey, result);
+  return result;
 }
