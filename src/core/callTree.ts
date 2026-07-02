@@ -360,6 +360,35 @@ function formatNs(ns: number): string {
   return `${Math.round(ns)} ns`;
 }
 
+/**
+ * CPU cycles — a genuinely different physical quantity from wall-clock time,
+ * not just a different scale. Verified live: cpu-profile's own weight column
+ * (engineering-type "cycle-weight") holds a raw cycle count, e.g. 104884 —
+ * feeding that through formatNs() would silently mislabel it "104.88 µs",
+ * which is wrong in kind, not just wrong in magnitude (cycles are hardware-
+ * invariant; nanoseconds vary with clock speed/throttling — that's the whole
+ * reason to reach for cycle-based profiling in the first place). Matches
+ * xctrace's own fmt convention for this column (e.g. "104.88 k").
+ */
+function formatCycles(cycles: number): string {
+  if (cycles >= 1e9) return `${(cycles / 1e9).toFixed(2)} B cycles`;
+  if (cycles >= 1e6) return `${(cycles / 1e6).toFixed(2)} M cycles`;
+  if (cycles >= 1e3) return `${(cycles / 1e3).toFixed(2)} k cycles`;
+  return `${Math.round(cycles)} cycles`;
+}
+
+/**
+ * Which formatter applies to a schema's weight column, resolved once per
+ * call_tree() invocation from the column's real engineering-type — never
+ * assumed from the schema name. "cycle-weight" (cpu-profile) gets cycles;
+ * everything else (e.g. time-profile's plain "weight", which IS nanoseconds
+ * despite the generic type name — verified live) defaults to formatNs, the
+ * historical behavior.
+ */
+function formatWeight(value: number, isCycleWeight: boolean): string {
+  return isCycleWeight ? formatCycles(value) : formatNs(value);
+}
+
 // ─── Tree serialization ───────────────────────────────────────────────────────
 
 function serializeNode(
@@ -367,7 +396,8 @@ function serializeNode(
   totalWeight: number,
   depth: number,
   maxDepth: number,
-  topN: number
+  topN: number,
+  isCycleWeight: boolean
 ): CallTreeNode {
   const sorted = [...node.children.values()].sort((a, b) => b.totalWeight - a.totalWeight);
   const children: CallTreeNode[] = [];
@@ -377,7 +407,7 @@ function serializeNode(
     const toShow = sorted.slice(0, topN);
     childrenOmitted = Math.max(0, sorted.length - topN);
     for (const child of toShow) {
-      children.push(serializeNode(child, totalWeight, depth + 1, maxDepth, topN));
+      children.push(serializeNode(child, totalWeight, depth + 1, maxDepth, topN, isCycleWeight));
     }
   } else if (sorted.length > 0) {
     childrenOmitted = sorted.length;
@@ -388,8 +418,8 @@ function serializeNode(
     binary: node.binary,
     totalSamples: node.totalSamples,
     selfSamples: node.selfSamples,
-    totalWeightFmt: formatNs(node.totalWeight),
-    selfWeightFmt: formatNs(node.selfWeight),
+    totalWeightFmt: formatWeight(node.totalWeight, isCycleWeight),
+    selfWeightFmt: formatWeight(node.selfWeight, isCycleWeight),
     pctOfTotal: totalWeight > 0 ? Math.round((node.totalWeight / totalWeight) * 1000) / 10 : 0,
     ...(isBlockingWaitFrame(node.name, node.selfWeight, node.totalWeight) ? { isWait: true } : {}),
     children,
@@ -470,6 +500,16 @@ export async function callTree(
   const cols = asArray<Record<string, any>>(firstSchema?.col);
   const hasTaggedBt = cols.some(c => String(c["engineering-type"] ?? "") === "tagged-backtrace");
 
+  // Verified live: cpu-profile's weight column is engineering-type
+  // "cycle-weight" (raw CPU cycles) — structurally parseable the same way as
+  // time-profile's "weight" (nanoseconds, despite the generic type name),
+  // but a different physical quantity. Detected from the real schema, never
+  // assumed from the schema name, so any future sample-based schema with a
+  // cycle-weight column gets this for free too.
+  const weightCol = cols.find((c) => String(c.mnemonic ?? "") === "weight");
+  const weightTag = String(weightCol?.["engineering-type"] ?? "weight");
+  const isCycleWeight = weightTag === "cycle-weight";
+
   if (!hasTaggedBt) {
     // A plain "backtrace"-typed column (distinct from "tagged-backtrace")
     // carries one already-resolved stack per row, not a sample tree to
@@ -502,11 +542,17 @@ export async function callTree(
       // Register all id definitions in this row first (forward-ref safety).
       registerIds(rowNode, cache);
 
-      // Weight — skip sentinel rows.
-      const weightNode = resolveRef(rowNode.weight as Record<string, any>, cache);
+      // Weight — skip sentinel rows. The row's XML element is named after
+      // the column's engineering-type, not its mnemonic (same convention
+      // parseTable.ts documents) — "weight" only coincidentally matches for
+      // time-profile; cpu-profile's own weight column is tagged
+      // <cycle-weight>, and hardcoding "weight" here silently dropped every
+      // single row for that schema (weightNode always undefined). Resolved
+      // from the real schema instead.
+      const weightNode = resolveRef(rowNode[weightTag] as Record<string, any>, cache);
       if (!weightNode || weightNode["@_fmt"] === undefined) continue;
-      const weightNs = Number(weightNode["#text"] ?? "0");
-      if (!isFinite(weightNs) || weightNs <= 0) continue;
+      const weightValue = Number(weightNode["#text"] ?? "0");
+      if (!isFinite(weightValue) || weightValue <= 0) continue;
 
       // Thread filter.
       if (thread) {
@@ -544,9 +590,9 @@ export async function callTree(
       // Frames are leaf-first in the XML; reverse for root-first tree.
       frames.reverse();
 
-      addSample(roots, frames, weightNs);
-      if (view === "hot") addHotSample(hot, frames, weightNs);
-      totalWeight += weightNs;
+      addSample(roots, frames, weightValue);
+      if (view === "hot") addHotSample(hot, frames, weightValue);
+      totalWeight += weightValue;
       totalSamples++;
     }
   }
@@ -557,10 +603,10 @@ export async function callTree(
       name: e.name,
       binary: e.binary,
       selfSamples: e.selfSamples,
-      selfWeightFmt: formatNs(e.selfWeight),
+      selfWeightFmt: formatWeight(e.selfWeight, isCycleWeight),
       pctSelfOfTotal: totalWeight > 0 ? Math.round((e.selfWeight / totalWeight) * 1000) / 10 : 0,
       totalSamples: e.totalSamples,
-      totalWeightFmt: formatNs(e.totalWeight),
+      totalWeightFmt: formatWeight(e.totalWeight, isCycleWeight),
       pctTotalOfTotal: totalWeight > 0 ? Math.round((e.totalWeight / totalWeight) * 1000) / 10 : 0,
       ...(isBlockingWaitFrame(e.name, e.selfWeight, e.totalWeight) ? { isWait: true } : {}),
     }));
@@ -579,7 +625,7 @@ export async function callTree(
       schema,
       run,
       totalSamples,
-      totalWeightFmt: formatNs(totalWeight),
+      totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
       threadFilter: thread ?? null,
       view,
       hotFunctions,
@@ -621,7 +667,7 @@ export async function callTree(
       schema,
       run,
       totalSamples,
-      totalWeightFmt: formatNs(totalWeight),
+      totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
       threadFilter: thread ?? null,
       view,
       spine,
@@ -634,7 +680,7 @@ export async function callTree(
   const rootsSorted = [...roots.values()].sort((a, b) => b.totalWeight - a.totalWeight);
   const rootsOut: CallTreeNode[] = rootsSorted
     .slice(0, topN)
-    .map(r => serializeNode(r, totalWeight, 0, maxDepth, topN));
+    .map(r => serializeNode(r, totalWeight, 0, maxDepth, topN, isCycleWeight));
 
   const rootsOmitted = rootsSorted.length - rootsOut.length;
 
@@ -663,7 +709,7 @@ export async function callTree(
     schema,
     run,
     totalSamples,
-    totalWeightFmt: formatNs(totalWeight),
+    totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
     threadFilter: thread ?? null,
     view,
     roots: rootsOut,
