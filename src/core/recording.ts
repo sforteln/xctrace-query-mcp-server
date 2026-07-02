@@ -59,21 +59,90 @@ export interface RecordingIntent {
   recordingOptions?: Record<string, Record<string, unknown>>;
 }
 
+/**
+ * Which extra instruments a built-in xctrace TEMPLATE bundles for free, beyond
+ * its own headline instrument — verified via `xcrun xctrace record --template
+ * <name> --show-recording-options` for every template referenced below (that
+ * command prints one entry per bundled instrument that HAS a configurable
+ * recording option; an instrument with no configurable options, e.g. Thermal
+ * State, is invisible to it, so this is a confirmed lower bound, not
+ * necessarily the complete instrument list a template records).
+ *
+ * Why this matters: most of these template names are ALSO valid standalone
+ * `--instrument` names (e.g. "Time Profiler" is both a template and an
+ * instrument). Composing one of these names via `instruments: [...]` on top
+ * of an unrelated base template gives you ONLY that bare instrument — none of
+ * the bundle below — with no signal that anything is missing. An agent that
+ * reaches for `instruments: ["Time Profiler"]` instead of `type: "cpu"` (or
+ * `template: "Time Profiler"`) silently loses Hangs + Points of Interest and
+ * would have no way to know Hangs data was never being recorded at all.
+ * bundleWarningsFor() below uses this table to catch that case in-band.
+ */
+export const TEMPLATE_BUNDLES: Record<string, string[]> = {
+  "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"],
+  "SwiftUI": ["Hangs", "Time Profiler"],
+  "CPU Profiler": ["Hangs", "Points of Interest"],
+  "CPU Counters": ["Time Profiler", "Points of Interest"],
+  "Power Profiler": ["Metal Performance Overview", "Time Profiler"],
+  "Allocations": ["Points of Interest"],
+  "Leaks": ["Points of Interest"],
+  "Core AI": ["Time Profiler"],
+  "Core ML": ["Time Profiler"],
+  "Processor Trace": ["Points of Interest"],
+  "Network": ["Points of Interest"],
+  "App Launch": ["Time Profiler"],
+  "Animation Hitches": ["Hangs", "Time Profiler"],
+  "Swift Concurrency": ["Hangs", "Points of Interest", "Time Profiler"],
+};
+
+/**
+ * Warn when a caller-supplied `instruments` entry names a bare instrument
+ * that is ALSO a richer built-in template (per TEMPLATE_BUNDLES) — the
+ * concrete trap this table exists to catch. Only checks caller-supplied
+ * names, not an intent's own curated `extraInstruments` (those are trusted,
+ * already accounted for by whoever wrote the intent).
+ */
+export function bundleWarningsFor(
+  resolvedTemplate: string,
+  callerInstruments: string[] | undefined
+): string[] {
+  const warnings: string[] = [];
+  for (const name of callerInstruments ?? []) {
+    if (name === resolvedTemplate) continue;
+    const bundle = TEMPLATE_BUNDLES[name];
+    if (bundle && bundle.length > 0) {
+      warnings.push(
+        `"${name}" was added here as a single instrument — it does NOT include what the ` +
+        `"${name}" TEMPLATE bundles for free (${bundle.join(" + ")}). If you wanted those too, ` +
+        `use template: "${name}" (or the matching \`type\`, if one exists) instead of composing ` +
+        `it via instruments.`
+      );
+    }
+  }
+  return warnings;
+}
+
 export const RECORDING_INTENTS = {
   cpu: {
     label: "Time Profiler",
     template: "Time Profiler",
     launchRequired: false,
+    note:
+      "The Time Profiler template already bundles Hangs + Points of Interest + Thermal State " +
+      "for free — after opening, query 'potential-hangs'/'hitches' and points-of-interest " +
+      "schemas alongside the CPU samples, no extra instruments needed.",
   },
   memory: {
     label: "Allocations",
     template: "Allocations",
     launchRequired: false,
+    note: "The Allocations template already bundles Points of Interest for free.",
   },
   network: {
     label: "Network",
     template: "Network",
     launchRequired: false,
+    note: "The Network template already bundles Points of Interest for free.",
     privacyNotice:
       "Network recordings capture all HTTP/HTTPS traffic including request bodies, " +
       "response payloads, cookies, and authorization headers. " +
@@ -85,7 +154,8 @@ export const RECORDING_INTENTS = {
     launchRequired: true,
     note:
       "App Launch requires --launch: its purpose is capturing the startup sequence from " +
-      "process creation. Use record_cpu with attach for CPU profiling of a running app.",
+      "process creation. Use record_cpu with attach for CPU profiling of a running app. " +
+      "The App Launch template already bundles Time Profiler for free.",
   },
   leaks: {
     label: "Leaks",
@@ -93,7 +163,8 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records Leaks only — fast, gives the leak list without responsible call frames. " +
-      'Use "leaks-backtraces" to also capture stack frames (records Allocations + Leaks).',
+      'Use "leaks-backtraces" to also capture stack frames (records Allocations + Leaks). ' +
+      "The Leaks template already bundles Points of Interest for free.",
   },
   "leaks-backtraces": {
     label: "Allocations + Leaks (with backtraces)",
@@ -110,7 +181,8 @@ export const RECORDING_INTENTS = {
       "get_row's PRE-ATTACHMENT label on Leaks/Leaks (join to Allocations/Allocations " +
       'List shows timestamp 0) and by Instruments.app\'s own UI ("No stack trace is ' +
       'available for this leak. It may have been allocated before the recording ' +
-      'started."). Attach is fine when you only need the leak list/counts, not the callsite.',
+      'started."). Attach is fine when you only need the leak list/counts, not the callsite. ' +
+      "The Allocations base template already bundles Points of Interest for free.",
   },
   hangs: {
     label: "Activity Monitor (Hangs & Hitches)",
@@ -118,7 +190,11 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records hangs, potential hangs, and hang risk events. " +
-      "After opening, query the 'potential-hangs', 'hitches', and 'hang-risks' schemas.",
+      "After opening, query the 'potential-hangs', 'hitches', and 'hang-risks' schemas. " +
+      "This template does NOT bundle Points of Interest — if the app calls os_signpost around " +
+      "its own operations, pass instruments: [\"Points of Interest\"] and correlate() a hang " +
+      "interval against the signpost schemas (os-signpost/OSSignpostIntervals) to see which " +
+      "named app operation was running when the hang occurred.",
   },
   hitches: {
     label: "Animation Hitches",
@@ -126,7 +202,12 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records animation hitches (frame drops during scrolling, animations, and transitions). " +
-      "After opening, query the 'hitches' schema.",
+      "After opening, query the 'hitches' schema. The Animation Hitches template already " +
+      "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
+      "hitch detection, vs. the default 250ms), but NOT Points of Interest — if the app calls " +
+      "os_signpost around its own operations, pass instruments: [\"Points of Interest\"] and " +
+      "correlate() a hitch interval against the signpost schemas to see which named app " +
+      "operation was running when the frame dropped.",
   },
   "swift-concurrency": {
     label: "Swift Concurrency",
@@ -135,7 +216,8 @@ export const RECORDING_INTENTS = {
     note:
       "Records Swift Task and Actor lifetimes, executor queue depth, and task state transitions. " +
       "After opening, query SwiftTaskLifetime, SwiftActorLifetime, SwiftActorQueueSize, " +
-      "SwiftTaskCreationEvent, and SwiftTaskStateTable schemas.",
+      "SwiftTaskCreationEvent, and SwiftTaskStateTable schemas. The Swift Concurrency template " +
+      "already bundles Hangs + Points of Interest + Time Profiler for free.",
   },
   swiftui: {
     label: "SwiftUI",
@@ -145,7 +227,10 @@ export const RECORDING_INTENTS = {
       "Records SwiftUI view body re-evaluations, state changes, and layout passes " +
       "(layout tracing is enabled by default). After opening, query 'swiftui-updates' " +
       "and 'swiftui-changes' for update/cause events, or 'swiftui-layout-updates' / " +
-      "'SwiftUILayoutUpdates2' for per-view layout pass timing.",
+      "'SwiftUILayoutUpdates2' for per-view layout pass timing. The SwiftUI template already " +
+      "bundles Hangs + Time Profiler for free (with highFrequencySampling enabled) — query " +
+      "Time Profiler's schemas directly for CPU cost alongside the view-update data, no " +
+      "extra instruments or a separate recording needed.",
     recordingOptions: {
       SwiftUI: { enableLayoutTracing: true },
     },

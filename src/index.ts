@@ -1090,7 +1090,12 @@ export function createServer(): McpServer {
         "SwiftData fetches/faults to the SwiftUI update that triggered them — get_row on " +
         "the resulting core-data-fetch/fault row will show the full resolved call stack " +
         "including the triggering SwiftUI frame). Names must match `xcrun xctrace list " +
-        "instruments` exactly, e.g. \"SwiftUI\", \"Data Fetches\", \"Network\"."
+        "instruments` exactly, e.g. \"SwiftUI\", \"Data Fetches\", \"Network\". Several of " +
+        "these names (e.g. \"Time Profiler\", \"Allocations\", \"SwiftUI\") are ALSO built-in " +
+        "template names that bundle extra instruments for free (Time Profiler → +Hangs " +
+        "+Points of Interest+Thermal State) — adding one here gives you only the bare " +
+        "instrument, not that bundle; if the response's templateBundleWarning fires, prefer " +
+        "the matching `type`/`template` instead."
       ),
     template: z
       .string()
@@ -1178,6 +1183,9 @@ export function createServer(): McpServer {
         "xctrace flushes buffered data and exits cleanly before this call returns. " +
         "Returns the .trace path — pass it to open_trace to start navigating results. " +
         "Safe to call on a time-limited recording that has already auto-stopped. " +
+        "xctrace can exit non-zero during finalize even when it wrote a complete, valid trace — " +
+        "in that case status is still \"done\" but a finalizeWarning field is included; check it " +
+        "before trusting an empty schema as \"ran and found nothing\" rather than \"write interrupted\". " +
         "⚠️ Not for checking status without stopping — use get_recording_status for non-destructive polling.",
       inputSchema: {
         recordingId: z
@@ -1213,7 +1221,8 @@ export function createServer(): McpServer {
       description:
         "Check the current status of an interactive recording without stopping it. " +
         'Status values: "recording" (in progress), "finalizing" (SIGINT sent, flushing), ' +
-        '"done" (finished cleanly — call open_trace), "failed" (non-zero exit). ' +
+        '"done" (finished cleanly, or exited non-zero but the trace bundle still exists — ' +
+        'check finalizeWarning from stop_recording), "failed" (non-zero exit with no usable trace). ' +
         "Useful for polling time-limited recordings to know when they auto-complete. " +
         "⚠️ Not for stopping a recording — use stop_recording to finalize and get the .trace path.",
       inputSchema: {

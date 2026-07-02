@@ -17,11 +17,13 @@
  * recordings (xctrace would keep running, but we'd lose the recordingId).
  */
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import { spawnRecord } from "../engine/record.js";
 import {
   defaultOutputPath,
   writeRecordingOptionsFile,
   collectPrivacyNotices,
+  bundleWarningsFor,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -52,6 +54,21 @@ interface ActiveRecording {
    * so a failure like that isn't a dead end with nothing to go on.
    */
   stdout: string;
+  /**
+   * Set when xctrace exited non-zero at finalize but the trace bundle still
+   * exists — verified live: a launch-mode recording exited 54 during
+   * teardown twice, and the resulting trace was still valid and openable
+   * (765 MB, full structure) both times. A non-zero finalize exit does NOT
+   * mean the recording is unusable, so this is surfaced as a warning rather
+   * than discarding real data by throwing "failed". But it can also mean a
+   * schema's write was interrupted mid-flight while others (already fully
+   * written) survive intact — also verified live: Allocations came through
+   * complete (765 MB) while Leaks/Leaks came back with 0 rows and NO
+   * COLUMNS AT ALL in the same trace, meaning that schema's write likely
+   * never completed — a schema in this state must not be read as "ran and
+   * found nothing," only as "may not have finished."
+   */
+  finalizeWarning?: string;
 }
 
 const activeRecordings = new Map<string, ActiveRecording>();
@@ -87,6 +104,7 @@ export interface StartSessionResult {
   instrumentsUsed: string;
   note?: string;
   privacyNotice?: string;
+  templateBundleWarning?: string;
 }
 
 /**
@@ -137,16 +155,29 @@ export async function startSession(
   const resolvedPrivacyNotice =
     [...new Set([intent.privacyNotice, ...adHocNotices].filter((n): n is string => Boolean(n)))].join("\n\n") ||
     undefined;
+  const resolvedBundleWarning = bundleWarningsFor(resolvedTemplate, instruments).join("\n\n") || undefined;
 
   const tracePath = await defaultOutputPath(resolvedTemplate);
   const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, intent.recordingOptions);
   const recordingId = randomUUID();
+
+  // Verified live: launching a .app under an injecting instrument (e.g.
+  // Allocations/Leaks) can crash during AppKit's window-state restoration —
+  // liboainject's autorelease-pool interposition trips
+  // -[NSView _clearRememberedEditingFirstResponder] mid-teardown, well before
+  // any app code runs. -ApplePersistenceIgnoreState YES skips that
+  // restoration path entirely. There's no real reason a profiling launch
+  // would ever want stale window state restored, so this is unconditional
+  // for .app launches rather than an opt-in flag.
+  const resolvedLaunchArgs =
+    launch !== undefined && launch.endsWith(".app") ? ["-ApplePersistenceIgnoreState", "YES"] : undefined;
 
   const handle = spawnRecord({
     template: resolvedTemplate,
     extraInstruments: resolvedExtraInstruments,
     attach,
     launch,
+    launchArgs: resolvedLaunchArgs,
     device,
     timeLimit,
     output: tracePath,
@@ -196,7 +227,7 @@ export async function startSession(
     resolveExit();
   });
 
-  handle.process.on("close", (code: number | null) => {
+  handle.process.on("close", async (code: number | null) => {
     rec.stderr = stderrChunks.join("").trim();
     rec.stdout = stdoutChunks.join("").trim();
     rec.exitCode = code;
@@ -204,7 +235,34 @@ export async function startSession(
     // It can also exit null when killed by a signal — treat null as done since
     // SIGINT-triggered exits sometimes report null on macOS.
     if (rec.status !== "failed") {
-      rec.status = code === null || code === 0 ? "done" : "failed";
+      if (code === null || code === 0) {
+        rec.status = "done";
+      } else {
+        // A non-zero exit here does NOT necessarily mean the recording is
+        // unusable — verified live: a launch-mode recording exited non-zero
+        // (54) during finalize teardown twice, and both times the trace
+        // bundle was still complete, valid, and openable (765 MB). Check
+        // whether the bundle actually exists before discarding real data.
+        const traceExists = await stat(rec.tracePath).then(
+          () => true,
+          () => false
+        );
+        if (traceExists) {
+          rec.status = "done";
+          rec.finalizeWarning =
+            `xctrace exited with code ${code} during finalize — the trace bundle exists and may still ` +
+            "be usable, but finalize may have been interrupted before every schema finished writing " +
+            "(one confirmed cause, for launch-mode recordings under an injecting instrument like " +
+            "Allocations/Leaks: the launched app itself crashing during AppKit window-state restoration, " +
+            "which kills xctrace's target and cuts the recording short — see -ApplePersistenceIgnoreState " +
+            "default in startSession). A schema returning zero rows with NO COLUMNS AT ALL is a sign its " +
+            "write may never have completed — that is different from \"the instrument ran and found " +
+            "nothing,\" so don't treat an empty result as ground truth without checking describe_schema/" +
+            "list_instruments first.";
+        } else {
+          rec.status = "failed";
+        }
+      }
     }
     rec.process = null;
     resolveExit();
@@ -220,6 +278,7 @@ export async function startSession(
     instrumentsUsed: resolvedLabel,
     ...(intent.note ? { note: intent.note } : {}),
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
+    ...(resolvedBundleWarning ? { templateBundleWarning: resolvedBundleWarning } : {}),
   };
 }
 
@@ -231,6 +290,7 @@ export interface StopSessionResult {
   tracePath: string;
   template: string;
   instrumentsUsed: string;
+  finalizeWarning?: string;
 }
 
 /**
@@ -283,6 +343,7 @@ export async function stopSession(
     tracePath: rec.tracePath,
     template: rec.template,
     instrumentsUsed: rec.instrumentsUsed,
+    ...(rec.finalizeWarning ? { finalizeWarning: rec.finalizeWarning } : {}),
   };
 }
 

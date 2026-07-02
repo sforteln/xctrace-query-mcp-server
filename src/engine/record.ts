@@ -45,6 +45,11 @@ export interface RecordOptions {
    * Mutually exclusive with `attach`. Required for App Launch template.
    */
   launch?: string;
+  /**
+   * Extra arguments passed to the launched process (xctrace's
+   * `--launch -- command [arguments]` form). Only meaningful with `launch`.
+   */
+  launchArgs?: string[];
   /** Target device name or UDID. Omit to record on the host Mac. */
   device?: string;
   /** Recording duration, e.g. "15s", "1m", "1m30s". Omit for no time limit. */
@@ -153,18 +158,21 @@ function classifyRecordFailure(
  * spawning.
  */
 export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
-  const { template, extraInstruments, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
+  const { template, extraInstruments, attach, launch, launchArgs, device, timeLimit, output, recordingOptionsFile } = opts;
 
+  // `--launch -- command [arguments]` consumes everything after `--` as the
+  // launch target and its args, so it must be the LAST thing in argv — every
+  // other option (including --output) has to come before it.
   const args: string[] = [
     "xctrace", "record",
     "--template", template,
     ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
-    ...(attach !== undefined ? ["--attach", attach] : []),
-    ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),
     ...(recordingOptionsFile ? ["--recording-options", recordingOptionsFile] : []),
     "--output", output,
+    ...(attach !== undefined ? ["--attach", attach] : []),
+    ...(launch !== undefined ? ["--launch", "--", launch, ...(launchArgs ?? [])] : []),
   ];
 
   const proc = spawn(XCRUN, args, {
@@ -191,7 +199,7 @@ export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
  *   - "xctrace-not-found" xcrun binary missing (Xcode not installed)
  */
 export async function record(opts: RecordOptions): Promise<RecordResult> {
-  const { template, extraInstruments, attach, launch, device, timeLimit, output, recordingOptionsFile } = opts;
+  const { template, extraInstruments, attach, launch, launchArgs, device, timeLimit, output, recordingOptionsFile } = opts;
 
   if (attach !== undefined && launch !== undefined) {
     throw new XctraceError(
@@ -208,16 +216,19 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
     );
   }
 
+  // `--launch -- command [arguments]` consumes everything after `--` as the
+  // launch target and its args, so it must be the LAST thing in argv — every
+  // other option (including --output) has to come before it.
   const args: string[] = [
     "xctrace", "record",
     "--template", template,
     ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
-    ...(attach !== undefined ? ["--attach", attach] : []),
-    ...(launch !== undefined ? ["--launch", launch] : []),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),
     ...(recordingOptionsFile ? ["--recording-options", recordingOptionsFile] : []),
     "--output", output,
+    ...(attach !== undefined ? ["--attach", attach] : []),
+    ...(launch !== undefined ? ["--launch", "--", launch, ...(launchArgs ?? [])] : []),
   ];
 
   const limitMs = timeLimit ? parseTimeLimitMs(timeLimit) : null;
