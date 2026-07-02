@@ -543,7 +543,25 @@ export function createServer(): McpServer {
       description:
         "Build a folded call tree from inline symbolicated backtraces, weighted by sample duration. " +
         "Use schema 'time-profile' for Time Profiler — it carries pre-symbolicated <frame> elements. " +
-        "Frames are grouped root-to-leaf; each node shows total/self weight, sample count, and % of total. " +
+        "Three views via `view`: \"tree\" (default) groups frames root-to-leaf with total/self weight, " +
+        "sample count, and % of total, but truncates at maxDepth — a real hot frame can end up past the " +
+        "cap with only childrenOmitted as a clue it's missing. \"hot\" instead returns a flat list of " +
+        "functions ranked by self-time (with inclusive/total time alongside, for \"which subsystem " +
+        "dominates\"), summed across every call site, immune to depth truncation — use this for \"where " +
+        "did the time actually go\". \"spine\" returns the single heaviest root-to-leaf path with no depth " +
+        "cap — deliberately compact (name/binary/%-of-total/%-of-parent only, no per-frame weight detail; " +
+        "use \"hot\" for magnitude) since a GUI main-thread spine can run 100+ frames deep. A note fires " +
+        "where %-of-parent first drops below 80% (the path stops being clearly dominant beyond that depth) " +
+        "— use this for \"what's the one path that matters\" instead of manually re-deriving it from a " +
+        "truncated tree. Both \"hot\" and \"spine\" flag known wait/blocking frames (isWait), but only when " +
+        "that frame's OWN self-time dominates its own total — a wait-named frame with heavy children (e.g. " +
+        "a run-loop callout doing real nested work) is a callout, not idle, so isWait is false there; a " +
+        "true isWait means the thread was actually blocked, not CPU-bound, and Time Profiler shows the " +
+        "wait but never what it's blocked on. \"spine\" also returns appCodeStartsAtDepth: on a main " +
+        "thread the run-loop entry chain (NSApplicationMain → ... → RunCurrentEventLoopInMode → ...) is " +
+        "mandatory scaffolding in every sample, idle or busy, so it carries no signal on its own — this " +
+        "marks the depth where the sample's own distinguishing work actually starts (spine itself is " +
+        "never trimmed, this is just a pointer into it). " +
         "Filter by thread name/id substring to focus on one thread. " +
         "`run` defaults to the most recent run. " +
         "⚠️ Not for schemas without backtrace columns — only works on sample-based instruments like time-profile.",
@@ -564,20 +582,29 @@ export function createServer(): McpServer {
           })
           .optional()
           .describe("Restrict samples to a time window (nanoseconds)."),
+        view: z
+          .enum(["tree", "hot", "spine"])
+          .optional()
+          .describe(
+            '"tree" (default): branching, depth-capped tree for browsing structure. ' +
+            '"hot": flat, ranked-by-self-time function list — answers "where did the time go" directly, ' +
+            "no depth cap. \"spine\": the single heaviest root-to-leaf path, no depth cap — answers " +
+            '"what\'s the one path that matters".'
+          ),
         maxDepth: z
           .number()
           .int()
           .min(1)
-          .max(15)
+          .max(40)
           .optional()
-          .describe("Max tree depth (default 6)."),
+          .describe("Max tree depth (default 6). Only applies to view \"tree\" — \"spine\" always walks to a true leaf."),
         topN: z
           .number()
           .int()
           .min(1)
-          .max(20)
+          .max(50)
           .optional()
-          .describe("Max children shown per node (default 8)."),
+          .describe("Max children shown per node (\"tree\", default 8) or max ranked entries returned (\"hot\", default 20). Ignored for \"spine\"."),
         position: z
           .number()
           .int()
@@ -589,9 +616,9 @@ export function createServer(): McpServer {
           ),
       },
     },
-    async ({ sessionId, schema, run, thread, timeRange, maxDepth, topN, position }) =>
-      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, maxDepth, topN, position }, async () => {
-        const result = await callTree(sessionId, schema, { run, thread, timeRange, maxDepth, topN, position });
+    async ({ sessionId, schema, run, thread, timeRange, view, maxDepth, topN, position }) =>
+      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, view, maxDepth, topN, position }, async () => {
+        const result = await callTree(sessionId, schema, { run, thread, timeRange, view, maxDepth, topN, position });
         const response = envelope(result, [
           {
             tool: "call_tree",
