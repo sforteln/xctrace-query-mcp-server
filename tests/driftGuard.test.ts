@@ -17,6 +17,7 @@
 import { describe, it, expect } from "vitest";
 import { createServer } from "../src/index.js";
 import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
+import { RECORDING_INTENTS } from "../src/core/recording.js";
 
 // ── Extract tool metadata from the live server ────────────────────────────────
 
@@ -42,6 +43,7 @@ const KNOWN_SCHEMAS = new Set([...VERIFIED_PAIRS].map((p) => p.split(":")[1]));
 // but are legitimate. Add here when a check produces a false positive, with justification.
 const SCHEMA_REF_EXEMPTIONS = new Set([
   "time-profile", // used by call_tree; real schema name but no fixture yet (backtrace track-detail)
+  "cpu-profile",  // CPU Profiler's tagged-backtrace schema; verified live this session, no fixture yet
   "Prompt",       // Instruments UI phase-label in list_fm_requests description — not a schema name
   "Resolve",      // Instruments UI phase-label in list_fm_requests description — not a schema name
 ]);
@@ -60,6 +62,15 @@ const NOT_FOR_EXEMPT = new Set([
   "list_processes",      // self-evident: lists running processes
   "list_fm_requests",    // self-evident: lists Foundation Models requests
 ]);
+
+// Shared by both "single-quoted schema names" checks below (tool descriptions
+// and RECORDING_INTENTS notes) — same convention, same reference data, just a
+// different source string each time.
+function staleSchemaRefs(text: string): string[] {
+  const quoted = [...text.matchAll(/'([A-Za-z][A-Za-z0-9-]+)'/g)].map((m) => m[1]);
+  const schemaLike = quoted.filter((t) => t.includes("-") || /^[A-Z]/.test(t));
+  return schemaLike.filter((t) => !KNOWN_SCHEMAS.has(t) && !SCHEMA_REF_EXEMPTIONS.has(t));
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
@@ -129,15 +140,32 @@ describe("Identifier integrity: no stale references", () => {
 
     it(`${name}: single-quoted schema names are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
       // Match 'schema-name' or 'SchemaCamelCase' — tokens with hyphens or leading uppercase.
-      const quoted = [...desc.matchAll(/'([A-Za-z][A-Za-z0-9-]+)'/g)].map((m) => m[1]);
-      const schemaLike = quoted.filter((t) => t.includes("-") || /^[A-Z]/.test(t));
-      const stale = schemaLike.filter(
-        (t) => !KNOWN_SCHEMAS.has(t) && !SCHEMA_REF_EXEMPTIONS.has(t)
-      );
+      const stale = staleSchemaRefs(desc);
       expect(
         stale,
         `"${name}" references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
         `  If the schema was renamed, update the description to match.\n` +
+        `  If this is an intentional reference to an unfixtureed schema, add it to SCHEMA_REF_EXEMPTIONS with a comment.`
+      ).toEqual([]);
+    });
+  }
+});
+
+// RECORDING_INTENTS[type].note fields name specific schemas in prose just as
+// confidently as tool descriptions do (e.g. hangs' note: "this template's
+// real schemas are 'potential-hangs' and 'hang-risks'") but were never
+// covered by the scan above, which only reads registered tool.description
+// strings — a real, previously-flagged gap (see PMT:clear-crow). Same
+// reference data (VERIFIED_PAIRS + exemptions), no new machinery.
+describe("Identifier integrity: RECORDING_INTENTS notes don't reference stale schemas", () => {
+  for (const [type, intent] of Object.entries(RECORDING_INTENTS)) {
+    if (!intent.note) continue;
+    it(`${type}: single-quoted schema names in its note are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
+      const stale = staleSchemaRefs(intent.note!);
+      expect(
+        stale,
+        `RECORDING_INTENTS["${type}"].note references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
+        `  If the schema was renamed, update the note to match.\n` +
         `  If this is an intentional reference to an unfixtureed schema, add it to SCHEMA_REF_EXEMPTIONS with a comment.`
       ).toEqual([]);
     });

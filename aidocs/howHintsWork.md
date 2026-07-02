@@ -51,6 +51,10 @@ Everything above is scoped to a single tool call — a response to THIS request.
 
 For this, use the MCP protocol's own `instructions` field — `McpServer`'s second constructor argument (`{ instructions: SERVER_INSTRUCTIONS }` in `index.ts`), returned once in `initialize` and (client-dependent) surfaced alongside tool descriptions for the whole session. This is the most expensive, least-used layer (loaded once regardless of whether it's ever relevant, unlike a tool description that's only weighed when that tool is a candidate) — reserve it for facts about the OVERALL workflow shape (the standard record-or-open → analyze → close lifecycle), not anything a single tool's own description or a response hint could carry instead. Don't restate a tool's own behavioral detail here (that's what its description is for, and duplication drifts) — just the shape connecting tools together, with a pointer to the tool whose description has the detail.
 
+## A sixth, not-yet-exposed layer: aiHelp() candidate content
+
+A proposed sixth layer — `aiHelp(topic)`, an on-demand deep-dive tool — hasn't been built (see `PMT:clear-crow`). Candidate content for it is being captured now, ahead of the tool, in `aidocs/adviceCaptureLog.md` — a plain staging log keyed by topic, deliberately NOT wired into any tool or response yet, so the decision of "does this become `aiHelp()` content, an in-band response hint, or a code fix" can be made once there's real material to judge, not guessed at upfront.
+
 ## Lens-specific vs. core-verb-level
 
 If a hint's *pattern* could apply to any schema regardless of which lens claims it, put it in the core verb (`aggregate.ts`, `callTree.ts`, `correlate.ts`), not a lens. The blank-dominant-bucket check started as a SwiftUI-specific idea but was built into `aggregate()` itself — it now also protects `aggregate_swiftui_filtered_updates` (which calls the same `aggregateTable` under the hood) and any future schema with the same trap, for free. Reserve lens-level hints for genuinely schema-specific correlations (an address join, a specific companion instrument).
