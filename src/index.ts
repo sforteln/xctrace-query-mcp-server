@@ -36,6 +36,7 @@ import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
+import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
   RECORDING_INTENTS,
@@ -182,6 +183,34 @@ export function createServer(): McpServer {
   );
 
   registry.registerAll(LENSES, server);
+
+  // ── server_info ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "server_info",
+    {
+      title: "Server Info",
+      description:
+        "Report which build of this MCP server process is actually running — call this if a " +
+        "call is taking far longer than expected, or before relying on a just-shipped fix. Node " +
+        "doesn't hot-reload: a long-lived server process keeps executing whatever code was in " +
+        "memory when it started, even after `npm run build` writes newer code to dist/ or a new " +
+        "commit lands. Compare `distBuildTime` (on-disk mtime of the running code — the ground " +
+        "truth for what's actually loaded) and `processStartedAt` against when a known fix was " +
+        "built/committed; if the process started before that, it's running stale code and needs " +
+        "to be restarted by whatever spawned it (this server can't restart itself). `gitCommit`/" +
+        "`gitDirty` are best-effort (null outside a git checkout, e.g. a published npm install) " +
+        "and reflect the repo at process startup — useful for cross-referencing a specific " +
+        "commit hash, not authoritative on their own if commits happened without a rebuild. " +
+        "⚠️ Not for checking trace or session state — that's summary/list_instruments. Not for " +
+        "polling an in-flight call's progress — this reports the server's own build, not what a " +
+        "currently-running tool call is doing.",
+      inputSchema: {},
+    },
+    async () =>
+      safeToolWithLog("server_info", {}, async () => {
+        return text(toMcpText(envelope(getServerInfo(), [])));
+      })
+  );
 
   // ── open_trace ─────────────────────────────────────────────────────────────
   server.registerTool(
