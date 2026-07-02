@@ -81,7 +81,7 @@ export interface RecordingIntent {
 export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"],
   "SwiftUI": ["Hangs", "Time Profiler"],
-  "CPU Profiler": ["Hangs", "Points of Interest"],
+  "CPU Profiler": ["Hangs", "Points of Interest", "Thermal State"],
   "CPU Counters": ["Time Profiler", "Points of Interest"],
   "Power Profiler": ["Metal Performance Overview", "Time Profiler"],
   "Allocations": ["Points of Interest"],
@@ -196,16 +196,25 @@ export const RECORDING_INTENTS = {
       "The Allocations base template already bundles Points of Interest for free.",
   },
   hangs: {
-    label: "Activity Monitor (Hangs & Hitches)",
-    template: "Activity Monitor",
+    label: "CPU Profiler (Hangs, low overhead)",
+    template: "CPU Profiler",
     launchRequired: false,
     note:
-      "Records hangs, potential hangs, and hang risk events. " +
-      "After opening, query the 'potential-hangs', 'hitches', and 'hang-risks' schemas. " +
-      "This template does NOT bundle Points of Interest — if the app calls os_signpost around " +
-      "its own operations, pass instruments: [\"Points of Interest\"] and correlate() a hang " +
-      "interval against the signpost schemas (os-signpost/OSSignpostIntervals) to see which " +
-      "named app operation was running when the hang occurred.",
+      "Records hangs and hang-risk events at low overhead — verified live: this template's real " +
+      "schemas are 'potential-hangs' and 'hang-risks' (NOT 'hitches' — that schema only comes from " +
+      "type: \"hitches\"/Animation Hitches; if you're chasing frame drops during scrolling/animation " +
+      "specifically, use that instead). Points of Interest is already bundled for free. " +
+      "IMPORTANT — decide this NOW, not after recording: 'potential-hangs' carries start/duration/" +
+      "thread/process but NO backtrace column — it tells you WHEN a hang happened, never WHAT was " +
+      "running, and this template has no CPU-sampling instrument to correlate against (its own " +
+      "'cpu-profile' schema is a lightweight counter-based profile, not the tagged-backtrace " +
+      "'time-profile' schema call_tree/correlate need). If you already know you'll want to see what " +
+      "the app was doing during a hang, don't compose instruments: [\"Time Profiler\"] onto this — " +
+      "use type: \"cpu\" instead: Time Profiler's own template already bundles Hangs + Points of " +
+      "Interest + Thermal State for free, so it's a strict superset of this recording plus full CPU " +
+      "attribution, in one pass, without running two separate CPU-sampling instruments side by side. " +
+      "Reach for type: \"hangs\" specifically when you want lower-overhead hang-watching over a long " +
+      "session and don't need CPU attribution.",
   },
   hitches: {
     label: "Animation Hitches",
@@ -213,12 +222,15 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records animation hitches (frame drops during scrolling, animations, and transitions). " +
-      "After opening, query the 'hitches' schema. The Animation Hitches template already " +
+      "After opening, query the 'hitches' schema — like 'potential-hangs', it carries no " +
+      "backtrace of its own, but UNLIKE 'hangs' (type: \"hangs\"), you don't need to compose " +
+      "anything extra to find out what was running: the Animation Hitches template already " +
       "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
-      "hitch detection, vs. the default 250ms), but NOT Points of Interest — if the app calls " +
-      "os_signpost around its own operations, pass instruments: [\"Points of Interest\"] and " +
-      "correlate() a hitch interval against the signpost schemas to see which named app " +
-      "operation was running when the frame dropped.",
+      "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
+      "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
+      "timeRange: <the hitch's window>), no re-recording needed. Points of Interest is NOT " +
+      "bundled though — if the app calls os_signpost, pass instruments: [\"Points of Interest\"] " +
+      "to also see which named app operation was running when the frame dropped.",
   },
   "swift-concurrency": {
     label: "Swift Concurrency",
