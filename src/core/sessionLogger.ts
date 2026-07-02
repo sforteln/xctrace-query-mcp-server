@@ -7,7 +7,15 @@
  *   ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
  *
  * Each line:
- *   { seq, ts, tool, args, responseKeys, durationMs, ok }
+ *   { seq, ts, tool, args, responseKeys, durationMs, ok, errorMessage? }
+ *
+ * errorMessage is present only when ok:false (an UNCAUGHT exception, distinct
+ * from a normal structured XctraceError response, which is caught, returned
+ * as ordinary content, and logged as ok:true with responseKeys ["error",
+ * "message", "details"]). Without this field an ok:false line carries no
+ * diagnostic information at all — confirmed a real, live problem during
+ * PMT:icy-cedar's log review: a rare uncaught-exception sequence left zero
+ * trace of what actually broke, un-investigatable after the fact.
  *
  * Use this to compare unprimed vs. primed AI call sequences:
  *   - Unprimed: let the AI navigate naturally, review the log after.
@@ -41,7 +49,8 @@ export function logToolCall(
   args: Record<string, unknown>,
   responseText: string | null,
   durationMs: number,
-  ok: boolean
+  ok: boolean,
+  errorMessage?: string
 ): void {
   if (!enabled) return;
   const entry = {
@@ -52,6 +61,7 @@ export function logToolCall(
     responseKeys: extractResponseKeys(responseText),
     durationMs,
     ok,
+    ...(errorMessage ? { errorMessage: errorMessage.slice(0, 500) } : {}),
   };
   appendFileSync(logFilePath(), JSON.stringify(entry) + "\n");
 }

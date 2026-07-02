@@ -35,7 +35,11 @@ export async function safeToolWithLog(
     result = await safeTool(fn);
   } catch (err) {
     ok = false;
-    logToolCall(tool, args, null, Date.now() - start, false);
+    // This is an UNCAUGHT exception (safeTool already handles the normal
+    // structured-error case) — capture the message now or it's gone forever;
+    // an ok:false log line with no message is undiagnosable after the fact.
+    const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    logToolCall(tool, args, null, Date.now() - start, false, message);
     throw err;
   }
   const responseText = result.content[0]?.text ?? null;
