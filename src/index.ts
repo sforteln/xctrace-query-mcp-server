@@ -1176,12 +1176,18 @@ export function createServer(): McpServer {
       .array(z.string())
       .optional()
       .describe(
-        "Additional WHOLE templates to compose on top of the base one, in one recording — " +
-        "the explicit way to start a session with two templates. Each name is expanded to " +
-        "its full bundled instrument set plus any recording options it bakes in (e.g. " +
-        "templates: [\"SwiftUI\"] on type: \"core-data\" attributes SwiftData fetches/faults " +
-        "to the triggering SwiftUI update AND records the complete SwiftUI template — its own " +
-        "Hangs + Time Profiler bundle and layout tracing — not just a bare SwiftUI instrument. " +
+        "One or more WHOLE templates to compose into one recording, each expanded to its full " +
+        "bundled instrument set plus any recording options it bakes in. Two ways to use this: " +
+        "(1) alongside `type`/`template` — composes ADDITIONAL templates on top of that base, " +
+        "e.g. templates: [\"SwiftUI\"] on type: \"core-data\" attributes SwiftData fetches to " +
+        "the triggering SwiftUI update AND records SwiftUI's own Hangs + Time Profiler bundle " +
+        "and layout tracing, not just a bare instrument; (2) ALONE, with no `type`/`template` " +
+        "at all — a flat, symmetric list of 2+ templates with no privileged \"base\", e.g. " +
+        "templates: [\"Swift Concurrency\", \"SwiftUI\"] to start both together directly. " +
+        "⚠️ Entries must be the REAL xctrace template name, properly cased/spaced (\"Swift " +
+        "Concurrency\", \"SwiftUI\", \"Time Profiler\") — matching `xcrun xctrace list " +
+        "templates` — NOT a `type` enum key (\"swift-concurrency\" is a `type` value, not a " +
+        "valid `templates` entry; passing it here won't expand a bundle and will likely fail). " +
         "Check the response's compositionNote for exactly what each name expanded to."
       ),
     template: z
@@ -1190,8 +1196,8 @@ export function createServer(): McpServer {
       .describe(
         "Raw `--template <name|path>` override for a custom or uncurated template `type` " +
         "doesn't cover. Overrides the base template while keeping type's other behavior " +
-        "(privacy notice, launchRequired) when both are given. Provide this OR `type` — " +
-        "one of the two is required."
+        "(privacy notice, launchRequired) when both are given. Provide this, `type`, or a " +
+        "`templates` array (used alone) — one of the three is required."
       ),
     attach: z
       .string()
@@ -1224,9 +1230,13 @@ export function createServer(): McpServer {
         "stop_recording still works (it will see the recording is already done).\n\n" +
         "Pass `instruments` to compose bare extra instruments onto `type`'s base template " +
         "(e.g. cross-instrument causation questions like \"did this SwiftUI update cause " +
-        "this SwiftData fetch\"), `templates` to compose one or more WHOLE additional " +
-        "templates (each expanded to its full bundle, not just its headline instrument), " +
-        "or `template` for a fully custom/uncurated base template.\n\n" +
+        "this SwiftData fetch\"), `templates` to compose one or more WHOLE templates — " +
+        "either on top of `type`/`template`, or used ALONE (no `type` needed) to start two " +
+        "or more templates together, e.g. templates: [\"Swift Concurrency\", \"SwiftUI\"] — " +
+        "or `template` for a single fully custom/uncurated base template. `templates` entries " +
+        "are real xctrace template names (\"Swift Concurrency\", properly cased/spaced), NOT " +
+        "`type` enum keys (\"swift-concurrency\") — the two look similar but aren't " +
+        "interchangeable.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
@@ -1237,22 +1247,31 @@ export function createServer(): McpServer {
         "start_recording",
         { type, instruments, templates, template, attach, launch, timeLimit, device },
         async () => {
-          if (type === undefined && template === undefined) {
+          // `templates` alone (no type/template) is valid too — the flat,
+          // symmetric "start with N templates" shape, no privileged base.
+          // xctrace itself still needs exactly one --template value, so the
+          // first entry fills that role; the rest are additional templates
+          // to compose on top, same as if they'd been passed alongside a
+          // real `type`/`template`.
+          if (type === undefined && template === undefined && (!templates || templates.length === 0)) {
             return text(
               JSON.stringify({
-                error: "one of `type` or `template` is required",
-                hint: `Pass type (one of: ${intentKeys.join(", ")}) or a raw template name/path.`,
+                error: "one of `type`, `template`, or `templates` is required",
+                hint: `Pass type (one of: ${intentKeys.join(", ")}), a raw template name/path, or templates: [...] with at least one real template name.`,
               })
             );
           }
+          const usingTemplatesAsBase = type === undefined && template === undefined;
+          const baseTemplate = template ?? (usingTemplatesAsBase ? templates![0] : undefined);
+          const additionalTemplates = usingTemplatesAsBase ? templates!.slice(1) : templates;
           const intent =
             type !== undefined
               ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
-              : { label: template!, template: template!, launchRequired: false };
+              : { label: baseTemplate!, template: baseTemplate!, launchRequired: false };
           const result = await startSession({
             intent,
             instruments,
-            templates,
+            templates: additionalTemplates,
             template,
             attach,
             launch,
