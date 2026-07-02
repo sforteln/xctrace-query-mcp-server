@@ -209,8 +209,16 @@ function parseCell(
   // shape parseTrackDetail.ts handles for Allocations/Leaks) — extract every
   // frame, not just the first. Distinct from the older kperf-bt raw-address
   // shape (different children: text-address/process), which falls through
-  // to the generic compound handling below unchanged.
-  if (tagName === "backtrace" && attrs.frame !== undefined) {
+  // to the generic compound handling below unchanged. Also matches
+  // "text-backtrace" (Swift Concurrency's engineering-type for creation/
+  // suspend backtraces, e.g. SwiftTaskCreationEvent/SwiftParallelRunningTasks)
+  // — the tag name varies by schema, but `attrs.frame !== undefined` is the
+  // real discriminator either way: present → extract real frames; absent →
+  // falls through unchanged to the kperf-bt path below, so this is safe to
+  // check regardless of which shape a given "text-backtrace" column actually
+  // uses (not independently confirmed live which shape Swift Concurrency's
+  // columns carry in practice — this generalizes correctly either way).
+  if ((tagName === "backtrace" || tagName === "text-backtrace") && attrs.frame !== undefined) {
     const frames = parseResolvedFrames(attrs, cache);
     const topName = frames[0]?.name ?? "";
     const cell: Cell = {
