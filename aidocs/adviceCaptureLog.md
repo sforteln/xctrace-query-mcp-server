@@ -25,6 +25,15 @@ Topic keys should be stable and short (tool name, schema/instrument name, or iss
 
 ## Entries
 
+### vague-symptom-vs-instrument-choice — natural-language phrasing can point at the wrong `type` even when a better one exists
+**Instrument/template/schema:** general (concrete instance: hangs vs. cpu)
+**Bug-type/category:** recording-composition, intent design
+**Date:** 2026-07-02
+**Status:** promoted-to-response (see `RECORDING_INTENTS.hangs.note` in `src/core/recording.ts`) — logged here for the GENERALIZED pattern, which may recur elsewhere
+**Promoted to:** `src/core/recording.ts`'s `hangs` intent note (already ships this exact guidance)
+
+Concrete case validated live: a user asking "find why the app is hanging on scroll" naturally points an agent at `type: "hangs"` — the word in the request literally matches the intent name. But `type: "hangs"` (CPU Profiler) only tells you WHEN a hang happened (start/duration/thread), never WHAT the app was doing during it — no CPU-sampling instrument to correlate against. `type: "cpu"` (Time Profiler) is the better choice whenever the real question is causal ("why"), since it bundles Hangs + Points of Interest + Thermal State AND full CPU attribution in one pass — a strict superset. The `hangs` intent's own note already says this explicitly and steers toward `type: "cpu"` when the caller already knows they'll want causal context, but the underlying pattern is worth watching for generally: a request's own WORDING can coincidentally match a narrower/lower-fidelity `type` name when a broader one is actually the better answer, precisely because the friendly intent vocabulary is designed to read naturally against a user's own phrasing (the whole point of the abstraction) — that same naturalness is what makes the wrong-but-plausible match easy to fall into. Worth periodically checking other intent pairs for the same trap (a "narrow, name-matches-the-symptom" intent sitting next to a "broader, actually-more-useful" one) as more instruments get curated.
+
 ### launch-mode-injection — hardened targets get SIGKILLed under an injecting instrument
 **Instrument/template/schema:** Allocations, Leaks (any instrument using liboainject)
 **Bug-type/category:** launch-mode, macOS code signing
