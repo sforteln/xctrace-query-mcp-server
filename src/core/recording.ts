@@ -70,13 +70,14 @@ export interface RecordingIntent {
  *
  * Why this matters: most of these template names are ALSO valid standalone
  * `--instrument` names (e.g. "Time Profiler" is both a template and an
- * instrument). Composing one of these names via `instruments: [...]` on top
- * of an unrelated base template gives you ONLY that bare instrument — none of
- * the bundle below — with no signal that anything is missing. An agent that
- * reaches for `instruments: ["Time Profiler"]` instead of `type: "cpu"` (or
- * `template: "Time Profiler"`) silently loses Hangs + Points of Interest and
- * would have no way to know Hangs data was never being recorded at all.
- * bundleWarningsFor() below uses this table to catch that case in-band.
+ * instrument). The two composition params below (see StartSessionOptions in
+ * recordingSession.ts) exist BECAUSE of this overlap: `templates` explicitly
+ * asks for a name's full bundle (expandTemplates() below uses this table);
+ * `instruments` explicitly asks for the bare instrument only, and is never
+ * auto-promoted — an `instruments` entry that happens to match a key here
+ * only gets a steer-to-`templates` note, never silent expansion. Naming was
+ * deliberately picked to make the two knobs impossible to confuse: you say
+ * which one you meant instead of the server guessing from an overloaded name.
  */
 export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"],
@@ -96,30 +97,104 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
 };
 
 /**
- * Warn when a caller-supplied `instruments` entry names a bare instrument
- * that is ALSO a richer built-in template (per TEMPLATE_BUNDLES) — the
- * concrete trap this table exists to catch. Only checks caller-supplied
- * names, not an intent's own curated `extraInstruments` (those are trusted,
- * already accounted for by whoever wrote the intent).
+ * Look up the curated `recordingOptions` a RECORDING_INTENTS entry bakes in
+ * for its own template (e.g. swiftui's `enableLayoutTracing`), keyed by
+ * template name instead of intent name. Composing that template's name via
+ * `templates` should carry these along too — otherwise expandTemplates would
+ * correctly add the SwiftUI instrument + its Hangs + Time Profiler bundle,
+ * but silently drop layout tracing, which is exactly the same
+ * "looks complete, isn't" trap one level down.
  */
-export function bundleWarningsFor(
+function templateRecordingOptions(
+  templateName: string
+): Record<string, Record<string, unknown>> | undefined {
+  for (const intent of Object.values(RECORDING_INTENTS) as RecordingIntent[]) {
+    if (intent.template === templateName && intent.recordingOptions) {
+      return intent.recordingOptions;
+    }
+  }
+  return undefined;
+}
+
+export interface ExpandedTemplates {
+  /** Union of every bundled instrument, excluding the base template itself. */
+  instruments: string[];
+  /** Merged recordingOptions contributed by any composed template. */
+  recordingOptions: Record<string, Record<string, unknown>>;
+  /** One entry per composed name, describing what it expanded to. */
+  notes: string[];
+}
+
+/**
+ * Expand a caller's explicit `templates` list — additional WHOLE templates to
+ * layer onto the base one — into the real union of instruments xctrace needs,
+ * plus any recordingOptions those templates bake in. Each name is expanded to
+ * `[name, ...TEMPLATE_BUNDLES[name]]`; a name with no known bundle still
+ * passes through as itself (e.g. a template with only a headline instrument
+ * and no configurable-options bundle to discover). This is the ONLY place
+ * TEMPLATE_BUNDLES expansion happens — `instruments` (bare) is never silently
+ * promoted through this path, see bareInstrumentTemplateNotes() below.
+ */
+export function expandTemplates(
+  names: string[],
+  resolvedTemplate: string
+): ExpandedTemplates {
+  const seen = new Set<string>([resolvedTemplate]);
+  const instruments: string[] = [];
+  const recordingOptions: Record<string, Record<string, unknown>> = {};
+  const notes: string[] = [];
+
+  for (const name of names) {
+    const bundle = TEMPLATE_BUNDLES[name] ?? [];
+    const expansion = [name, ...bundle];
+    const added: string[] = [];
+    for (const inst of expansion) {
+      if (!seen.has(inst)) {
+        seen.add(inst);
+        instruments.push(inst);
+        added.push(inst);
+      }
+    }
+    const opts = templateRecordingOptions(name);
+    if (opts) Object.assign(recordingOptions, opts);
+
+    notes.push(
+      bundle.length > 0
+        ? `template: "${name}" expanded to ${[name, ...bundle].join(" + ")}` +
+          `${opts ? " plus its own recording options" : ""}.`
+        : `template: "${name}" has no known extra bundle — recorded as its headline instrument only.`
+    );
+  }
+
+  return { instruments, recordingOptions, notes };
+}
+
+/**
+ * Steer, never silently fix: when a caller-supplied BARE `instruments` entry
+ * names something that is ALSO a richer template (per TEMPLATE_BUNDLES), it
+ * is recorded exactly as named — no expansion — since a caller reaching for
+ * `instruments` may deliberately want just that one bare signal (e.g. to
+ * avoid a second CPU-sampling instrument already covered elsewhere). This
+ * only adds a note pointing at `templates` in case the caller actually meant
+ * "the whole template" and picked the wrong param.
+ */
+export function bareInstrumentTemplateNotes(
   resolvedTemplate: string,
   callerInstruments: string[] | undefined
 ): string[] {
-  const warnings: string[] = [];
+  const notes: string[] = [];
   for (const name of callerInstruments ?? []) {
     if (name === resolvedTemplate) continue;
     const bundle = TEMPLATE_BUNDLES[name];
     if (bundle && bundle.length > 0) {
-      warnings.push(
-        `"${name}" was added here as a single instrument — it does NOT include what the ` +
-        `"${name}" TEMPLATE bundles for free (${bundle.join(" + ")}). If you wanted those too, ` +
-        `use template: "${name}" (or the matching \`type\`, if one exists) instead of composing ` +
-        `it via instruments.`
+      notes.push(
+        `instruments: ["${name}"] was recorded as that BARE instrument only — it does NOT include ` +
+        `what the "${name}" TEMPLATE bundles for free (${bundle.join(" + ")}). If you wanted the ` +
+        `whole template, pass templates: ["${name}"] instead (or the matching \`type\`, if one exists).`
       );
     }
   }
-  return warnings;
+  return notes;
 }
 
 export const RECORDING_INTENTS = {
@@ -209,7 +284,7 @@ export const RECORDING_INTENTS = {
       "running, and this template has no CPU-sampling instrument to correlate against (its own " +
       "'cpu-profile' schema is a lightweight counter-based profile, not the tagged-backtrace " +
       "'time-profile' schema call_tree/correlate need). If you already know you'll want to see what " +
-      "the app was doing during a hang, don't compose instruments: [\"Time Profiler\"] onto this — " +
+      "the app was doing during a hang, don't compose templates: [\"Time Profiler\"] onto this — " +
       "use type: \"cpu\" instead: Time Profiler's own template already bundles Hangs + Points of " +
       "Interest + Thermal State for free, so it's a strict superset of this recording plus full CPU " +
       "attribution, in one pass, without running two separate CPU-sampling instruments side by side. " +
@@ -267,9 +342,13 @@ export const RECORDING_INTENTS = {
       "After opening, query 'core-data-fault', 'core-data-relationship-fault', " +
       "'core-data-fetch', and 'core-data-save' schemas. " +
       "To attribute this activity to the UI event that triggered it, pass " +
-      "instruments: [\"SwiftUI\"] to start_recording — each row's Caller backtrace already " +
+      "templates: [\"SwiftUI\"] to start_recording — each row's Caller backtrace already " +
       "resolves the full call chain (e.g. a SwiftUI view body update through AttributeGraph " +
-      "into the fetch), readable directly via get_row, no extra correlation step needed.",
+      "into the fetch), readable directly via get_row, no extra correlation step needed. " +
+      "templates (not instruments) is what you want here: it records the COMPLETE SwiftUI " +
+      "template — its own Hangs + Time Profiler bundle, layout tracing enabled — alongside " +
+      "Data Persistence, in one recording. instruments: [\"SwiftUI\"] would give you only " +
+      "the bare SwiftUI instrument, missing that bundle.",
     privacyNotice:
       "Data Persistence recordings capture entity names, fetch predicates, and object contents. " +
       "Database records including user-generated content may be stored in the trace.",
@@ -293,10 +372,10 @@ export const RECORDING_INTENTS = {
  * Privacy notices keyed by template OR instrument name. Distinct from
  * RecordingIntent.privacyNotice above (which is the curated, more detailed
  * text for a whole intent's base template): this covers ad-hoc composition —
- * extraInstruments, a caller-supplied `instruments` list, or a raw `template`
- * override — so e.g. composing `instruments: ["Foundation Models"]` on top of
- * an unrelated intent still surfaces a warning, not just the built-in
- * foundation-models intent itself.
+ * extraInstruments, a caller-supplied `instruments` or `templates` list, or a
+ * raw `template` override — so e.g. composing `templates: ["Foundation
+ * Models"]` on top of an unrelated intent still surfaces a warning, not just
+ * the built-in foundation-models intent itself.
  */
 const SENSITIVE_NAME_NOTICES: Record<string, string> = {
   Network:

@@ -1107,17 +1107,27 @@ export function createServer(): McpServer {
       .array(z.string())
       .optional()
       .describe(
-        "Extra instruments to compose on top of the base template via repeated " +
-        "`--instrument <name>` (e.g. [\"SwiftUI\"] on type: \"core-data\" to attribute " +
-        "SwiftData fetches/faults to the SwiftUI update that triggered them — get_row on " +
-        "the resulting core-data-fetch/fault row will show the full resolved call stack " +
-        "including the triggering SwiftUI frame). Names must match `xcrun xctrace list " +
-        "instruments` exactly, e.g. \"SwiftUI\", \"Data Fetches\", \"Network\". Several of " +
-        "these names (e.g. \"Time Profiler\", \"Allocations\", \"SwiftUI\") are ALSO built-in " +
-        "template names that bundle extra instruments for free (Time Profiler → +Hangs " +
-        "+Points of Interest+Thermal State) — adding one here gives you only the bare " +
-        "instrument, not that bundle; if the response's templateBundleWarning fires, prefer " +
-        "the matching `type`/`template` instead."
+        "BARE extra instruments to compose on top of the base template, recorded exactly as " +
+        "named — never expanded, even if the name is also a template. Use this for a " +
+        "standalone instrument with no template of its own (e.g. \"GCD Performance\", " +
+        "\"Data Fetches\"), or when you deliberately want only that instrument's raw signal. " +
+        "Names must match `xcrun xctrace list instruments` exactly. If you name something " +
+        "that IS also a richer template (e.g. \"Time Profiler\", \"SwiftUI\"), you get only " +
+        "its bare instrument, not the bundle — the response's compositionNote will point you " +
+        "at `templates` instead if that's what you meant. Use `templates`, not this, to " +
+        "compose a whole second template."
+      ),
+    templates: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Additional WHOLE templates to compose on top of the base one, in one recording — " +
+        "the explicit way to start a session with two templates. Each name is expanded to " +
+        "its full bundled instrument set plus any recording options it bakes in (e.g. " +
+        "templates: [\"SwiftUI\"] on type: \"core-data\" attributes SwiftData fetches/faults " +
+        "to the triggering SwiftUI update AND records the complete SwiftUI template — its own " +
+        "Hangs + Time Profiler bundle and layout tracing — not just a bare SwiftUI instrument. " +
+        "Check the response's compositionNote for exactly what each name expanded to."
       ),
     template: z
       .string()
@@ -1157,42 +1167,57 @@ export function createServer(): McpServer {
         "flushes data and writes a valid .trace. Then pass the tracePath to open_trace.\n\n" +
         "For time-limited recordings, set timeLimit and the process auto-stops; " +
         "stop_recording still works (it will see the recording is already done).\n\n" +
-        "Pass `instruments` to compose extra instruments onto `type`'s base template " +
+        "Pass `instruments` to compose bare extra instruments onto `type`'s base template " +
         "(e.g. cross-instrument causation questions like \"did this SwiftUI update cause " +
-        "this SwiftData fetch\"), or `template` for a fully custom/uncurated template.\n\n" +
+        "this SwiftData fetch\"), `templates` to compose one or more WHOLE additional " +
+        "templates (each expanded to its full bundle, not just its headline instrument), " +
+        "or `template` for a fully custom/uncurated base template.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
-    async ({ type, instruments, template, attach, launch, timeLimit, device }) =>
-      safeToolWithLog("start_recording", { type, instruments, template, attach, launch, timeLimit, device }, async () => {
-        if (type === undefined && template === undefined) {
+    async ({ type, instruments, templates, template, attach, launch, timeLimit, device }) =>
+      safeToolWithLog(
+        "start_recording",
+        { type, instruments, templates, template, attach, launch, timeLimit, device },
+        async () => {
+          if (type === undefined && template === undefined) {
+            return text(
+              JSON.stringify({
+                error: "one of `type` or `template` is required",
+                hint: `Pass type (one of: ${intentKeys.join(", ")}) or a raw template name/path.`,
+              })
+            );
+          }
+          const intent =
+            type !== undefined
+              ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
+              : { label: template!, template: template!, launchRequired: false };
+          const result = await startSession({
+            intent,
+            instruments,
+            templates,
+            template,
+            attach,
+            launch,
+            device,
+            timeLimit,
+          });
           return text(
-            JSON.stringify({
-              error: "one of `type` or `template` is required",
-              hint: `Pass type (one of: ${intentKeys.join(", ")}) or a raw template name/path.`,
-            })
+            JSON.stringify(
+              {
+                ...result,
+                nextAction: "stop_recording",
+                nextArgs: { recordingId: result.recordingId },
+                hint: "Interact with the app, then call stop_recording to finalize and get the .trace path.",
+              },
+              null,
+              2
+            )
           );
         }
-        const intent =
-          type !== undefined
-            ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
-            : { label: template!, template: template!, launchRequired: false };
-        const result = await startSession({ intent, instruments, template, attach, launch, device, timeLimit });
-        return text(
-          JSON.stringify(
-            {
-              ...result,
-              nextAction: "stop_recording",
-              nextArgs: { recordingId: result.recordingId },
-              hint: "Interact with the app, then call stop_recording to finalize and get the .trace path.",
-            },
-            null,
-            2
-          )
-        );
-      })
+      )
   );
 
   // ── stop_recording ──────────────────────────────────────────────────────────

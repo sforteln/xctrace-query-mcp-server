@@ -1,13 +1,13 @@
 # How hints/advice work
 
-Every tool response can carry guidance beyond raw data — a `nextActions` array, a `note` field, a `templateBundleWarning`, a `finalizeWarning`, an intent's static `note`. This doc is about *how to decide what kind of guidance to add and where it lives* — not the mechanics of the envelope itself (see `overallArch.md`'s pointer to `src/core/response.ts` for that).
+Every tool response can carry guidance beyond raw data — a `nextActions` array, a `note` field, a `compositionNote`, a `finalizeWarning`, an intent's static `note`. This doc is about *how to decide what kind of guidance to add and where it lives* — not the mechanics of the envelope itself (see `overallArch.md`'s pointer to `src/core/response.ts` for that).
 
 ## Files
 
 - `src/lenses/<name>/index.ts` — per-lens `nextActions`/`quickStart` (see `howLensesWork.md`)
 - `src/core/aggregate.ts`, `src/core/callTree.ts`, `src/core/correlate.ts` — core-verb-level computed hints (schema-agnostic, not lens-specific)
-- `src/core/recording.ts` — `RECORDING_INTENTS[type].note` — static, pre-recording guidance
-- `src/core/recordingSession.ts` — `templateBundleWarning`, `finalizeWarning` — computed at `start_recording`/`stop_recording` time
+- `src/core/recording.ts` — `RECORDING_INTENTS[type].note` — static, pre-recording guidance; `expandTemplates()` — expands a `templates`-composed name into its full bundle; `bareInstrumentTemplateNotes()` — steers a bare `instruments` entry toward `templates` when it names something that's also a richer template, without silently changing what gets recorded either way (see the `instruments` vs. `templates` split below)
+- `src/core/recordingSession.ts` — `compositionNote`, `finalizeWarning` — computed at `start_recording`/`stop_recording` time
 
 ## The first question: can this be fixed instead?
 
@@ -41,7 +41,7 @@ Table-wide hints must **peek, never fetch** (`peekTable` from `engine/session.ts
 
 ## Two timing points: proactive vs. reactive
 
-- **Proactive** — `RECORDING_INTENTS[type].note` in `recording.ts`, surfaced in `start_recording`'s response, *before* the recording even happens. Use this for facts that can't be discovered after the fact without re-recording — e.g. `hangs`' note that `potential-hangs`/`hitches` carry no backtrace at all, so `instruments: ["Time Profiler"]` needs composing *now*, not after querying comes up empty. Also where `templateBundleWarning`/`finalizeWarning` live (computed at `start_recording`/`stop_recording` time specifically because the decision point is then, not later).
+- **Proactive** — `RECORDING_INTENTS[type].note` in `recording.ts`, surfaced in `start_recording`'s response, *before* the recording even happens. Use this for facts that can't be discovered after the fact without re-recording — e.g. `hangs`' note that `potential-hangs`/`hitches` carry no backtrace at all, so `instruments: ["Time Profiler"]` needs composing *now*, not after querying comes up empty. Also where `compositionNote`/`finalizeWarning` live (computed at `start_recording`/`stop_recording` time specifically because the decision point is then, not later).
 - **Reactive** — lens `nextActions`, fires when the schema is actually queried/aggregated/fetched. This is the *only* mechanism that reaches an agent reopening a `.trace` file recorded in a completely different session — a proactive note is invisible then, since that agent never saw `start_recording`'s response at all. Build both when a fact matters enough (the Hangs/Thermal lenses' `nextActions` is a deliberate backstop for their own `RECORDING_INTENTS` notes, in case the note got missed or the trace predates it).
 
 ## Lens-specific vs. core-verb-level
@@ -51,6 +51,10 @@ If a hint's *pattern* could apply to any schema regardless of which lens claims 
 ## Verify before curating — don't guess a schema's shape
 
 Never add a curated fact (a column list, a "this schema has no backtrace" claim, a suggested companion instrument) from the name alone or from `--show-recording-options` output (that only shows *configurable option keys*, not schema/column shape). Record a real trace and read the actual TOC/export. This caught a real mistake: GCD Performance was assumed to be context-only like Thermal State (by analogy — no standalone template, seemed similar), but a live recording showed it carries its own resolved `backtrace` column and needs no companion at all. The wrong assumption would have shipped a misleading warning if it hadn't been checked. See `PMT:azure-forge`/`PMT:sage-weasel` in the project's PromptManager history for the full story.
+
+## Don't silently reinterpret an overloaded name — split the param instead
+
+A hint should never be a substitute for fixing an ambiguous API shape. `start_recording`'s `instruments`/`templates` split is the concrete example: many xctrace names are BOTH a standalone instrument and a richer template (e.g. "SwiftUI", "Time Profiler"). An early version of this feature had a single `instruments: string[]` param that auto-promoted any name matching a template to that template's full bundle — convenient, but it meant the same string silently meant two different things depending on a lookup table the caller can't see, and it removed the ability to say "I want just the bare instrument" on purpose (e.g. to avoid a redundant second CPU-sampling instrument). The fix was two explicit params: `instruments` (always bare, never expanded) and `templates` (always expanded via `expandTemplates()`) — the caller states which one they meant instead of the server guessing. `bareInstrumentTemplateNotes()` still flags the case where a bare `instruments` entry could have been a `templates` entry, but only as a note pointing at the other param, never as a silent switch. General rule: if a single param can mean two genuinely different things depending on the value passed, that's a sign that it should be two params, not a lookup table plus a hint explaining the lookup table's judgment call after the fact.
 
 ## What looks surprising but is intentional
 

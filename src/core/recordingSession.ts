@@ -23,7 +23,8 @@ import {
   defaultOutputPath,
   writeRecordingOptionsFile,
   collectPrivacyNotices,
-  bundleWarningsFor,
+  expandTemplates,
+  bareInstrumentTemplateNotes,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -82,11 +83,28 @@ export interface StartSessionOptions {
   device?: string;
   timeLimit?: string;
   /**
-   * Extra instruments to compose on top of intent.template, via repeated
-   * `--instrument <name>` — merged with any extraInstruments the intent
-   * itself already declares (e.g. leaks-backtraces' built-in "Leaks").
+   * BARE extra instruments to compose on top of intent.template, via repeated
+   * `--instrument <name>` — recorded exactly as named, never expanded even
+   * when the name is ALSO a richer template (see bareInstrumentTemplateNotes
+   * in recording.ts) — merged with any extraInstruments the intent itself
+   * already declares (e.g. leaks-backtraces' built-in "Leaks"). Use this for
+   * a genuinely standalone instrument, or when you deliberately want only
+   * that instrument's raw signal without its template's extras. Use
+   * `templates` instead when you want a whole second template's full bundle.
    */
   instruments?: string[];
+  /**
+   * Additional WHOLE templates to compose on top of intent.template — each
+   * name is expanded to its full bundled instrument set (per TEMPLATE_BUNDLES)
+   * plus any recordingOptions it bakes in, so e.g. templates: ["SwiftUI"] on
+   * type: "core-data" records the complete SwiftUI template (+ its Hangs +
+   * Time Profiler bundle + layout tracing), not just the bare instrument.
+   * This is the explicit way to start a session with two templates at once —
+   * deliberately a separate param from `instruments` so the caller states
+   * which one they meant instead of the server guessing from an overloaded
+   * name that is both a template and a standalone instrument.
+   */
+  templates?: string[];
   /**
    * Raw `--template <name|path>` override, for a custom or uncurated
    * template the `type` enum doesn't cover. Overrides intent.template but
@@ -104,7 +122,7 @@ export interface StartSessionResult {
   instrumentsUsed: string;
   note?: string;
   privacyNotice?: string;
-  templateBundleWarning?: string;
+  compositionNote?: string;
 }
 
 /**
@@ -116,7 +134,7 @@ export interface StartSessionResult {
 export async function startSession(
   opts: StartSessionOptions
 ): Promise<StartSessionResult> {
-  const { intent, attach, launch, device, timeLimit, instruments, template } = opts;
+  const { intent, attach, launch, device, timeLimit, instruments, templates, template } = opts;
 
   if (intent.launchRequired && launch === undefined) {
     throw new XctraceError(
@@ -141,24 +159,49 @@ export async function startSession(
   }
 
   // `template` overrides intent.template (a raw passthrough for custom/
-  // uncurated templates); `instruments` is purely additive on top of
-  // whichever template is used, merged with any the intent already declares.
+  // uncurated templates). Two DISTINCT composition params, deliberately not
+  // merged into one: `instruments` are bare additions (recorded exactly as
+  // named, merged with the intent's own curated extraInstruments, e.g.
+  // leaks-backtraces' built-in "Leaks"); `templates` names WHOLE additional
+  // templates and is expanded via expandTemplates() into each one's full
+  // bundle + recordingOptions, so type: "core-data" + templates: ["SwiftUI"]
+  // records the complete union of both templates, not core-data's template
+  // plus a bare, bundle-less SwiftUI instrument.
   const resolvedTemplate = template ?? intent.template;
-  const resolvedExtraInstruments = [...(intent.extraInstruments ?? []), ...(instruments ?? [])];
-  const resolvedLabel =
-    instruments && instruments.length > 0 ? `${intent.label} + ${instruments.join(" + ")}` : intent.label;
+  const expanded = expandTemplates(templates ?? [], resolvedTemplate);
+  const literalInstruments = [...(intent.extraInstruments ?? []), ...(instruments ?? [])];
+  const resolvedExtraInstruments = [
+    ...new Set([...literalInstruments, ...expanded.instruments].filter((i) => i !== resolvedTemplate)),
+  ];
+  const resolvedLabel = [
+    intent.label,
+    ...(templates ?? []).map((t) => `template:${t}`),
+    ...(instruments ?? []),
+  ].join(" + ");
   // intent.privacyNotice already covers intent.template (curated, detailed
   // text) — only scan ad-hoc additions here. Still de-duped below since a
   // caller-supplied `template` that happens to match the intent's own can
   // otherwise show the identical notice twice.
-  const adHocNotices = collectPrivacyNotices([...(instruments ?? []), ...(template ? [template] : [])]);
+  const adHocNotices = collectPrivacyNotices([
+    ...(instruments ?? []),
+    ...(templates ?? []),
+    ...(template ? [template] : []),
+  ]);
   const resolvedPrivacyNotice =
     [...new Set([intent.privacyNotice, ...adHocNotices].filter((n): n is string => Boolean(n)))].join("\n\n") ||
     undefined;
-  const resolvedBundleWarning = bundleWarningsFor(resolvedTemplate, instruments).join("\n\n") || undefined;
+  const resolvedCompositionNote =
+    [...expanded.notes, ...bareInstrumentTemplateNotes(resolvedTemplate, instruments)].join("\n\n") || undefined;
+  // intent.recordingOptions (the base template's own curated options) wins on
+  // key collision — expanded options come from ADDITIONAL composed
+  // templates, so the base template's explicit choice takes precedence.
+  const resolvedRecordingOptions =
+    Object.keys(expanded.recordingOptions).length > 0 || intent.recordingOptions
+      ? { ...expanded.recordingOptions, ...intent.recordingOptions }
+      : undefined;
 
   const tracePath = await defaultOutputPath(resolvedTemplate);
-  const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, intent.recordingOptions);
+  const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, resolvedRecordingOptions);
   const recordingId = randomUUID();
 
   // Verified live: launching a .app under an injecting instrument (e.g.
@@ -278,7 +321,7 @@ export async function startSession(
     instrumentsUsed: resolvedLabel,
     ...(intent.note ? { note: intent.note } : {}),
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
-    ...(resolvedBundleWarning ? { templateBundleWarning: resolvedBundleWarning } : {}),
+    ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
   };
 }
 
