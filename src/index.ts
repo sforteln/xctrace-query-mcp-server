@@ -573,7 +573,11 @@ export function createServer(): McpServer {
         "thread the run-loop entry chain (NSApplicationMain → ... → RunCurrentEventLoopInMode → ...) is " +
         "mandatory scaffolding in every sample, idle or busy, so it carries no signal on its own — this " +
         "marks the depth where the sample's own distinguishing work actually starts (spine itself is " +
-        "never trimmed, this is just a pointer into it). " +
+        "never trimmed, this is just a pointer into it). When timeRange is a window (both bounds set), " +
+        "a note fires if the captured CPU time is far less than the window's own span — e.g. scoping to " +
+        "a slow frame/hitch and getting back a sparse sample count does NOT mean nothing happened; the " +
+        "gap is likely render/GPU work, scheduling delay, or waiting on another thread, none of which " +
+        "CPU sampling captures. " +
         "Filter by thread name/id substring to focus on one thread. " +
         "`run` defaults to the most recent run. " +
         "⚠️ Not for schemas without backtrace columns — only works on sample-based instruments like time-profile.",

@@ -389,6 +389,43 @@ function formatWeight(value: number, isCycleWeight: boolean): string {
   return isCycleWeight ? formatCycles(value) : formatNs(value);
 }
 
+/**
+ * Below this fraction, a windowed call_tree call captured far less CPU time
+ * than the window it was scoped to — a judgment call, not a measured
+ * threshold, same spirit as SPINE_DOMINANCE_THRESHOLD_PCT.
+ */
+const WINDOW_CAPTURE_THRESHOLD_PCT = 50;
+
+/**
+ * Verified live: call_tree scoped to a 1.88s hitch window returned only 71ms
+ * of main-thread CPU — sparse, but NOT evidence that "nothing happened."
+ * CPU sampling only captures CPU time; the rest of a windowed duration can
+ * be render/GPU work, scheduling delay, or waiting on another thread/
+ * process, none of which show up as samples here. Only meaningful for
+ * time-based weight (nanoseconds) — comparing a CPU-cycle count to a
+ * wall-clock window span would be comparing different physical quantities,
+ * the same mistake formatWeight()'s isCycleWeight split already guards
+ * against elsewhere in this file.
+ */
+function windowCaptureNote(
+  totalWeight: number,
+  isCycleWeight: boolean,
+  timeRange: { startNs?: number; endNs?: number } | undefined
+): string | null {
+  if (isCycleWeight) return null;
+  if (!timeRange || timeRange.startNs === undefined || timeRange.endNs === undefined) return null;
+  const windowNs = timeRange.endNs - timeRange.startNs;
+  if (windowNs <= 0) return null;
+  const capturedPct = Math.round((totalWeight / windowNs) * 1000) / 10;
+  if (capturedPct >= WINDOW_CAPTURE_THRESHOLD_PCT) return null;
+  return (
+    `Only ${capturedPct}% of this ${formatNs(windowNs)} window was captured as CPU time ` +
+    `(${formatNs(totalWeight)}) — the remainder is likely non-CPU latency (render/GPU work, ` +
+    "scheduling delay, waiting on another thread), not \"nothing happened here\". A sparse " +
+    "sample count in a windowed call_tree does not mean the window was idle."
+  );
+}
+
 // ─── Tree serialization ───────────────────────────────────────────────────────
 
 function serializeNode(
@@ -621,6 +658,8 @@ export async function callTree(
         "use System Trace or thread-state instrumentation to find the blocking cause."
       );
     }
+    const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
+    if (captureNote) notes.push(captureNote);
     return {
       schema,
       run,
@@ -663,6 +702,8 @@ export async function callTree(
         `work starts at depth ${appCodeStartsAtDepth} ("${at.name}").`
       );
     }
+    const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
+    if (captureNote) notes.push(captureNote);
     return {
       schema,
       run,
@@ -704,6 +745,8 @@ export async function callTree(
       "or view: \"spine\" (single dominant path, no depth cap) instead."
     );
   }
+  const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
+  if (captureNote) notes.push(captureNote);
 
   return {
     schema,
