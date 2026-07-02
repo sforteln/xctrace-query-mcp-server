@@ -518,6 +518,9 @@ export function createServer(): McpServer {
         "schemas (os-signpost, OSSignpostIntervals, PointsOfInterestEvents) pair especially " +
         "well here if the app calls os_signpost around its own operations — correlate them " +
         "against whatever's being investigated to see which named app operation was active. " +
+        "Pass timeRange to narrow both schemas to a window BEFORE fetching — real streaming " +
+        "narrowing (discarded during the parse, not after), the difference between a fast call " +
+        "and a full materialization on a huge intervals schema like swiftui-updates. " +
         "`run` defaults to the most recent run. " +
         "⚠️ Not for aggregating within one schema — use aggregate for that.",
       inputSchema: {
@@ -548,16 +551,27 @@ export function createServer(): McpServer {
           .max(100)
           .optional()
           .describe("Max groups to return, heaviest by matched-event-count first (default 10)."),
+        timeRange: z
+          .object({
+            startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
+            endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
+          })
+          .optional()
+          .describe(
+            "Restrict both schemas to a time window before fetching. Applied to each schema's " +
+            "own primary time column. A raw start/duration/timestamp value read from any other " +
+            "schema's row is directly usable here with no conversion."
+          ),
         run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
       },
     },
-    async ({ sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, run }) =>
+    async ({ sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, timeRange, run }) =>
       safeToolWithLog(
         "correlate",
-        { sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, run },
+        { sessionId, intervalsSchema, eventsSchema, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, timeRange, run },
         async () => {
           const result = await correlate(sessionId, intervalsSchema, eventsSchema, {
-            run, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN,
+            run, groupBy, measure, matchThread, intervalsFilter, eventsFilter, topN, timeRange,
           });
           const topKey = result.groups[0]?.key ?? null;
           const actions = [

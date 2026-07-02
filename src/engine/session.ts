@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
 import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
-import { parseTableStream, parseTableStreamMeta, ParsedTable, SchemaMeta } from "./parseTable.js";
+import { parseTableStream, parseTableStreamMeta, parseTableStreamProjected, ParsedTable, SchemaMeta } from "./parseTable.js";
 import { parseTrackDetailStream, parseTrackDetailStreamMeta } from "./parseTrackDetail.js";
 import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
@@ -371,6 +371,52 @@ export async function getSchemaMeta(
   }
 
   return meta;
+}
+
+/**
+ * Column-projected, optionally time-windowed fetch — for correlate(), which
+ * only ever needs a small fixed set of mnemonics and can narrow to a
+ * timeRange before full materialization (see PMT:still-wisp/PMT:rose-loch).
+ * Schema-table only: a track-detail schema (Allocations/Leaks/VM Tracker)
+ * falls back to the normal full getTable() fetch — those schemas aren't
+ * correlate()'s primary use case, and track-detail's own column-discovery
+ * pass already requires seeing every row's raw attributes regardless (see
+ * parseTrackDetail.ts's header comment), so projection wouldn't help there
+ * as directly as it does for schema-table's upfront <schema> block.
+ *
+ * Deliberately bypasses session.tableCache entirely (like getSchemaMeta) —
+ * a projected/windowed result is a different, incomplete view of the table
+ * and must never be served to a caller expecting full rows via cache reuse.
+ * Repeated correlate() calls on the same schema each re-parse from scratch;
+ * acceptable since correlate() is typically called once or twice per
+ * investigation, not in a tight loop.
+ */
+export async function getProjectedTable(
+  sessionId: string,
+  run: number,
+  schema: string,
+  wanted: Set<string>,
+  timeMnemonic?: string,
+  timeRange?: { startNs?: number; endNs?: number }
+): Promise<ParsedTable> {
+  const session = getSession(sessionId);
+  assertUnambiguousSchema(session.schemaModel, run, schema);
+
+  const cached = session.tableCache.get(`${run}:${schema}`);
+  if (cached) return cached; // already fully fetched by someone else — reuse it, don't re-parse narrower
+
+  const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
+  if (modelEntry?.source === "track-detail") {
+    return getTable(sessionId, run, schema);
+  }
+
+  const xpath = buildTableXPath(run, schema);
+  const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+  const [table] = await Promise.all([
+    parseTableStreamProjected(stdout, wanted, timeMnemonic, timeRange),
+    done,
+  ]);
+  return table;
 }
 
 /**

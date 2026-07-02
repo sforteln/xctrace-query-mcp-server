@@ -277,11 +277,27 @@ function parseCell(
 /**
  * Parse one <row> element into a NormalizedRow, mapping children positionally
  * onto the schema columns.
+ *
+ * `wanted`, when given, projects the result to only those mnemonics — but
+ * every column is still fed through parseCell() regardless (never skipped),
+ * because a later row's `ref` can point at an id this row defines on ANY
+ * column, and queue-consumption order must stay correct for positional
+ * fallback matching between same-engineering-type columns. Only the
+ * ASSIGNMENT into the returned object is skipped for unwanted columns, so
+ * the (possibly large) Cell value becomes garbage-collectable as soon as
+ * this call returns instead of being retained in the final row array —
+ * this is what makes correlate()'s column projection safe: real memory
+ * savings for the common "many columns, only a few wanted" case, with zero
+ * risk of breaking a wanted column's ref resolution. It does NOT reduce
+ * RefCache's own retention of an id-registered heavy value for the rest of
+ * the table's parse — see the caller-side note in session.ts's
+ * getProjectedTable for why that's a separate, harder problem left alone here.
  */
 function parseRow(
   rowNode: Record<string, any>,
   cols: SchemaCol[],
-  cache: RefCache
+  cache: RefCache,
+  wanted?: Set<string>
 ): NormalizedRow {
   // fast-xml-parser gives us the row's child elements as keys on rowNode.
   // Children map positionally to cols, so we need them in document order.
@@ -309,10 +325,14 @@ function parseRow(
     // then fall back to iterating remaining tags in order.
     const expectedTag = col.engineeringType;
     const queue = tagQueues[expectedTag];
+    const keep = !wanted || wanted.has(col.mnemonic);
 
     if (queue && queue.length > 0) {
       const node = queue.shift()!;
-      result[col.mnemonic] = parseCell(expectedTag, node, cache);
+      // Always parse (ref/id registration + queue order must stay correct
+      // regardless of projection) — only the assignment is conditional.
+      const cell = parseCell(expectedTag, node, cache);
+      if (keep) result[col.mnemonic] = cell;
     } else {
       // Tag not found by engineering-type name — try positional fallback:
       // pick the first non-empty remaining queue in key order.
@@ -321,8 +341,9 @@ function parseRow(
       );
       if (fallbackKey) {
         const node = tagQueues[fallbackKey].shift()!;
-        result[col.mnemonic] = parseCell(fallbackKey, node, cache);
-      } else {
+        const cell = parseCell(fallbackKey, node, cache);
+        if (keep) result[col.mnemonic] = cell;
+      } else if (keep) {
         result[col.mnemonic] = null;
       }
     }
@@ -404,14 +425,35 @@ interface StreamParseResult {
  * track nesting depth correctly so the next row starts capturing at the
  * right point) — this cuts the dominant MEMORY cost (a Cell object per
  * column per row, held for the table's whole lifetime) for callers that only
- * need column shape + a row count (describe_schema), not the deeper
- * per-row XML reconstruction cost the sibling "column projection at parse
- * time" prompt (PMT:still-wisp) targets.
+ * need column shape + a row count (describe_schema).
+ *
+ * `wanted`/`timeMnemonic`/`timeRange` (mutually exclusive with countOnly)
+ * implement PMT:still-wisp/PMT:rose-loch's column projection + real
+ * streaming timeRange for correlate(): every column is still parsed (see
+ * parseRow's own doc comment for why — ref/id correctness), but only
+ * `wanted` mnemonics are RETAINED in the returned row, so an unwanted
+ * column's Cell (potentially large — view-hierarchy, cause-graph-node, etc.)
+ * becomes garbage-collectable immediately instead of living in the final
+ * `rows` array for the table's whole lifetime. When `timeRange` is given,
+ * a row outside the window is discarded during the parse (never pushed to
+ * `rows` at all) rather than fetched-then-filtered. This does NOT reduce
+ * RefCache's own retention of an id-registered heavy value for the rest of
+ * the parse — see session.ts's getProjectedTable for why that's a separate,
+ * unverified-safe problem left alone here.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
  *         matched nothing), "parse-error" on malformed XML.
  */
-function parseTableStreamInternal(stdout: Readable, countOnly: boolean): Promise<StreamParseResult> {
+function parseTableStreamInternal(
+  stdout: Readable,
+  opts: {
+    countOnly?: boolean;
+    wanted?: Set<string>;
+    timeMnemonic?: string;
+    timeRange?: { startNs?: number; endNs?: number };
+  } = {}
+): Promise<StreamParseResult> {
+  const { countOnly = false, wanted, timeMnemonic, timeRange } = opts;
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -484,7 +526,19 @@ function parseTableStreamInternal(stdout: Readable, countOnly: boolean): Promise
             cols = parseSchemaCols(builtNode);
           } else if (tag === "row") {
             rowCount++;
-            if (!countOnly) rows.push(parseRow(builtNode, cols, cache));
+            if (!countOnly) {
+              const row = parseRow(builtNode, cols, cache, wanted);
+              const inWindow = (() => {
+                if (!timeMnemonic || !timeRange) return true;
+                const t = row[timeMnemonic]?.raw;
+                const tNs = typeof t === "number" ? t : NaN;
+                if (!isFinite(tNs)) return true; // can't judge — don't drop unfiltered data
+                if (timeRange.startNs !== undefined && tNs < timeRange.startNs) return false;
+                if (timeRange.endNs !== undefined && tNs > timeRange.endNs) return false;
+                return true;
+              })();
+              if (inWindow) rows.push(row);
+            }
           }
           activeBuilder = null;
         }
@@ -522,7 +576,7 @@ function parseTableStreamInternal(stdout: Readable, countOnly: boolean): Promise
  * {@link parseTableStreamInternal} for the shared implementation.
  */
 export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
-  return parseTableStreamInternal(stdout, false).then(({ schema, cols, rows }) => ({ schema, cols, rows }));
+  return parseTableStreamInternal(stdout).then(({ schema, cols, rows }) => ({ schema, cols, rows }));
 }
 
 /**
@@ -531,5 +585,22 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
  * {@link parseTableStreamInternal}.
  */
 export function parseTableStreamMeta(stdout: Readable): Promise<SchemaMeta> {
-  return parseTableStreamInternal(stdout, true).then(({ cols, rowCount }) => ({ cols, rowCount }));
+  return parseTableStreamInternal(stdout, { countOnly: true }).then(({ cols, rowCount }) => ({ cols, rowCount }));
+}
+
+/**
+ * Column-projected, time-windowed parse — for correlate(), which only ever
+ * needs a small fixed set of mnemonics (start/duration/timestamp/thread/
+ * groupBy/measure) and can narrow to a timeRange before full materialization.
+ * See {@link parseTableStreamInternal} for what this does and does not solve.
+ */
+export function parseTableStreamProjected(
+  stdout: Readable,
+  wanted: Set<string>,
+  timeMnemonic?: string,
+  timeRange?: { startNs?: number; endNs?: number }
+): Promise<ParsedTable> {
+  return parseTableStreamInternal(stdout, { wanted, timeMnemonic, timeRange }).then(
+    ({ schema, cols, rows }) => ({ schema, cols, rows })
+  );
 }

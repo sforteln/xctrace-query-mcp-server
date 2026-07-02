@@ -16,8 +16,19 @@
  * view-name) so the output reads as a direct answer ("SidebarView.body
  * contained 445 Feature fetches") instead of a raw per-interval dump the
  * agent has to summarize itself.
+ *
+ * Fetches via session.ts's getSchemaMeta (column shape only, to classify
+ * which mnemonics matter) + getProjectedTable (only those mnemonics, plus
+ * `timeRange` narrowing DURING the parse) instead of a full getTable() —
+ * this is what makes correlate() safe on a huge intervals schema like
+ * swiftui-updates (364K+ rows, many unbounded columns this never touches).
+ * See PMT:still-wisp/PMT:rose-loch. Trade-off: this is TWO xctrace export
+ * passes per schema (meta then projected) instead of one, so a call on a
+ * genuinely heavy schema is slower in wall-clock time than the old
+ * single-pass-but-unsafe approach — accepted, since the OOM this replaces
+ * is strictly worse than being slow.
  */
-import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole, preferredThreadColumn } from "../engine/roleInference.js";
 import { matchesFilter } from "./tableFilter.js";
@@ -41,6 +52,14 @@ export interface CorrelateOptions {
   eventsFilter?: Record<string, string | number>;
   /** Max groups to return, heaviest-by-matched-events-first (default 10). */
   topN?: number;
+  /**
+   * Restrict both schemas to a time window BEFORE full materialization —
+   * real streaming narrowing (discarded during the parse), not a post-hoc
+   * filter on already-fetched rows. Applied to each schema's own primary
+   * time column (intervals: startColumn: events: timestampColumn), same
+   * convention as query/aggregate/call_tree's timeRange. See PMT:rose-loch.
+   */
+  timeRange?: { startNs?: number; endNs?: number };
 }
 
 export interface CorrelateGroup {
@@ -135,16 +154,19 @@ export async function correlate(
   eventsSchema: string,
   opts: CorrelateOptions
 ): Promise<CorrelateResult> {
-  const { groupBy, measure, matchThread = true, intervalsFilter, eventsFilter, topN = 10 } = opts;
+  const { groupBy, measure, matchThread = true, intervalsFilter, eventsFilter, topN = 10, timeRange } = opts;
   const run = opts.run ?? sessionLastRun(sessionId);
 
-  const [intervalsTable, eventsTable] = await Promise.all([
-    getTable(sessionId, run, intervalsSchema),
-    getTable(sessionId, run, eventsSchema),
+  // Column shape only, no row data — enough to classify and pick mnemonics
+  // (this is the whole point: know WHICH columns are needed before paying
+  // for a full or even a projected fetch). See PMT:still-wisp.
+  const [intervalsMeta, eventsMeta] = await Promise.all([
+    getSchemaMeta(sessionId, run, intervalsSchema),
+    getSchemaMeta(sessionId, run, eventsSchema),
   ]);
 
-  const intervalsClassified = classifyWithHints(intervalsSchema, intervalsTable.cols);
-  const eventsClassified = classifyWithHints(eventsSchema, eventsTable.cols);
+  const intervalsClassified = classifyWithHints(intervalsSchema, intervalsMeta.cols);
+  const eventsClassified = classifyWithHints(eventsSchema, eventsMeta.cols);
 
   // Pinned primaryTime/primaryWeight win where they apply — see find.ts's
   // matching comment for why firstWithRole alone isn't safe when 2+ columns
@@ -175,6 +197,29 @@ export async function correlate(
 
   const measureClassified = measure ? eventsClassified.find((c) => c.mnemonic === measure) : undefined;
   const unit = measureClassified?.roleInfo.unit;
+
+  // --- Projected, time-windowed fetch (discards unwanted columns and
+  // out-of-range rows during the parse — see PMT:still-wisp/PMT:rose-loch).
+  // Filter columns MUST be included or matchesFilter would see every
+  // filtered row as non-matching (an absent cell reads as "doesn't match").
+  const intervalsWanted = new Set([
+    groupBy,
+    startColumn,
+    durationColumn,
+    ...(intervalsThreadCol ? [intervalsThreadCol] : []),
+    ...Object.keys(intervalsFilter ?? {}),
+  ]);
+  const eventsWanted = new Set([
+    timestampColumn,
+    ...(measure ? [measure] : []),
+    ...(eventsThreadCol ? [eventsThreadCol] : []),
+    ...Object.keys(eventsFilter ?? {}),
+  ]);
+
+  const [intervalsTable, eventsTable] = await Promise.all([
+    getProjectedTable(sessionId, run, intervalsSchema, intervalsWanted, startColumn, timeRange),
+    getProjectedTable(sessionId, run, eventsSchema, eventsWanted, timestampColumn, timeRange),
+  ]);
 
   // --- Pre-filter ---
   let intervalRows = intervalsTable.rows;
