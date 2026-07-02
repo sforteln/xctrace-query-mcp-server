@@ -145,11 +145,40 @@ const LENSES: Lens[] = [
  * Enforced by: tests/driftGuard.test.ts
  * Full guide:  Update_for_your_version_and_submit_a_PR.md
  */
+/**
+ * Always-loaded, once-per-session usage guidance — the MCP protocol's
+ * top-level `instructions` field (returned in `initialize`, distinct from any
+ * one tool's description). This is the right layer for the SHAPE of a whole
+ * session across many tool calls, not any single tool's own behavior — see
+ * `aidocs/howHintsWork.md`'s proactive/reactive split. Concretely: an agent
+ * that opens a trace, answers the question, and stops has no natural signal
+ * telling it the session is "done" (no tool response can know that), so this
+ * can't be fixed with a `nextAction` hint the way most workflow steps are —
+ * it has to be stated up front instead.
+ */
+const SERVER_INSTRUCTIONS =
+  "Two standard workflows, both ending in close_trace:\n\n" +
+  "1. Record a new trace: start_recording → exercise the app (or ask the user to) → " +
+  "stop_recording (this auto-opens the resulting trace and returns a sessionId, so you can " +
+  "go straight into analysis) → analyze via list_instruments/describe_schema/query/aggregate/" +
+  "get_row/call_tree/find/correlate and any per-instrument lens tools, following each " +
+  "response's nextActions → close_trace once you have your answer.\n\n" +
+  "2. Analyze an existing trace: open_trace → analyze (same verbs) → close_trace once you " +
+  "have your answer.\n\n" +
+  "Always call close_trace when you're done analyzing a session, even if nothing prompts you " +
+  "to. Sessions are cached for the life of the server process and are never evicted " +
+  "automatically — an agent that opens a trace, answers the question, and stops without " +
+  "closing leaves it (and any large tables it loaded) resident in memory indefinitely. See " +
+  "close_trace's own description for when it's safe to call.";
+
 export function createServer(): McpServer {
-  const server = new McpServer({
-    name: SERVER_NAME,
-    version: SERVER_VERSION,
-  });
+  const server = new McpServer(
+    {
+      name: SERVER_NAME,
+      version: SERVER_VERSION,
+    },
+    { instructions: SERVER_INSTRUCTIONS }
+  );
 
   registry.registerAll(LENSES, server);
 
@@ -164,7 +193,8 @@ export function createServer(): McpServer {
         "Returns runs with `recordedAt` timestamps so the agent can identify 'the run I just created'; " +
         "instruments (schemas); and when a lens recognises the trace type, a `suggestedStart` block " +
         "with the exact next tool call to make — follow it to reach first real data in 2 calls total. " +
-        "Always call this first. " +
+        "Always call this first. Call close_trace on this sessionId once you're done analyzing — " +
+        "sessions are never evicted automatically, so nothing else will free it. " +
         "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
       inputSchema: {
         path: z.string().describe("Absolute or ~ path to the .trace bundle."),

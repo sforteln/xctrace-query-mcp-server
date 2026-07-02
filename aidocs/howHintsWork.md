@@ -8,6 +8,7 @@ Every tool response can carry guidance beyond raw data — a `nextActions` array
 - `src/core/aggregate.ts`, `src/core/callTree.ts`, `src/core/correlate.ts` — core-verb-level computed hints (schema-agnostic, not lens-specific)
 - `src/core/recording.ts` — `RECORDING_INTENTS[type].note` — static, pre-recording guidance; `expandTemplates()` — expands a `templates`-composed name into its full bundle; `bareInstrumentTemplateNotes()` — steers a bare `instruments` entry toward `templates` when it names something that's also a richer template, without silently changing what gets recorded either way (see the `instruments` vs. `templates` split below)
 - `src/core/recordingSession.ts` — `compositionNote`, `finalizeWarning` — computed at `start_recording`/`stop_recording` time
+- `src/index.ts`'s `SERVER_INSTRUCTIONS` — the MCP protocol's top-level `instructions` field (returned in `initialize`, passed as `McpServer`'s second constructor arg) — see "A fifth layer" below
 
 ## The first question: can this be fixed instead?
 
@@ -43,6 +44,12 @@ Table-wide hints must **peek, never fetch** (`peekTable` from `engine/session.ts
 
 - **Proactive** — `RECORDING_INTENTS[type].note` in `recording.ts`, surfaced in `start_recording`'s response, *before* the recording even happens. Use this for facts that can't be discovered after the fact without re-recording — e.g. `hangs`' note that `potential-hangs`/`hitches` carry no backtrace at all, so `instruments: ["Time Profiler"]` needs composing *now*, not after querying comes up empty. Also where `compositionNote`/`finalizeWarning` live (computed at `start_recording`/`stop_recording` time specifically because the decision point is then, not later).
 - **Reactive** — lens `nextActions`, fires when the schema is actually queried/aggregated/fetched. This is the *only* mechanism that reaches an agent reopening a `.trace` file recorded in a completely different session — a proactive note is invisible then, since that agent never saw `start_recording`'s response at all. Build both when a fact matters enough (the Hangs/Thermal lenses' `nextActions` is a deliberate backstop for their own `RECORDING_INTENTS` notes, in case the note got missed or the trace predates it).
+
+## A fifth layer: server-level `instructions`, for session SHAPE, not any one call
+
+Everything above is scoped to a single tool call — a response to THIS request. Some facts are about the shape of an entire session across many calls, where no single tool response can carry the hint because no tool knows "the agent is about to stop calling tools." The concrete case: an agent that opens a trace, answers the question, and stops has no natural prompt to call `close_trace` — nothing in any analysis response can say "you're done now," because nothing in the server knows that. `close_trace`'s own description explains WHY it matters (sessions are never evicted automatically) but only reaches an agent that already thought to look for a close tool.
+
+For this, use the MCP protocol's own `instructions` field — `McpServer`'s second constructor argument (`{ instructions: SERVER_INSTRUCTIONS }` in `index.ts`), returned once in `initialize` and (client-dependent) surfaced alongside tool descriptions for the whole session. This is the most expensive, least-used layer (loaded once regardless of whether it's ever relevant, unlike a tool description that's only weighed when that tool is a candidate) — reserve it for facts about the OVERALL workflow shape (the standard record-or-open → analyze → close lifecycle), not anything a single tool's own description or a response hint could carry instead. Don't restate a tool's own behavioral detail here (that's what its description is for, and duplication drifts) — just the shape connecting tools together, with a pointer to the tool whose description has the detail.
 
 ## Lens-specific vs. core-verb-level
 
