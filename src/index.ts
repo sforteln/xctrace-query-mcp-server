@@ -34,6 +34,7 @@ import swiftConcurrencyLens from "./lenses/swiftConcurrency/index.js";
 import swiftUILens from "./lenses/swiftUI/index.js";
 import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
+import thermalLens from "./lenses/thermal/index.js";
 import { getConfig, updateConfig, configPath } from "./config.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
@@ -121,6 +122,7 @@ const LENSES: Lens[] = [
   allocationsLens,
   hangsLens,
   timeProfilerLens,
+  thermalLens,
 ];
 
 /**

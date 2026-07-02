@@ -343,6 +343,54 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
     },
   },
 
+  // ── Thermal State ──────────────────────────────────────────────────────────────
+  // Verified live (2026-07-02, Time Profiler recording — Thermal State is bundled
+  // in, not a standalone template): no thread/process/backtrace column at all —
+  // literally just a state level over an interval. Zero causal signal on its own;
+  // see the "thermal" lens's nextActions for the Time Profiler correlation nudge.
+  "device-thermal-state-intervals": {
+    instrument: "Thermal State",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      end: t,
+      "thermal-state": label,
+      "track-label": detail,
+      "is-induced": detail,
+      narrative: detail,
+    },
+  },
+
+  // ── GCD Performance ────────────────────────────────────────────────────────────
+  // Verified live (2026-07-02, composed onto Time Profiler against Finder) while
+  // checking whether this belonged in the "low-signal-alone" list (PMT:sage-weasel)
+  // — it does NOT: this schema has its OWN resolved backtrace per flagged event
+  // (same engineering-type as Leaks/Allocations/core-data-fetch's Caller), so it's
+  // independently useful without correlating against anything else.
+  "gcd-perf-event": {
+    instrument: "GCD Performance",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      thread: thread,
+      code: detail,
+      severity: label,
+      "dispatch-perf-event": label,
+      "dispatch-queue": detail,
+      "dispatch-source": detail,
+      "old-target-queue": detail,
+      "new-target-queue": detail,
+      label: label,
+      backtrace: bt,
+      // "core" mnemonic is heuristically role "thread" globally (roleInference.ts)
+      // but excluded from preferredThreadColumn's candidate pool there — a CPU
+      // core index isn't a thread identity for correlation purposes.
+      "running-cpu": detail,
+    },
+  },
+
   // ── SwiftData / Core Data ─────────────────────────────────────────────────────
   // fault, relationship-fault, fetch, save — all from the SwiftData template.
   "core-data-fault": {
