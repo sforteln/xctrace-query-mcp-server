@@ -87,12 +87,41 @@ function parseBinary(
   return entry;
 }
 
+/** Per-node cache mapping id → a fully-resolved frame. */
+type FrameCache = Map<number, ResolvedFrame>;
+
+/**
+ * A recurring call-site frame (malloc, class_createInstance, objc runtime
+ * entry points, etc.) is emitted once with an `id` and referenced by every
+ * later occurrence as a bare `<frame ref="N"/>` with no name/addr of its
+ * own — the same id/ref dedup scheme `parseBinary` already handles for
+ * <binary> children, just one level up. Verified live against a real
+ * Allocations recording: a `ref`-only frame carries neither `@_name` nor
+ * `@_addr`, so without this cache it silently resolved to `{name: "", addr:
+ * ""}` instead of the real frame — and because these ref'd call-site frames
+ * dominate real backtraces (most non-leaf frames after the first occurrence
+ * are refs), the practical effect was ~14 of 15 frames in a typical
+ * Allocations backtrace coming back blank. See PMT:spare-cairn / PMT:tundra-mallard.
+ */
 function parseBacktrace(
   backtraceNode: Record<string, any>,
-  binaryCache: BinaryCache
+  binaryCache: BinaryCache,
+  frameCache: FrameCache
 ): ResolvedFrame[] {
   const frames: ResolvedFrame[] = [];
   for (const frame of asArray<Record<string, any>>(backtraceNode?.frame)) {
+    const ref = frame["@_ref"];
+    if (ref !== undefined) {
+      const cached = frameCache.get(Number(ref));
+      if (cached) {
+        frames.push(cached);
+        continue;
+      }
+      // Defensive fallback — a ref should always have a prior id in the same
+      // node; if xctrace ever emits one without, fall through and resolve
+      // whatever attributes (if any) this element actually carries rather
+      // than silently dropping the frame.
+    }
     const name = String(frame["@_name"] ?? "");
     const addr = String(frame["@_addr"] ?? "");
     // Frame may have zero or one <binary> child.
@@ -101,7 +130,10 @@ function parseBacktrace(
       binaryNodes.length > 0
         ? parseBinary(binaryNodes[0], binaryCache)
         : { name: null, path: null };
-    frames.push({ name, addr, binaryName: binary.name, binaryPath: binary.path });
+    const resolved: ResolvedFrame = { name, addr, binaryName: binary.name, binaryPath: binary.path };
+    const id = frame["@_id"];
+    if (id !== undefined) frameCache.set(Number(id), resolved);
+    frames.push(resolved);
   }
   return frames;
 }
@@ -111,6 +143,38 @@ function parseBacktrace(
 const BACKTRACE_MNEMONIC = "backtrace";
 
 /**
+ * Incremental column-discovery state, one row at a time — shared by the
+ * batch path (discoverColumns, walking an already-collected `nodes` array)
+ * and the streaming meta path (parseTrackDetailStreamMeta), which observes
+ * each row as it completes and discards it immediately rather than
+ * collecting the whole table first. Keeping this logic in one place means
+ * both paths agree on column shape/ordering by construction.
+ */
+class ColumnDiscovery {
+  attrOrder: string[] = [];
+  private attrSet = new Set<string>();
+  attrSamples = new Map<string, string[]>();
+  hasBacktrace = false;
+
+  observeRow(row: Record<string, any>): void {
+    // fast-xml-parser puts XML attributes under "@_name" keys and child
+    // elements under plain "name" keys. We want only attribute keys here.
+    for (const [key, val] of Object.entries(row)) {
+      if (!key.startsWith("@_")) continue;
+      const attrName = key.slice(2);
+      if (!this.attrSet.has(attrName)) {
+        this.attrSet.add(attrName);
+        this.attrOrder.push(attrName);
+        this.attrSamples.set(attrName, []);
+      }
+      const samples = this.attrSamples.get(attrName)!;
+      if (samples.length < 20) samples.push(String(val));
+    }
+    if (row?.[BACKTRACE_MNEMONIC] !== undefined) this.hasBacktrace = true;
+  }
+}
+
+/**
  * Walk all rows across all nodes to discover the union of attribute names
  * and whether any row has a <backtrace>. Returns ordered column list and
  * per-attribute sample values for type inference.
@@ -118,31 +182,13 @@ const BACKTRACE_MNEMONIC = "backtrace";
 function discoverColumns(
   nodes: Array<Record<string, any>>
 ): { attrOrder: string[]; attrSamples: Map<string, string[]>; hasBacktrace: boolean } {
-  const attrOrder: string[] = [];
-  const attrSet = new Set<string>();
-  const attrSamples = new Map<string, string[]>();
-  let hasBacktrace = false;
-
+  const discovery = new ColumnDiscovery();
   for (const node of nodes) {
     for (const row of asArray<Record<string, any>>(node?.row)) {
-      // fast-xml-parser puts XML attributes under "@_name" keys and child
-      // elements under plain "name" keys. We want only attribute keys here.
-      for (const [key, val] of Object.entries(row)) {
-        if (!key.startsWith("@_")) continue;
-        const attrName = key.slice(2);
-        if (!attrSet.has(attrName)) {
-          attrSet.add(attrName);
-          attrOrder.push(attrName);
-          attrSamples.set(attrName, []);
-        }
-        const samples = attrSamples.get(attrName)!;
-        if (samples.length < 20) samples.push(String(val));
-      }
-      if (row?.[BACKTRACE_MNEMONIC] !== undefined) hasBacktrace = true;
+      discovery.observeRow(row);
     }
   }
-
-  return { attrOrder, attrSamples, hasBacktrace };
+  return { attrOrder: discovery.attrOrder, attrSamples: discovery.attrSamples, hasBacktrace: discovery.hasBacktrace };
 }
 
 // ─── Shared build step (nodes → ParsedTable) ──────────────────────────────────
@@ -184,8 +230,12 @@ function buildParsedTable(
   const rows: NormalizedRow[] = [];
 
   for (const node of nodes) {
-    // Binary id cache is per-node (ids restart in each <node>).
+    // Binary and frame id caches are per-node (ids restart in each <node>) —
+    // a ref can point at an id defined in an EARLIER row within the same
+    // node, so this must persist across the whole node's rows, not reset
+    // per-row.
     const binaryCache: BinaryCache = new Map();
+    const frameCache: FrameCache = new Map();
 
     for (const rowNode of asArray<Record<string, any>>(node?.row)) {
       const row: NormalizedRow = {};
@@ -211,7 +261,8 @@ function buildParsedTable(
         if (btNode !== undefined && btNode !== null) {
           const frames = parseBacktrace(
             btNode as Record<string, any>,
-            binaryCache
+            binaryCache,
+            frameCache
           );
           const topName = frames[0]?.name ?? "";
           row[BACKTRACE_MNEMONIC] = {
@@ -235,27 +286,20 @@ function buildParsedTable(
 /**
  * Column shape + row count only, with no row-level Cell materialization or
  * backtrace resolution at all — for callers like describe_schema that never
- * touch a single row. Column discovery is still a full pass over every row's
- * raw attributes (track-detail has no upfront <schema> block the way
- * schema-table does — the attribute union can only be known after seeing
- * every row), but this skips buildParsedTable's much heavier second pass
- * (per-cell type coercion, backtrace frame resolution) and never holds a
- * `rows` array at all.
+ * touch a single row. Built from an already-populated {@link ColumnDiscovery}
+ * (streamed incrementally, one row at a time, never holding a full row array
+ * — see {@link collectTrackDetailNodes}'s countOnly mode) rather than from a
+ * batch `nodes` array the way the full parse path's discovery does.
  */
-function buildSchemaMeta(nodes: Array<Record<string, any>>): SchemaMeta {
-  if (nodes.length === 0) return { cols: [], rowCount: 0 };
-
-  const { attrOrder, attrSamples, hasBacktrace } = discoverColumns(nodes);
-  const cols: SchemaCol[] = attrOrder.map((attrName) => ({
+function buildSchemaMetaFromDiscovery(discovery: ColumnDiscovery, rowCount: number): SchemaMeta {
+  const cols: SchemaCol[] = discovery.attrOrder.map((attrName) => ({
     mnemonic: attrName,
     name: attrName.replace(/-/g, " "),
-    engineeringType: inferEngType(attrName, attrSamples.get(attrName) ?? []),
+    engineeringType: inferEngType(attrName, discovery.attrSamples.get(attrName) ?? []),
   }));
-  if (hasBacktrace) {
+  if (discovery.hasBacktrace) {
     cols.push({ mnemonic: BACKTRACE_MNEMONIC, name: "Backtrace", engineeringType: "backtrace" });
   }
-
-  const rowCount = nodes.reduce((n, node) => n + asArray<Record<string, any>>(node?.row).length, 0);
   return { cols, rowCount };
 }
 
@@ -320,21 +364,37 @@ class PercentAttributeNameSanitizer extends Transform {
   }
 }
 
+interface CollectResult {
+  /** Full per-row mini-DOMs, grouped by <node> — empty when countOnly (never collected). */
+  nodes: Array<Record<string, any>>;
+  /** Populated incrementally when countOnly — see the mode split below. */
+  discovery: ColumnDiscovery;
+  rowCount: number;
+}
+
 /**
- * Streams and reconstructs every <node>'s row mini-DOMs — shared by
- * {@link parseTrackDetailStream} and {@link parseTrackDetailStreamMeta}, which
- * differ only in what they build from the result (a full ParsedTable via
- * {@link buildParsedTable}, or column-shape-only via {@link buildSchemaMeta}).
- * Column discovery is inherently two-pass regardless (the attribute set is
- * only known after seeing every row), so both callers need every row's mini-
- * DOM collected here first — small, compact objects via {@link MiniXmlBuilder},
- * NOT the raw XML string and NOT a full generic DOM tree of the whole
- * document.
+ * Streams every <node>'s rows — shared by {@link parseTrackDetailStream} and
+ * {@link parseTrackDetailStreamMeta}, which differ in what they need kept
+ * around afterward, not in how the XML is walked.
+ *
+ * `countOnly` is the important split: when false (the full-parse path),
+ * every row's mini-DOM (small, compact objects via {@link MiniXmlBuilder} —
+ * NOT the raw XML string, NOT a full generic DOM tree) is retained in
+ * `nodes` for {@link buildParsedTable}'s later two-pass discovery+build.
+ * When true, each row is fed to a running {@link ColumnDiscovery} the MOMENT
+ * its mini-DOM completes and then DISCARDED — never appended to any array —
+ * so memory stays flat regardless of row count. This matters: an earlier
+ * version of this function always collected every row's full mini-DOM
+ * first and ran discovery as a second pass over that array, meaning even
+ * the "meta-only" path held the ENTIRE table's backtrace/binary data in
+ * memory before ever getting to skip the heavier per-row Cell build —
+ * confirmed live to still OOM (V8 heap exhaustion, ~4 GB) on a real,
+ * large Allocations+Leaks recording. See PMT:copper-duck / PMT:spare-cairn.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
  *         on malformed XML.
  */
-function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string, any>>> {
+function collectTrackDetailNodes(stdout: Readable, countOnly: boolean): Promise<CollectResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -342,10 +402,10 @@ function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string,
       settled = true;
       reject(err);
     };
-    const settleResolve = (nodes: Array<Record<string, any>>) => {
+    const settleResolve = (result: CollectResult) => {
       if (settled) return;
       settled = true;
-      resolve(nodes);
+      resolve(result);
     };
 
     // See the matching comment in parseTable.ts's parseTableStream — sax's
@@ -361,6 +421,8 @@ function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string,
     let sawNode = false;
     const nodes: Array<Record<string, any>> = [];
     let currentNodeRows: Array<Record<string, any>> | null = null;
+    const discovery = new ColumnDiscovery();
+    let rowCount = 0;
 
     saxStream.on("opentag", (node) => {
       const tag = node.name;
@@ -392,7 +454,14 @@ function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string,
           // SAME opentag event that pushes it) — pop it now that capture is
           // done, or pathStack stays poisoned and the next <row> never matches.
           if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-          currentNodeRows!.push(activeBuilder.result!);
+          const result = activeBuilder.result!;
+          rowCount++;
+          if (countOnly) {
+            discovery.observeRow(result);
+            // Deliberately not appended anywhere — this is the whole point.
+          } else {
+            currentNodeRows!.push(result);
+          }
           activeBuilder = null;
         }
         return;
@@ -413,7 +482,7 @@ function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string,
         );
         return;
       }
-      settleResolve(nodes);
+      settleResolve({ nodes, discovery, rowCount });
     });
 
     stdout.on("error", (err: Error) => {
@@ -436,16 +505,17 @@ export async function parseTrackDetailStream(
   stdout: Readable,
   syntheticSchema: string
 ): Promise<ParsedTable> {
-  const nodes = await collectTrackDetailNodes(stdout);
+  const { nodes } = await collectTrackDetailNodes(stdout, false);
   return buildParsedTable(nodes, syntheticSchema);
 }
 
 /**
- * Column shape + row count only, with no row-level Cell materialization or
- * backtrace resolution at all — for callers like describe_schema that never
- * touch a single row. See {@link buildSchemaMeta}.
+ * Column shape + row count only, with no row ever retained in memory at any
+ * point (not just no Cell materialization — see {@link collectTrackDetailNodes}'s
+ * countOnly mode) — for callers like describe_schema that never touch a
+ * single row.
  */
 export async function parseTrackDetailStreamMeta(stdout: Readable): Promise<SchemaMeta> {
-  const nodes = await collectTrackDetailNodes(stdout);
-  return buildSchemaMeta(nodes);
+  const { discovery, rowCount } = await collectTrackDetailNodes(stdout, true);
+  return buildSchemaMetaFromDiscovery(discovery, rowCount);
 }

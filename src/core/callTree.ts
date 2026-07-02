@@ -16,10 +16,12 @@
  * structured note suggesting `time-profile` instead.
  */
 import { XMLParser } from "fast-xml-parser";
-import { exportXPath, buildTableXPath, buildTableXPathAtPosition } from "../engine/xctrace.js";
+import { exportXPath, buildTableXPath, buildTableXPathAtPosition, XctraceError } from "../engine/xctrace.js";
 import { exportToc } from "../engine/xctrace.js";
-import { getSession, lastRun as sessionLastRun } from "../engine/session.js";
+import { getSession, getTable, lastRun as sessionLastRun } from "../engine/session.js";
 import { assertUnambiguousSchema } from "../engine/schemaModel.js";
+import { hintFor } from "../engine/roleHints.js";
+import type { ResolvedFrame } from "../engine/parseTable.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
 
@@ -378,15 +380,31 @@ function formatCycles(cycles: number): string {
 }
 
 /**
- * Which formatter applies to a schema's weight column, resolved once per
- * call_tree() invocation from the column's real engineering-type — never
- * assumed from the schema name. "cycle-weight" (cpu-profile) gets cycles;
- * everything else (e.g. time-profile's plain "weight", which IS nanoseconds
- * despite the generic type name — verified live) defaults to formatNs, the
- * historical behavior.
+ * Matches aggregate.ts's formatValue "bytes" case, for the track-detail
+ * (Allocations) call tree — weighted by allocated bytes (the `size`
+ * attribute), a third physical quantity distinct from both time and cycles.
  */
-function formatWeight(value: number, isCycleWeight: boolean): string {
-  return isCycleWeight ? formatCycles(value) : formatNs(value);
+function formatBytes(bytes: number): string {
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+/**
+ * The three physical quantities a call_tree weight column can hold — resolved
+ * once per call_tree() invocation from the column's real engineering-type
+ * (schema-table: "cycle-weight" → cycles, anything else → ns) or from the
+ * schema's shape (track-detail → bytes), never assumed from the schema name.
+ */
+type WeightKind = "ns" | "cycles" | "bytes";
+
+function formatWeight(value: number, kind: WeightKind): string {
+  switch (kind) {
+    case "cycles": return formatCycles(value);
+    case "bytes": return formatBytes(value);
+    default: return formatNs(value);
+  }
 }
 
 /**
@@ -404,15 +422,15 @@ const WINDOW_CAPTURE_THRESHOLD_PCT = 50;
  * process, none of which show up as samples here. Only meaningful for
  * time-based weight (nanoseconds) — comparing a CPU-cycle count to a
  * wall-clock window span would be comparing different physical quantities,
- * the same mistake formatWeight()'s isCycleWeight split already guards
+ * the same mistake formatWeight()'s weightKind split already guards
  * against elsewhere in this file.
  */
 function windowCaptureNote(
   totalWeight: number,
-  isCycleWeight: boolean,
+  weightKind: WeightKind,
   timeRange: { startNs?: number; endNs?: number } | undefined
 ): string | null {
-  if (isCycleWeight) return null;
+  if (weightKind) return null;
   if (!timeRange || timeRange.startNs === undefined || timeRange.endNs === undefined) return null;
   const windowNs = timeRange.endNs - timeRange.startNs;
   if (windowNs <= 0) return null;
@@ -434,7 +452,7 @@ function serializeNode(
   depth: number,
   maxDepth: number,
   topN: number,
-  isCycleWeight: boolean
+  weightKind: WeightKind
 ): CallTreeNode {
   const sorted = [...node.children.values()].sort((a, b) => b.totalWeight - a.totalWeight);
   const children: CallTreeNode[] = [];
@@ -444,7 +462,7 @@ function serializeNode(
     const toShow = sorted.slice(0, topN);
     childrenOmitted = Math.max(0, sorted.length - topN);
     for (const child of toShow) {
-      children.push(serializeNode(child, totalWeight, depth + 1, maxDepth, topN, isCycleWeight));
+      children.push(serializeNode(child, totalWeight, depth + 1, maxDepth, topN, weightKind));
     }
   } else if (sorted.length > 0) {
     childrenOmitted = sorted.length;
@@ -455,8 +473,8 @@ function serializeNode(
     binary: node.binary,
     totalSamples: node.totalSamples,
     selfSamples: node.selfSamples,
-    totalWeightFmt: formatWeight(node.totalWeight, isCycleWeight),
-    selfWeightFmt: formatWeight(node.selfWeight, isCycleWeight),
+    totalWeightFmt: formatWeight(node.totalWeight, weightKind),
+    selfWeightFmt: formatWeight(node.selfWeight, weightKind),
     pctOfTotal: totalWeight > 0 ? Math.round((node.totalWeight / totalWeight) * 1000) / 10 : 0,
     ...(isBlockingWaitFrame(node.name, node.selfWeight, node.totalWeight) ? { isWait: true } : {}),
     children,
@@ -495,6 +513,269 @@ export interface CallTreeOptions {
   view?: "tree" | "hot" | "spine";
 }
 
+/**
+ * Shared by both sample sources (schema-table tagged-backtrace and
+ * track-detail resolved backtraces) — given an already-accumulated tree +
+ * hot-function map, produces the view-specific CallTreeResult. Neither
+ * caller needs to know or care how `roots`/`hot` were populated; this is
+ * pure serialization + the notes computed from the final shape.
+ */
+function buildViewResult(
+  schema: string,
+  run: number,
+  view: "tree" | "hot" | "spine",
+  thread: string | undefined,
+  timeRange: { startNs?: number; endNs?: number } | undefined,
+  maxDepth: number,
+  topN: number,
+  weightKind: WeightKind,
+  roots: Map<string, TreeNode>,
+  hot: Map<string, HotAccum>,
+  totalWeight: number,
+  totalSamples: number
+): CallTreeResult {
+  if (view === "hot") {
+    const ranked = [...hot.values()].sort((a, b) => b.selfWeight - a.selfWeight);
+    const hotFunctions: HotFunctionEntry[] = ranked.slice(0, topN).map((e) => ({
+      name: e.name,
+      binary: e.binary,
+      selfSamples: e.selfSamples,
+      selfWeightFmt: formatWeight(e.selfWeight, weightKind),
+      pctSelfOfTotal: totalWeight > 0 ? Math.round((e.selfWeight / totalWeight) * 1000) / 10 : 0,
+      totalSamples: e.totalSamples,
+      totalWeightFmt: formatWeight(e.totalWeight, weightKind),
+      pctTotalOfTotal: totalWeight > 0 ? Math.round((e.totalWeight / totalWeight) * 1000) / 10 : 0,
+      ...(isBlockingWaitFrame(e.name, e.selfWeight, e.totalWeight) ? { isWait: true } : {}),
+    }));
+    const notes: string[] = [];
+    if (ranked.length > hotFunctions.length) {
+      notes.push(`${ranked.length - hotFunctions.length} additional functions omitted (ranked below top ${topN} by self time).`);
+    }
+    if (hotFunctions[0]?.isWait) {
+      notes.push(
+        `The top self-time entry ("${hotFunctions[0].name}") is a known wait/blocking frame — this thread ` +
+        "was idle/blocked there, not CPU-bound. Time Profiler shows the wait, not what it's blocked on — " +
+        "use System Trace or thread-state instrumentation to find the blocking cause."
+      );
+    }
+    const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
+    if (captureNote) notes.push(captureNote);
+    return {
+      schema,
+      run,
+      totalSamples,
+      totalWeightFmt: formatWeight(totalWeight, weightKind),
+      threadFilter: thread ?? null,
+      view,
+      hotFunctions,
+      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+    };
+  }
+
+  if (view === "spine") {
+    const { frames: spine, divergesAtDepth } = buildSpine(roots, totalWeight);
+    const notes: string[] = [];
+    if (spine.length === 0) {
+      notes.push(`No data found for schema "${schema}" in run ${run}.`);
+    } else if (divergesAtDepth !== null) {
+      const at = spine[divergesAtDepth];
+      notes.push(
+        `Spine dominance holds ≥${SPINE_DOMINANCE_THRESHOLD_PCT}% of parent weight through depth ${divergesAtDepth - 1}; ` +
+        `at depth ${divergesAtDepth} ("${at.name}", ${at.pctOfParent}% of its parent) the profile branches — ` +
+        "frames beyond this point are one branch among several comparable ones, not the whole story."
+      );
+    }
+    const leaf = spine[spine.length - 1];
+    if (leaf?.isWait) {
+      notes.push(
+        `The spine's deepest frame ("${leaf.name}") is a known wait/blocking frame — this thread was ` +
+        "idle/blocked there, not CPU-bound. Time Profiler shows the wait, not what it's blocked on — " +
+        "use System Trace or thread-state instrumentation to find the blocking cause."
+      );
+    }
+    const appCodeStartsAtDepth = spine.length > 0 ? findAppCodeStartDepth(spine) : null;
+    if (appCodeStartsAtDepth !== null) {
+      const at = spine[appCodeStartsAtDepth];
+      notes.push(
+        `Depths 0–${appCodeStartsAtDepth - 1} are standard run-loop/wait scaffolding present in every ` +
+        `sample on this thread, idle or busy — carries no signal on its own. This sample's distinguishing ` +
+        `work starts at depth ${appCodeStartsAtDepth} ("${at.name}").`
+      );
+    }
+    const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
+    if (captureNote) notes.push(captureNote);
+    return {
+      schema,
+      run,
+      totalSamples,
+      totalWeightFmt: formatWeight(totalWeight, weightKind),
+      threadFilter: thread ?? null,
+      view,
+      spine,
+      ...(spine.length > 0 ? { appCodeStartsAtDepth } : {}),
+      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+    };
+  }
+
+  // Serialize top-N roots sorted by total weight descending.
+  const rootsSorted = [...roots.values()].sort((a, b) => b.totalWeight - a.totalWeight);
+  const rootsOut: CallTreeNode[] = rootsSorted
+    .slice(0, topN)
+    .map(r => serializeNode(r, totalWeight, 0, maxDepth, topN, weightKind));
+
+  const rootsOmitted = rootsSorted.length - rootsOut.length;
+
+  // Walk the heaviest-child chain in the SERIALIZED tree (mirrors what an
+  // agent would eyeball first) to check whether the depth cap truncated
+  // exactly the branch that matters. A GUI main-thread spine is commonly
+  // ~15 frames of run-loop boilerplate before any payload frame, so bumping
+  // maxDepth and re-fetching is often a wasted round-trip — surface this
+  // instead of leaving the agent to discover it the hard way.
+  let deepest: CallTreeNode | undefined = rootsOut[0];
+  while (deepest?.children.length) deepest = deepest.children[0];
+  const notes: string[] = [];
+  if (rootsOmitted > 0) {
+    notes.push(`${rootsOmitted} additional root frames omitted (filtered to top ${topN}).`);
+  }
+  if (deepest?.childrenOmitted) {
+    notes.push(
+      `The heaviest branch's deepest shown frame ("${deepest.name}") has ${deepest.childrenOmitted} ` +
+      "children omitted at the maxDepth cap — bumping maxDepth may not help if this is run-loop/dispatch " +
+      "boilerplate above the real payload frame; try view: \"hot\" (depth-independent self-time ranking) " +
+      "or view: \"spine\" (single dominant path, no depth cap) instead."
+    );
+  }
+  const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
+  if (captureNote) notes.push(captureNote);
+
+  return {
+    schema,
+    run,
+    totalSamples,
+    totalWeightFmt: formatWeight(totalWeight, weightKind),
+    threadFilter: thread ?? null,
+    view,
+    roots: rootsOut,
+    ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
+  };
+}
+
+/**
+ * Empty-result shape shared by every early-return branch (no data at all, no
+ * usable backtrace column, etc.) across both sample sources.
+ */
+function emptyCallTreeResult(
+  schema: string,
+  run: number,
+  view: "tree" | "hot" | "spine",
+  thread: string | undefined,
+  weightUnitLabel: string,
+  note: string
+): CallTreeResult {
+  return {
+    schema, run,
+    totalSamples: 0,
+    totalWeightFmt: `0 ${weightUnitLabel}`,
+    threadFilter: thread ?? null,
+    view,
+    ...(view === "tree" ? { roots: [] } : view === "hot" ? { hotFunctions: [] } : { spine: [] }),
+    note,
+  };
+}
+
+/**
+ * call_tree for track-detail schemas (Allocations/Allocations List) —
+ * weighted by allocated bytes (the schema's pinned primaryWeight, "size" for
+ * Allocations/Allocations List) instead of sample duration, folding each
+ * row's already-resolved backtrace the same way a tagged-backtrace sample
+ * folds. Reuses the normal session-cached getTable() (not a bespoke xpath
+ * fetch the way the schema-table path below needs) since parseTrackDetail.ts
+ * already produces correctly-resolved frames (including the ref/id dedup fix —
+ * see PMT:spare-cairn) via the same cache every other verb uses.
+ *
+ * Deliberately does NOT support `thread`/`timeRange` — track-detail rows have
+ * no comparable columns (`thread-id`, not `thread`; `timestamp` is a
+ * formatted string, not a raw ns value like schema-table's time columns) and
+ * building that out is real design work, not a quick shim — noted honestly
+ * in the response rather than silently ignored or half-applied.
+ */
+async function buildTrackDetailCallTree(
+  sessionId: string,
+  schema: string,
+  run: number,
+  position: number | undefined,
+  view: "tree" | "hot" | "spine",
+  thread: string | undefined,
+  timeRange: { startNs?: number; endNs?: number } | undefined,
+  maxDepth: number,
+  topN: number
+): Promise<CallTreeResult> {
+  let table;
+  try {
+    table = await getTable(sessionId, run, schema, position);
+  } catch (err) {
+    if (err instanceof XctraceError && err.kind === "empty-result") {
+      return emptyCallTreeResult(schema, run, view, thread, "B", `No data found for schema "${schema}" in run ${run}.`);
+    }
+    throw err;
+  }
+
+  const backtraceCol = table.cols.find((c) => c.engineeringType === "backtrace");
+  if (!backtraceCol) {
+    const isLeaks = schema.startsWith("Leaks/");
+    return emptyCallTreeResult(
+      schema, run, view, thread, "B",
+      isLeaks
+        ? `Schema "${schema}" has no backtrace column by design — Instruments cross-references leaked ` +
+          "objects by address into Allocations/Allocations List for responsible frames instead. Join by " +
+          "address (see the Leaks lens's nextActions) rather than calling call_tree on Leaks directly, or " +
+          "call call_tree(schema: \"Allocations/Allocations List\") for allocation call trees in general."
+        : `Schema "${schema}" has no backtrace column — call_tree needs one to build a tree from.`
+    );
+  }
+
+  const weightMnemonic = hintFor(schema)?.primaryWeight ?? "size";
+
+  const roots: Map<string, TreeNode> = new Map();
+  const hot: Map<string, HotAccum> = new Map();
+  let totalWeight = 0;
+  let totalSamples = 0;
+
+  for (const row of table.rows) {
+    const btCell = row[backtraceCol.mnemonic];
+    const resolvedFrames = btCell?.resolvedFrames;
+    if (!resolvedFrames || resolvedFrames.length === 0) continue;
+
+    const weightCell = row[weightMnemonic];
+    const weightValue = typeof weightCell?.raw === "number" ? weightCell.raw : 0;
+    if (!isFinite(weightValue) || weightValue <= 0) continue;
+
+    // Resolved frames are leaf-first, same convention as tagged-backtrace —
+    // reverse for a root-first tree.
+    const frames = [...resolvedFrames].reverse().map((f: ResolvedFrame) => ({
+      name: f.name || "?",
+      binary: f.binaryName,
+    }));
+
+    addSample(roots, frames, weightValue);
+    if (view === "hot") addHotSample(hot, frames, weightValue);
+    totalWeight += weightValue;
+    totalSamples++;
+  }
+
+  const result = buildViewResult(schema, run, view, thread, undefined, maxDepth, topN, "bytes", roots, hot, totalWeight, totalSamples);
+
+  if (thread || timeRange) {
+    const ignored = [thread ? "thread" : null, timeRange ? "timeRange" : null].filter(Boolean).join(" and ");
+    const filterNote =
+      `${ignored} ${thread && timeRange ? "were" : "was"} ignored — not yet supported for track-detail ` +
+      `schemas like "${schema}" (no comparable thread/time columns to filter on).`;
+    result.note = result.note ? `${filterNote} ${result.note}` : filterNote;
+  }
+
+  return result;
+}
+
 export async function callTree(
   sessionId: string,
   schema: string,
@@ -505,6 +786,16 @@ export async function callTree(
   const view = opts.view ?? "tree";
   const { maxDepth = 6, thread, timeRange, position } = opts;
   const topN = opts.topN ?? (view === "hot" ? 20 : 8);
+
+  // Track-detail schemas (Allocations/Allocations List) have a completely
+  // different XML shape (no <schema>/<col> block, no tagged-backtrace sample
+  // tree) — dispatch to the dedicated path instead of building a
+  // table[@schema=...] xpath that structurally can't match a track/detail
+  // resource. See PMT:spare-cairn.
+  const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
+  if (modelEntry?.source === "track-detail") {
+    return buildTrackDetailCallTree(sessionId, schema, run, position, view, thread, timeRange, maxDepth, topN);
+  }
 
   // Export the raw XML for this schema. callTree builds its own xpath rather
   // than going through session.getTable, so it needs its own ambiguity guard.
@@ -521,15 +812,7 @@ export async function callTree(
   const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
 
   if (nodes.length === 0) {
-    return {
-      schema, run,
-      totalSamples: 0,
-      totalWeightFmt: "0 ns",
-      threadFilter: thread ?? null,
-      view,
-      ...(view === "tree" ? { roots: [] } : view === "hot" ? { hotFunctions: [] } : { spine: [] }),
-      note: `No data found for schema "${schema}" in run ${run}.`,
-    };
+    return emptyCallTreeResult(schema, run, view, thread, "ns", `No data found for schema "${schema}" in run ${run}.`);
   }
 
   // Check whether the schema has a tagged-backtrace column.
@@ -545,24 +828,19 @@ export async function callTree(
   // cycle-weight column gets this for free too.
   const weightCol = cols.find((c) => String(c.mnemonic ?? "") === "weight");
   const weightTag = String(weightCol?.["engineering-type"] ?? "weight");
-  const isCycleWeight = weightTag === "cycle-weight";
+  const weightKind: WeightKind = weightTag === "cycle-weight" ? "cycles" : "ns";
 
   if (!hasTaggedBt) {
     // A plain "backtrace"-typed column (distinct from "tagged-backtrace")
     // carries one already-resolved stack per row, not a sample tree to
     // aggregate — get_row already returns it directly, no call_tree needed.
     const hasResolvedBt = cols.some((c) => String(c["engineering-type"] ?? "") === "backtrace");
-    return {
-      schema, run,
-      totalSamples: 0,
-      totalWeightFmt: "0 ns",
-      threadFilter: thread ?? null,
-      view,
-      ...(view === "tree" ? { roots: [] } : view === "hot" ? { hotFunctions: [] } : { spine: [] }),
-      note: hasResolvedBt
+    return emptyCallTreeResult(
+      schema, run, view, thread, "ns",
+      hasResolvedBt
         ? `Schema "${schema}" has one resolved backtrace per row, not a sample tree to aggregate — call get_row on a specific row instead of call_tree.`
-        : `Schema "${schema}" has no tagged-backtrace column. For Time Profiler, use schema "time-profile" which carries inline symbolicated frames.`,
-    };
+        : `Schema "${schema}" has no tagged-backtrace column. For Time Profiler, use schema "time-profile" which carries inline symbolicated frames.`
+    );
   }
 
   // Build the call tree (always — "spine" walks it too). "hot" additionally
@@ -634,128 +912,5 @@ export async function callTree(
     }
   }
 
-  if (view === "hot") {
-    const ranked = [...hot.values()].sort((a, b) => b.selfWeight - a.selfWeight);
-    const hotFunctions: HotFunctionEntry[] = ranked.slice(0, topN).map((e) => ({
-      name: e.name,
-      binary: e.binary,
-      selfSamples: e.selfSamples,
-      selfWeightFmt: formatWeight(e.selfWeight, isCycleWeight),
-      pctSelfOfTotal: totalWeight > 0 ? Math.round((e.selfWeight / totalWeight) * 1000) / 10 : 0,
-      totalSamples: e.totalSamples,
-      totalWeightFmt: formatWeight(e.totalWeight, isCycleWeight),
-      pctTotalOfTotal: totalWeight > 0 ? Math.round((e.totalWeight / totalWeight) * 1000) / 10 : 0,
-      ...(isBlockingWaitFrame(e.name, e.selfWeight, e.totalWeight) ? { isWait: true } : {}),
-    }));
-    const notes: string[] = [];
-    if (ranked.length > hotFunctions.length) {
-      notes.push(`${ranked.length - hotFunctions.length} additional functions omitted (ranked below top ${topN} by self time).`);
-    }
-    if (hotFunctions[0]?.isWait) {
-      notes.push(
-        `The top self-time entry ("${hotFunctions[0].name}") is a known wait/blocking frame — this thread ` +
-        "was idle/blocked there, not CPU-bound. Time Profiler shows the wait, not what it's blocked on — " +
-        "use System Trace or thread-state instrumentation to find the blocking cause."
-      );
-    }
-    const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
-    if (captureNote) notes.push(captureNote);
-    return {
-      schema,
-      run,
-      totalSamples,
-      totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
-      threadFilter: thread ?? null,
-      view,
-      hotFunctions,
-      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
-    };
-  }
-
-  if (view === "spine") {
-    const { frames: spine, divergesAtDepth } = buildSpine(roots, totalWeight);
-    const notes: string[] = [];
-    if (spine.length === 0) {
-      notes.push(`No data found for schema "${schema}" in run ${run}.`);
-    } else if (divergesAtDepth !== null) {
-      const at = spine[divergesAtDepth];
-      notes.push(
-        `Spine dominance holds ≥${SPINE_DOMINANCE_THRESHOLD_PCT}% of parent weight through depth ${divergesAtDepth - 1}; ` +
-        `at depth ${divergesAtDepth} ("${at.name}", ${at.pctOfParent}% of its parent) the profile branches — ` +
-        "frames beyond this point are one branch among several comparable ones, not the whole story."
-      );
-    }
-    const leaf = spine[spine.length - 1];
-    if (leaf?.isWait) {
-      notes.push(
-        `The spine's deepest frame ("${leaf.name}") is a known wait/blocking frame — this thread was ` +
-        "idle/blocked there, not CPU-bound. Time Profiler shows the wait, not what it's blocked on — " +
-        "use System Trace or thread-state instrumentation to find the blocking cause."
-      );
-    }
-    const appCodeStartsAtDepth = spine.length > 0 ? findAppCodeStartDepth(spine) : null;
-    if (appCodeStartsAtDepth !== null) {
-      const at = spine[appCodeStartsAtDepth];
-      notes.push(
-        `Depths 0–${appCodeStartsAtDepth - 1} are standard run-loop/wait scaffolding present in every ` +
-        `sample on this thread, idle or busy — carries no signal on its own. This sample's distinguishing ` +
-        `work starts at depth ${appCodeStartsAtDepth} ("${at.name}").`
-      );
-    }
-    const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
-    if (captureNote) notes.push(captureNote);
-    return {
-      schema,
-      run,
-      totalSamples,
-      totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
-      threadFilter: thread ?? null,
-      view,
-      spine,
-      ...(spine.length > 0 ? { appCodeStartsAtDepth } : {}),
-      ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
-    };
-  }
-
-  // Serialize top-N roots sorted by total weight descending.
-  const rootsSorted = [...roots.values()].sort((a, b) => b.totalWeight - a.totalWeight);
-  const rootsOut: CallTreeNode[] = rootsSorted
-    .slice(0, topN)
-    .map(r => serializeNode(r, totalWeight, 0, maxDepth, topN, isCycleWeight));
-
-  const rootsOmitted = rootsSorted.length - rootsOut.length;
-
-  // Walk the heaviest-child chain in the SERIALIZED tree (mirrors what an
-  // agent would eyeball first) to check whether the depth cap truncated
-  // exactly the branch that matters. A GUI main-thread spine is commonly
-  // ~15 frames of run-loop boilerplate before any payload frame, so bumping
-  // maxDepth and re-fetching is often a wasted round-trip — surface this
-  // instead of leaving the agent to discover it the hard way.
-  let deepest: CallTreeNode | undefined = rootsOut[0];
-  while (deepest?.children.length) deepest = deepest.children[0];
-  const notes: string[] = [];
-  if (rootsOmitted > 0) {
-    notes.push(`${rootsOmitted} additional root frames omitted (filtered to top ${topN}).`);
-  }
-  if (deepest?.childrenOmitted) {
-    notes.push(
-      `The heaviest branch's deepest shown frame ("${deepest.name}") has ${deepest.childrenOmitted} ` +
-      "children omitted at the maxDepth cap — bumping maxDepth may not help if this is run-loop/dispatch " +
-      "boilerplate above the real payload frame; try view: \"hot\" (depth-independent self-time ranking) " +
-      "or view: \"spine\" (single dominant path, no depth cap) instead."
-    );
-  }
-  const captureNote = windowCaptureNote(totalWeight, isCycleWeight, timeRange);
-  if (captureNote) notes.push(captureNote);
-
-  return {
-    schema,
-    run,
-    totalSamples,
-    totalWeightFmt: formatWeight(totalWeight, isCycleWeight),
-    threadFilter: thread ?? null,
-    view,
-    roots: rootsOut,
-    ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
-  };
+  return buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples);
 }

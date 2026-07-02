@@ -106,16 +106,31 @@ function buildCellDetail(
 
   // Inline pre-symbolicated backtrace: track-detail (Allocations/Leaks) or a
   // schema-table column using the same shape (e.g. core-data-fetch) — either
-  // way, frames are already resolved, no call_tree symbolication needed.
+  // way, frames are USUALLY already resolved, no call_tree symbolication
+  // needed. But "the array exists" doesn't mean "every frame actually
+  // resolved" — a ref-only frame with no matching id in scope (a parser gap,
+  // not normal data) comes back as {name: "", addr: ""} rather than being
+  // dropped, so check for that instead of asserting "already symbolicated"
+  // unconditionally (verified live: this fired confidently wrong on Allocations
+  // backtraces before the frame-ref cache fix — see PMT:spare-cairn).
   if (cell.resolvedFrames) {
     const frames = cell.resolvedFrames;
+    const unresolved = frames.filter((f) => f.name === "" && f.addr === "").length;
+    const note =
+      unresolved === 0
+        ? "Already symbolicated inline — no call_tree step needed."
+        : unresolved === frames.length
+          ? `${frames.length} frame(s), none resolved — likely a parser gap for this schema's ` +
+            "backtrace shape, not \"no symbols\"; the frames genuinely exist in the trace."
+          : `${unresolved} of ${frames.length} frames unresolved (blank name/addr) — likely a ` +
+            "parser gap for this schema's backtrace shape, not \"no symbols\" for those frames.";
     return {
       ...base,
       backtrace: {
         topPc: frames[0]?.name ?? null,
         frameCount: frames.length,
         process: null,
-        note: "Already symbolicated inline — no call_tree step needed.",
+        note,
         resolvedFrames: frames,
       },
     };

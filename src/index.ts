@@ -612,12 +612,23 @@ export function createServer(): McpServer {
         "CPU sampling captures. " +
         "Filter by thread name/id substring to focus on one thread. " +
         "`run` defaults to the most recent run. " +
-        "⚠️ Not for schemas without backtrace columns — only works on sample-based instruments like time-profile.",
+        "Also works on schema \"Allocations/Allocations List\" — folds each allocation's resolved " +
+        "backtrace the same way, but weighted by allocated BYTES (the size attribute) instead of sample " +
+        "duration, so totalWeightFmt/selfWeightFmt read in KB/MB/GB there, not time. `thread`/`timeRange` " +
+        "are not supported for that schema (no comparable columns to filter on) — passing them fires a " +
+        "note instead of silently applying. " +
+        "⚠️ Not for schemas without a backtrace column at all — e.g. Leaks/Leaks has none by design " +
+        "(Instruments cross-references leaked objects by address into Allocations/Allocations List " +
+        "instead; join by address, or call call_tree on that schema directly).",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z
           .string()
-          .describe("Schema with tagged-backtrace column. Use 'time-profile' for Time Profiler."),
+          .describe(
+            "Schema with a backtrace column to fold. Use 'time-profile' for Time Profiler (tagged-" +
+            "backtrace, weighted by duration) or 'Allocations/Allocations List' for allocation call " +
+            "trees (weighted by bytes)."
+          ),
         run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
         thread: z
           .string()
