@@ -133,6 +133,46 @@ AI:     [calls find_fm_requests, emptyContext true]
 ---
 The server always returns a `suggestedStart` in the `open_trace` response  a pre-filled tool call that gets you to the key data in one step for the most common instruments. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
 
+## Want to test the relative health of your app?
+
+You don't need a known bug to get value out of this — pick a category of concern and let the AI do the rest:
+
+```
+User:   I want to check my app's memory health.
+
+AI:     [reads your codebase, finds a real, specific flow likely to exercise it —
+        e.g. a screen that repeatedly allocates images, or a list that inserts/
+        removes rows — not a generic "click around the app"]
+        To exercise memory allocation patterns, do this: open the photo import
+        screen and import/remove the same 10 photos five times in a row.
+        Starting a launch-mode recording now — launch mode is required here so
+        allocations from before the recording started aren't invisible.
+
+        [calls start_recording, type: "leaks-backtraces", launch: <your app path>]
+        Recording started — go ahead and run through that flow.
+
+User:   Done.
+
+AI:     [stops, analyzes, reports a verdict — either a real leak with a
+        resolved backtrace pointing at the responsible allocation site, or
+        "no app-owned leaks found" if the flow is clean]
+```
+
+The same pattern works for any category — the AI picks the `type` (and composes a second whole template when the question spans two systems, e.g. `templates: ["SwiftUI"]` on a Core Data recording to attribute fetches to the UI event that triggered them) and finds a concrete exercise from your actual code, not a canned script:
+
+| You're worried about... | AI reaches for... |
+|---|---|
+| Memory leaks / unbounded growth | `type: "leaks-backtraces"`, launch mode (attach can't symbolicate objects already live before it attached) |
+| UI hangs / stutters / jank | `type: "cpu"` (bundles Hangs + Points of Interest + Thermal State for free) or `type: "hitches"` for animation-specific frame drops |
+| Main-actor contention / async task pileup | `type: "swift-concurrency"` |
+| Excessive Core Data / SwiftData fetches | `type: "core-data"`, composed with `templates: ["SwiftUI"]` if you want fetches attributed to the UI event that caused them |
+| Network inefficiency (redundant requests, no connection reuse) | `type: "network"` |
+| CPU/thermal efficiency under sustained load | `type: "cpu"` (Thermal State is bundled in — correlate a hot thermal interval against the CPU samples to see what was driving it) |
+
+Whichever category you pick, if your app already calls `os_signpost` around its own operations, that's not a separate concern — it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
+
+This is a genuinely validated workflow, not a hopeful one: it's exactly what happened when a fresh Claude Code instance was given only *"I saw a stutter in PromptManager's UI, capture a trace and see what's happening"* — no mention of this tool, no prior context — and it reached a specific, code-level root cause end-to-end unaided. You don't need to know which instrument to reach for or how profiling works — describe what you're seeing (or what you want to check), and the AI handles the rest.
+
 ## Instrument your app with signposts
 
 Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
