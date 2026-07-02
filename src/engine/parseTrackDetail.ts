@@ -29,7 +29,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
 import { MiniXmlBuilder, PERCENT_PLACEHOLDER } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
-import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame } from "./parseTable.js";
+import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame, SchemaMeta } from "./parseTable.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
 
@@ -232,6 +232,33 @@ function buildParsedTable(
   return { schema: syntheticSchema, cols, rows };
 }
 
+/**
+ * Column shape + row count only, with no row-level Cell materialization or
+ * backtrace resolution at all — for callers like describe_schema that never
+ * touch a single row. Column discovery is still a full pass over every row's
+ * raw attributes (track-detail has no upfront <schema> block the way
+ * schema-table does — the attribute union can only be known after seeing
+ * every row), but this skips buildParsedTable's much heavier second pass
+ * (per-cell type coercion, backtrace frame resolution) and never holds a
+ * `rows` array at all.
+ */
+function buildSchemaMeta(nodes: Array<Record<string, any>>): SchemaMeta {
+  if (nodes.length === 0) return { cols: [], rowCount: 0 };
+
+  const { attrOrder, attrSamples, hasBacktrace } = discoverColumns(nodes);
+  const cols: SchemaCol[] = attrOrder.map((attrName) => ({
+    mnemonic: attrName,
+    name: attrName.replace(/-/g, " "),
+    engineeringType: inferEngType(attrName, attrSamples.get(attrName) ?? []),
+  }));
+  if (hasBacktrace) {
+    cols.push({ mnemonic: BACKTRACE_MNEMONIC, name: "Backtrace", engineeringType: "backtrace" });
+  }
+
+  const rowCount = nodes.reduce((n, node) => n + asArray<Record<string, any>>(node?.row).length, 0);
+  return { cols, rowCount };
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -294,21 +321,20 @@ class PercentAttributeNameSanitizer extends Transform {
 }
 
 /**
- * Streaming counterpart to {@link parseTrackDetailXml}. Column discovery is
- * inherently two-pass (the attribute set is only known after seeing every
- * row), so this buffers each <row>'s mini-DOM via {@link MiniXmlBuilder} as
- * the stream arrives — small, compact objects, NOT the raw XML string and
- * NOT a full generic DOM tree of the whole document — then runs the exact
- * same {@link buildParsedTable} used by the string-based path once the
- * stream ends.
+ * Streams and reconstructs every <node>'s row mini-DOMs — shared by
+ * {@link parseTrackDetailStream} and {@link parseTrackDetailStreamMeta}, which
+ * differ only in what they build from the result (a full ParsedTable via
+ * {@link buildParsedTable}, or column-shape-only via {@link buildSchemaMeta}).
+ * Column discovery is inherently two-pass regardless (the attribute set is
+ * only known after seeing every row), so both callers need every row's mini-
+ * DOM collected here first — small, compact objects via {@link MiniXmlBuilder},
+ * NOT the raw XML string and NOT a full generic DOM tree of the whole
+ * document.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
  *         on malformed XML.
  */
-export function parseTrackDetailStream(
-  stdout: Readable,
-  syntheticSchema: string
-): Promise<ParsedTable> {
+function collectTrackDetailNodes(stdout: Readable): Promise<Array<Record<string, any>>> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -316,10 +342,10 @@ export function parseTrackDetailStream(
       settled = true;
       reject(err);
     };
-    const settleResolve = (table: ParsedTable) => {
+    const settleResolve = (nodes: Array<Record<string, any>>) => {
       if (settled) return;
       settled = true;
-      resolve(table);
+      resolve(nodes);
     };
 
     // See the matching comment in parseTable.ts's parseTableStream — sax's
@@ -387,7 +413,7 @@ export function parseTrackDetailStream(
         );
         return;
       }
-      settleResolve(buildParsedTable(nodes, syntheticSchema));
+      settleResolve(nodes);
     });
 
     stdout.on("error", (err: Error) => {
@@ -400,4 +426,26 @@ export function parseTrackDetailStream(
     });
     stdout.pipe(sanitizer).pipe(saxStream);
   });
+}
+
+/**
+ * Streaming counterpart to {@link parseTrackDetailXml} — see
+ * {@link collectTrackDetailNodes} for the shared implementation.
+ */
+export async function parseTrackDetailStream(
+  stdout: Readable,
+  syntheticSchema: string
+): Promise<ParsedTable> {
+  const nodes = await collectTrackDetailNodes(stdout);
+  return buildParsedTable(nodes, syntheticSchema);
+}
+
+/**
+ * Column shape + row count only, with no row-level Cell materialization or
+ * backtrace resolution at all — for callers like describe_schema that never
+ * touch a single row. See {@link buildSchemaMeta}.
+ */
+export async function parseTrackDetailStreamMeta(stdout: Readable): Promise<SchemaMeta> {
+  const nodes = await collectTrackDetailNodes(stdout);
+  return buildSchemaMeta(nodes);
 }

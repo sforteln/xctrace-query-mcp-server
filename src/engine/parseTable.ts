@@ -372,22 +372,46 @@ export function parseTableXml(tableXml: string): ParsedTable {
   return { schema: schemaName, cols, rows };
 }
 
+/** Column definitions plus a row count, with no row data materialized at all. */
+export interface SchemaMeta {
+  cols: SchemaCol[];
+  rowCount: number;
+}
+
+interface StreamParseResult {
+  schema: string;
+  cols: SchemaCol[];
+  rows: NormalizedRow[];
+  rowCount: number;
+}
+
 /**
- * Streaming counterpart to {@link parseTableXml} — consumes xctrace's stdout
- * directly via a SAX parser instead of buffering the whole document into one
- * string and building a full DOM tree of it. Reconstructs one <schema> or one
- * <row> subtree at a time via {@link MiniXmlBuilder} (each is small — a few
- * dozen cells at most) and feeds it through the SAME parseSchemaCols/parseRow
- * used by the string-based path, so output is byte-for-byte equivalent.
+ * Shared implementation behind {@link parseTableStream} and
+ * {@link parseTableStreamMeta} — consumes xctrace's stdout directly via a SAX
+ * parser instead of buffering the whole document into one string and
+ * building a full DOM tree of it. Reconstructs one <schema> or one <row>
+ * subtree at a time via {@link MiniXmlBuilder} (each is small — a few dozen
+ * cells at most) and feeds it through the SAME parseSchemaCols/parseRow used
+ * by the string-based path, so output is byte-for-byte equivalent.
  *
  * Same multi-node union behavior as parseTableXml: the first node's columns
  * win, and rows from every node are concatenated (ref-ids are node-scoped, so
  * the cache resets per node).
  *
+ * `countOnly` skips {@link parseRow} (the expensive ref-resolution + Cell-
+ * materialization step) and never accumulates a `rows` array — only a count.
+ * Still walks every row's full XML subtree via MiniXmlBuilder (needed to
+ * track nesting depth correctly so the next row starts capturing at the
+ * right point) — this cuts the dominant MEMORY cost (a Cell object per
+ * column per row, held for the table's whole lifetime) for callers that only
+ * need column shape + a row count (describe_schema), not the deeper
+ * per-row XML reconstruction cost the sibling "column projection at parse
+ * time" prompt (PMT:still-wisp) targets.
+ *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
  *         matched nothing), "parse-error" on malformed XML.
  */
-export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
+function parseTableStreamInternal(stdout: Readable, countOnly: boolean): Promise<StreamParseResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -395,10 +419,10 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
       settled = true;
       reject(err);
     };
-    const settleResolve = (table: ParsedTable) => {
+    const settleResolve = (result: StreamParseResult) => {
       if (settled) return;
       settled = true;
-      resolve(table);
+      resolve(result);
     };
 
     // sax's 64 KB default (a global, not per-instance) rejects with "Max
@@ -419,6 +443,7 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
     let schemaName = "";
     let cols: SchemaCol[] = [];
     const rows: NormalizedRow[] = [];
+    let rowCount = 0;
     let cache: RefCache = new Map();
 
     saxStream.on("opentag", (node) => {
@@ -458,7 +483,8 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
             schemaName = String(builtNode["@_name"] ?? "");
             cols = parseSchemaCols(builtNode);
           } else if (tag === "row") {
-            rows.push(parseRow(builtNode, cols, cache));
+            rowCount++;
+            if (!countOnly) rows.push(parseRow(builtNode, cols, cache));
           }
           activeBuilder = null;
         }
@@ -480,7 +506,7 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
         );
         return;
       }
-      settleResolve({ schema: schemaName, cols, rows });
+      settleResolve({ schema: schemaName, cols, rows, rowCount });
     });
 
     stdout.on("error", (err: Error) => {
@@ -489,4 +515,21 @@ export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
 
     stdout.pipe(saxStream);
   });
+}
+
+/**
+ * Streaming counterpart to {@link parseTableXml} — see
+ * {@link parseTableStreamInternal} for the shared implementation.
+ */
+export function parseTableStream(stdout: Readable): Promise<ParsedTable> {
+  return parseTableStreamInternal(stdout, false).then(({ schema, cols, rows }) => ({ schema, cols, rows }));
+}
+
+/**
+ * Column shape + row count only, with no row data ever materialized —
+ * for callers like describe_schema that never touch a single row. See
+ * {@link parseTableStreamInternal}.
+ */
+export function parseTableStreamMeta(stdout: Readable): Promise<SchemaMeta> {
+  return parseTableStreamInternal(stdout, true).then(({ cols, rowCount }) => ({ cols, rowCount }));
 }

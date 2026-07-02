@@ -13,8 +13,8 @@ import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
 import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
-import { parseTableStream, ParsedTable } from "./parseTable.js";
-import { parseTrackDetailStream } from "./parseTrackDetail.js";
+import { parseTableStream, parseTableStreamMeta, ParsedTable, SchemaMeta } from "./parseTable.js";
+import { parseTrackDetailStream, parseTrackDetailStreamMeta } from "./parseTrackDetail.js";
 import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
@@ -298,6 +298,79 @@ export async function getTable(
 
   session.tableCache.set(cacheKey, table);
   return table;
+}
+
+/**
+ * Like getTable but never materializes row data — column shape and a row
+ * count only, for callers like describeSchema that don't touch a single row.
+ * Skips the full fetch three ways, cheapest first: (1) cols + rowCount are
+ * already known from an earlier fetch (full OR meta) — no xctrace call at
+ * all; (2) the full table happens to already be cached (some other caller
+ * already paid the cost) — reuse it instead of a redundant round-trip; (3)
+ * otherwise stream just enough to learn cols + a count, via
+ * parseTableStreamMeta/parseTrackDetailStreamMeta, and record what was
+ * learned on session.schemaModel/session.instruments so later calls
+ * (including a repeat describeSchema) benefit too. Deliberately does NOT
+ * populate session.tableCache — that cache means "full rows available," and
+ * a caller expecting real rows (query/aggregate/get_row) must never receive
+ * this table's empty rows array by silent cache reuse.
+ */
+export async function getSchemaMeta(
+  sessionId: string,
+  run: number,
+  schema: string,
+  position?: number
+): Promise<SchemaMeta> {
+  const session = getSession(sessionId);
+
+  if (position === undefined) {
+    assertUnambiguousSchema(session.schemaModel, run, schema);
+
+    const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
+    const instrumentEntry = session.instruments.find((i) => i.run === run && i.schema === schema);
+    if (modelEntry?.cols && instrumentEntry?.rowCount !== null && instrumentEntry?.rowCount !== undefined) {
+      return { cols: modelEntry.cols, rowCount: instrumentEntry.rowCount };
+    }
+  }
+
+  const cacheKey = position !== undefined ? `${run}:${schema}[${position}]` : `${run}:${schema}`;
+  const cachedFull = session.tableCache.get(cacheKey);
+  if (cachedFull) {
+    return { cols: cachedFull.cols, rowCount: cachedFull.rows.length };
+  }
+
+  let meta: SchemaMeta;
+  if (position !== undefined) {
+    // Position-aware ambiguous schemas are schema-table format in every
+    // known case (mirrors getTableAtPosition, which never checks track-detail).
+    const xpath = buildTableXPathAtPosition(run, schema, position);
+    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+    [meta] = await Promise.all([parseTableStreamMeta(stdout), done]);
+
+    const matchingEntries = session.instruments.filter((i) => i.run === run && i.schema === schema);
+    const entry = matchingEntries[position - 1];
+    if (entry) entry.rowCount = meta.rowCount;
+    // Not calling updateSchemaCols here — getTableAtPosition doesn't either;
+    // schemaModel's cols slot isn't position-aware today (see its own comment).
+  } else {
+    const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
+    if (modelEntry?.source === "track-detail" && modelEntry.trackDetail) {
+      const { trackName, detailName } = modelEntry.trackDetail;
+      const xpath = buildTrackDetailXPath(run, trackName, detailName);
+      const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+      [meta] = await Promise.all([parseTrackDetailStreamMeta(stdout), done]);
+    } else {
+      const xpath = buildTableXPath(run, schema);
+      const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+      [meta] = await Promise.all([parseTableStreamMeta(stdout), done]);
+    }
+
+    const entry = session.instruments.find((i) => i.run === run && i.schema === schema);
+    if (entry) entry.rowCount = meta.rowCount;
+    updateSchemaCols(session.schemaModel, run, schema, meta.cols);
+  }
+
+  return meta;
 }
 
 /**

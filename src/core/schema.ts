@@ -1,14 +1,15 @@
 /**
  * describeSchema — the first universal verb that exposes inferred column roles.
  *
- * Given a schema (and optional run, defaulting to the most recent), it fetches
- * the table once (cached on the session), classifies every column via the
- * override→heuristic pipeline, and returns a description rich enough that an
- * agent can form a query or aggregate call without any further schema knowledge:
- * each column's role, the canonical primaryTime / primaryWeight to target, and a
+ * Given a schema (and optional run, defaulting to the most recent), it reads
+ * column shape + a row count ONLY (never materializes row data — see
+ * getSchemaMeta), classifies every column via the override→heuristic
+ * pipeline, and returns a description rich enough that an agent can form a
+ * query or aggregate call without any further schema knowledge: each
+ * column's role, the canonical primaryTime / primaryWeight to target, and a
  * by-role grouping of column mnemonics.
  */
-import { getTable, lastRun, getSchemaModel } from "../engine/session.js";
+import { getSchemaMeta, lastRun, getSchemaModel } from "../engine/session.js";
 import { findOne, findSchemaTableEntries } from "../engine/schemaModel.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import {
@@ -58,9 +59,14 @@ export async function describeSchema(
   position?: number
 ): Promise<SchemaDescription> {
   const resolvedRun = run ?? lastRun(sessionId);
-  const table = await getTable(sessionId, resolvedRun, schema, position);
+  // Never materializes row data — describeSchema only ever needs column
+  // shape + a count, so this avoids forcing a full parse+cache of a huge
+  // table (e.g. swiftui-updates at 700K+ rows) just to answer "what columns
+  // does this have," which was a contributing factor to a real OOM crash
+  // during live testing. See PMT:copper-duck.
+  const meta = await getSchemaMeta(sessionId, resolvedRun, schema, position);
 
-  const classified = classifyWithHints(schema, table.cols);
+  const classified = classifyWithHints(schema, meta.cols);
   const hint = hintFor(schema);
 
   const columns: DescribedColumn[] = classified.map((c) => ({
@@ -86,8 +92,8 @@ export async function describeSchema(
   for (const c of classified) rolesSummary[c.roleInfo.role].push(c.mnemonic);
 
   // When the schema has multiple TOC instances, pick the one matching the
-  // resolved position (getTable already rejected an ambiguous fetch with no
-  // position) rather than findOne's first-match, so documentation/TOC
+  // resolved position (getSchemaMeta already rejected an ambiguous fetch with
+  // no position) rather than findOne's first-match, so documentation/TOC
   // metadata reflects the instance actually fetched.
   const model = getSchemaModel(sessionId);
   const docEntry =
@@ -101,7 +107,7 @@ export async function describeSchema(
     instrument: hint?.instrument ?? schema,
     pinned: hint !== undefined,
     documentation: docEntry?.toc.documentation ?? null,
-    rowCount: table.rows.length,
+    rowCount: meta.rowCount,
     primaryTime,
     primaryWeight,
     columns,
