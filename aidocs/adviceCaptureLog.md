@@ -29,8 +29,8 @@ Topic keys should be stable and short (tool name, schema/instrument name, or iss
 **Instrument/template/schema:** general — the design principle behind `templates`/`correlate()`
 **Bug-type/category:** recording-composition, core value proposition
 **Date:** 2026-07-02
-**Status:** candidate — partially promoted (correlate()'s own docs state the SAME-CLOCK requirement; this is the more general "why" behind it, not yet stated anywhere as its own principle)
-**Promoted to:**
+**Status:** promoted-to-response (also now stated as its own explicit principle, not just implied)
+**Promoted to:** `README.md`, "Want to test the relative health of your app?" section
 
 The value of composing two templates into one recording isn't "twice the data" — it's turning a causal GUESS into a causal PROOF. Two separate single-instrument recordings can never be correlated after the fact: each has its own clock with no shared reference point, so an agent (or a developer) comparing them side by side is reduced to eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the SAME session on the SAME clock (`start_recording`'s `templates`/`instruments` composition) turns that into a direct, provable join via `correlate()` — exact interval containment, not coincidence. This is apparently not obvious even to experienced developers profiling manually (most instinctively reach for one instrument at a time, reactively) — worth stating as an explicit, standalone principle somewhere prominent (README candidate), not just implied by `correlate()`'s own "same trace, same clock" requirement text.
 
