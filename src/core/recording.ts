@@ -123,6 +123,23 @@ export interface ExpandedTemplates {
   recordingOptions: Record<string, Record<string, unknown>>;
   /** One entry per composed name, describing what it expanded to. */
   notes: string[];
+  /**
+   * Instruments that ended up in `instruments` WITHOUT being part of the base
+   * template's own bundle (TEMPLATE_BUNDLES[resolvedTemplate]) — meaning they
+   * were only ever addable as a bare `--instrument` flag, which does not carry
+   * a template's tuned configuration or template-only auxiliary behavior
+   * (e.g. Hangs' hangsThreshold defaults to 100 bare vs 250 via a real
+   * template; os-log's subsystem/category scope never survives a bare
+   * addition at all — see PMT:gravel-falcon). Empty when every composed
+   * instrument happens to already be covered by the base template's own
+   * bundle (e.g. composing SwiftUI onto a Swift-Concurrency base costs
+   * nothing extra here, since Swift Concurrency's own bundle already
+   * includes Hangs/Time Profiler with full fidelity) — verified live that
+   * xctrace's template-sourced config wins even if a redundant bare
+   * `--instrument` of the same name is also present, so this is purely a
+   * reporting concern, not something that needs de-duplication logic.
+   */
+  fidelityAtRisk: string[];
 }
 
 /**
@@ -157,35 +174,66 @@ export function expandTemplates(
   resolvedTemplate: string
 ): ExpandedTemplates {
   const seen = new Set<string>([resolvedTemplate]);
+  // Instruments the base template's OWN bundle already covers with full
+  // fidelity — a real `--template <resolvedTemplate>` invocation, not a bare
+  // `--instrument` addition. Anything in here (or the base name itself)
+  // keeps its tuned config/auxiliary behavior even if a composed extra also
+  // "wants" it; anything NOT in here that ends up in `instruments` only got
+  // there via a bare addition — see PMT:gravel-falcon.
+  const baseCovered = new Set<string>([resolvedTemplate, ...(TEMPLATE_BUNDLES[resolvedTemplate] ?? [])]);
   const instruments: string[] = [];
   const recordingOptions: Record<string, Record<string, unknown>> = {};
   const notes: string[] = [];
+  const fidelityAtRisk = new Set<string>();
 
   for (const rawName of names) {
     const name = resolveTemplateName(rawName);
     const bundle = TEMPLATE_BUNDLES[name] ?? [];
     const expansion = [name, ...bundle];
     const added: string[] = [];
+    const addedAtRisk: string[] = [];
     for (const inst of expansion) {
       if (!seen.has(inst)) {
         seen.add(inst);
         instruments.push(inst);
         added.push(inst);
+        // Only the AUXILIARY bundle instruments are a fidelity concern — the
+        // composed template's own headline instrument (`name`) is what the
+        // caller explicitly asked for, and its own tuned recordingOptions (if
+        // any) are already separately preserved via templateRecordingOptions()
+        // regardless of bare-vs-template addition (e.g. SwiftUI's
+        // enableLayoutTracing). It's the bundle items riding along implicitly
+        // (e.g. Hangs, Time Profiler) whose tuned config/auxiliary behavior
+        // the caller isn't necessarily thinking about that can silently
+        // degrade — see PMT:gravel-falcon.
+        if (inst !== name && !baseCovered.has(inst)) {
+          fidelityAtRisk.add(inst);
+          addedAtRisk.push(inst);
+        }
       }
     }
     const opts = templateRecordingOptions(name);
     if (opts) Object.assign(recordingOptions, opts);
 
     const resolvedNote = name !== rawName ? ` ("${rawName}" is a \`type\` key — resolved to its real template)` : "";
+    const fidelityNote =
+      addedAtRisk.length > 0
+        ? ` ${addedAtRisk.join(", ")} ${addedAtRisk.length === 1 ? "was" : "were"} added bare (not part of ` +
+          `"${resolvedTemplate}"'s own bundle) — tuned configuration and any template-only auxiliary behavior ` +
+          `(e.g. Hangs' threshold, os-log's subsystem/category scope) is NOT guaranteed to match a real ` +
+          `template recording of "${name}".`
+        : bundle.length > 0
+          ? ` Full fidelity — every instrument here is already covered by "${resolvedTemplate}"'s own bundle.`
+          : "";
     notes.push(
       bundle.length > 0
         ? `template: "${name}" expanded to ${[name, ...bundle].join(" + ")}` +
-          `${opts ? " plus its own recording options" : ""}${resolvedNote}.`
+          `${opts ? " plus its own recording options" : ""}${resolvedNote}.${fidelityNote}`
         : `template: "${name}" has no known extra bundle — recorded as its headline instrument only${resolvedNote}.`
     );
   }
 
-  return { instruments, recordingOptions, notes };
+  return { instruments, recordingOptions, notes, fidelityAtRisk: [...fidelityAtRisk] };
 }
 
 /**

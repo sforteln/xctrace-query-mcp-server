@@ -1220,7 +1220,14 @@ export function createServer(): McpServer {
         "resolves to its real template automatically, so don't worry about getting the exact " +
         "spelling/casing right for anything already covered by `type`. For a template `type` " +
         "doesn't cover, use the exact name from `xcrun xctrace list templates`. " +
-        "Check the response's compositionNote for exactly what each name expanded to."
+        "Check the response's compositionNote for exactly what each name expanded to, and its " +
+        "fidelityAtRisk list for which composed instruments were added bare (no template backing " +
+        "them) — their tuned configuration and any template-only behavior (e.g. a Hangs " +
+        "threshold, os-log's subsystem/category scope) isn't guaranteed to match a real template " +
+        "recording. Composing onto a base that already covers the same instruments (e.g. " +
+        "templates: [\"SwiftUI\"] on type: \"swift-concurrency\", since Swift Concurrency's own " +
+        "bundle already includes Hangs) keeps full fidelity for free — fidelityAtRisk is only " +
+        "non-empty when there's no such overlap."
       ),
     template: z
       .string()

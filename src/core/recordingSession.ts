@@ -123,6 +123,15 @@ export interface StartSessionResult {
   note?: string;
   privacyNotice?: string;
   compositionNote?: string;
+  /**
+   * Instruments added bare via `templates` composition that are NOT part of
+   * the base template's own bundle — their tuned configuration and any
+   * template-only auxiliary behavior (e.g. Hangs' threshold, os-log's scope)
+   * is not guaranteed to match a real template recording. Empty/absent when
+   * every composed instrument happens to already be covered by the base
+   * template's own bundle. See PMT:gravel-falcon.
+   */
+  fidelityAtRisk?: string[];
 }
 
 /**
@@ -322,6 +331,7 @@ export async function startSession(
     ...(intent.note ? { note: intent.note } : {}),
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
     ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
+    ...(expanded.fidelityAtRisk.length > 0 ? { fidelityAtRisk: expanded.fidelityAtRisk } : {}),
   };
 }
 
