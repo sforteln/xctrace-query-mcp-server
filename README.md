@@ -4,7 +4,14 @@ A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigat
 Raw `xctrace` output is ~95% noise (XML envelope, ref-id indirection, triplicated columns). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down — for **any** instrument type, not just the ones it was written for.
 
 ## How it works
-Every Instruments trace has the same shape underneath: `run[] → instrument[] → schema/table[] → row[]` with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs (`query`, `aggregate`, `call_tree`, `find`) that work on **any** instrument — including ones added in future Xcode versions — with zero per-instrument code. Optional per-instrument "lenses" add ergonomic shortcuts on top.
+Every Instruments trace has the same shape underneath: `run[] → instrument[] → schema/table[] → row[]` with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on **any** instrument — including ones added in future Xcode versions — with zero per-instrument code:
+- `query`/`find`/`get_row` — filtered/sorted rows, richer predicates (regex, contains, ranges), and full single-row detail including resolved backtraces
+- `aggregate` — "top N by weight" grouped by any column(s), including percentile ops (p50/p90/p95/p99) for a real distribution instead of just min/max/sum, and a `having` filter to isolate storms/hotspots (many occurrences), not just the single heaviest one
+- `call_tree` — folded/aggregated call stacks for sample-based instruments
+- `relate`/`correlate` — join two schemas on shared time windows or equality keys to answer causality ("does this interval contain that event"), leaks ("was this allocation ever freed"), and idle/GPU-bound-window questions over the FULL table, not a sample
+- `timeline` — merge several schemas into one time-ordered, origin-tagged stream — the exploratory complement to `relate`, for "what actually happened, in order, across subsystems" before you have a specific hypothesis to test
+
+Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory — see [Memory](#memory) below. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call — including, when a lens recognises the trace type, one entry flagged `recommended: true`.
 
 ## Requirements
 - **Node.js ≥ 22**
@@ -12,15 +19,15 @@ Every Instruments trace has the same shape underneath: `run[] → instrument[] �
 
 ## Memory
 
-`.trace` files are archives of very large XML tables — a single schema's export can be hundreds of megabytes to gigabytes of XML, and the server parses each table's rows fully into memory (cached for the life of the session so it isn't re-parsed on every call). Node's default heap ceiling (~4 GB on most systems) isn't always enough for one of these tables on a busy or long recording, and running out crashes the whole process — not just the one call that tripped it.
+`.trace` files are archives of very large XML tables — a single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from the XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size, but it's no longer the primary defense the way it was before the SQLite rewrite.
 
-To avoid that, the server re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
+Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
+
+The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
 
 Override it if needed:
 - Set `INSTRUMENTS_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
 - Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
-
-This raises the ceiling; it doesn't remove the underlying cost of holding a fully-parsed large table in memory. For an especially large or long recording, prefer narrower queries (a specific `run`, a `timeRange` where the tool supports one) over describing or aggregating an entire huge schema at once.
 
 ## Install
 ### From source (until the package is published on npm)
@@ -77,12 +84,13 @@ User:   I recorded a Hangs trace of my app — it was freezing on the main threa
         The file is at ~/Documents/traces/MyApp-Hangs.trace
 
 AI:     [calls open_trace]
-        Opened. 1 run, recorded 14 seconds ago. suggestedStart: query potential-hangs
-        sorted by duration — let me look at the worst hangs first.
+        Opened. 1 run, recorded 14 seconds ago. nextActions has one entry flagged
+        recommended: aggregate potential-hangs by hang-type — let me see what kind
+        of hang dominates first, then drill into the individual ones.
 
-        [calls query on potential-hangs, sorted by duration desc]
-        Found 3 hangs. Longest: 4.2 s on the main thread, hang-type "main-thread".
-        The other two are 800 ms and 310 ms, also main-thread.
+        [calls the recommended aggregate, then query on potential-hangs sorted by duration desc]
+        Found 3 hangs, all main-thread. Longest: 4.2 s. The other two are
+        800 ms and 310 ms, also main-thread.
 
         [calls get_row on the 4.2s hang]
         Backtrace points to -[MyViewController viewDidAppear:] → a synchronous
@@ -110,7 +118,8 @@ AI:     [calls stop_recording]
         Trace saved. Opening it now.
 
         [calls open_trace]
-        1 run. suggestedStart: list_fm_requests — let me pull the inference calls.
+        1 run. nextActions has one entry flagged recommended: list_fm_requests —
+        let me pull the inference calls.
 
         [calls list_fm_requests, limit 50]
         12 requests. Most complete in 200–400 ms. Two stand out: requests 7 and 11
@@ -131,7 +140,7 @@ AI:     [calls find_fm_requests, emptyContext true]
         in your indexed content.
 ```
 ---
-The server always returns a `suggestedStart` in the `open_trace` response  a pre-filled tool call that gets you to the key data in one step for the most common instruments. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
+For the most common instruments, `open_trace`'s `nextActions` includes one entry flagged `recommended: true` — a pre-filled tool call that gets you to the key data in one step. The rest of `nextActions` are plain, unranked alternatives — if you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
 
 ## Want to test the relative health of your app?
 
@@ -179,13 +188,13 @@ This is a genuinely validated workflow, not a hopeful one: it's exactly what hap
 
 Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
 
-Points of Interest is bundled for free in most templates (Time Profiler, SwiftUI, Swift Concurrency, Allocations, Leaks, Network, CPU Counters, Processor Trace all include it automatically — `start_recording`'s response tells you when it isn't). For the templates that don't bundle it (Hangs, Animation Hitches, Core Data, Foundation Models, App Launch), pass `instruments: ["Points of Interest"]` explicitly.
+Whether a template gives you the full Points of Interest instrument varies more than you'd expect — verified live against real recordings, not assumed. Time Profiler, Swift Concurrency, Network, Hangs (CPU Profiler), Allocations, Leaks, Animation Hitches, and CPU Counters all include the full instrument automatically (`os-signpost`, `PointsOfInterestEvents`, and `OSSignpostIntervals` all present). Core Data and Foundation Models include only a bare `os-signpost` schema — present, but missing the two more useful structured views — so composing `instruments: ["Points of Interest"]` explicitly is still worth doing there. SwiftUI, App Launch, and Processor Trace include none of it at all; pass `instruments: ["Points of Interest"]` explicitly for these too. `start_recording`'s response tells you what actually got composed either way.
 
 Once you have both, use `correlate()` — signposts show up as `os-signpost` (raw begin/end/event signposts), `OSSignpostIntervals` (paired begin→end durations), and `PointsOfInterestEvents` (discrete events). Correlating one of these against whatever you're actually investigating (a hang interval, a CPU sample, a SwiftData fetch) answers "which of my named operations was active when this happened" directly, instead of inferring it from timestamps by hand.
 
 ## If the AI seems stuck
 These prompts reliably get things moving again:
-- **"What does suggestedStart say?"** — The `open_trace` response includes a ready-to-run first call. Ask the AI to read it and follow it.
+- **"Which nextAction is recommended?"** — `open_trace`'s response includes a ready-to-run first call flagged `recommended: true` when a lens recognises the trace type. Ask the AI to read it and follow it.
 - **"List all instruments in this trace."** — `list_instruments` shows every schema with its row count and the AI can pick the most relevant one.
 - **"Describe the schema for [schema name] before you query it."** — `describe_schema` returns each column's role (time, weight, backtrace, etc.) so the AI can form the right query.
 - **"I want to look at run 2, not the most recent run."** — The AI defaults to the most recent run; remind it that `open_trace` returned all run numbers and it can pass a different one.
@@ -260,6 +269,8 @@ To enable session logging (useful for debugging which tools the agent selects):
 claude mcp add instruments-mcp-server -- node /path/to/dist/index.js --log
 # Logs appear in ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
 ```
+
+If a call seems to be taking far longer than expected, ask the AI to call `server_info` — Node doesn't hot-reload, so a long-lived server process keeps running whatever code was in memory when it started, even after you rebuild. `server_info` reports the running code's actual on-disk build time and process start time so you can tell whether it predates a fix you just shipped (and needs restarting by whatever spawned it) before assuming the fix didn't work.
 
 ## License
 

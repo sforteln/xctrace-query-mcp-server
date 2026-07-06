@@ -52,6 +52,15 @@ Concrete case validated live: a user asking "find why the app is hanging on scro
 
 Launch-mode instrument injection (Allocations/Leaks/anything using liboainject) only works against apps built with debugging entitlements (dev/ad-hoc-signed Debug builds). Launching a hardened production/system app (e.g. TextEdit.app) under an injecting instrument gets it SIGKILLed for code-signature/library-validation reasons — the OS kills the process the instant the injection dylib tries to attach, before any app code runs. Distinguishable from a real app crash by the all-zero thread state and "Code Signature Invalid" termination reason in the crash report (verified live). This is correct OS enforcement, not a bug to work around — the fix is profiling a locally-built Debug target instead.
 
+### attach-mode-degenerate-backtraces — attaching (vs. launching) for Allocations silently produces useless single-frame stacks
+**Instrument/template/schema:** Allocations (any instrument using liboainject for backtrace capture)
+**Bug-type/category:** launch-mode, attach-mode, data-fidelity
+**Date:** 2026-07-06
+**Status:** candidate
+**Promoted to:**
+
+Recording Allocations via `xctrace record --attach <pid>` against an already-running, otherwise-healthy process (no crash, no SIGKILL, a completely normal-looking recording) produced 275,314 rows where EVERY backtrace resolved to a single degenerate frame — `<Call stack limit reached>` — with 1 unique backtrace across the whole table. This is a distinct, quieter failure mode from the SIGKILL case in `launch-mode-injection` above: nothing errors, nothing warns, the recording completes normally and looks superficially fine (right schema, right row count, right column shapes) — only the backtrace CONTENT is silently useless. Root cause (verified live via a controlled comparison against a `--launch`-mode recording of the same target immediately after): `--launch` injects `liboainject` via `DYLD_INSERT_LIBRARIES` before any code runs, so its allocation interposer can walk the stack reliably for the process's entire lifetime — a `--launch` recording of the identical app produced 145,033 rows with genuinely rich, multi-frame, fully-symbolicated backtraces (correct function names and binary/module attribution), with only 390 rows (0.27%, the earliest pre-runtime-init allocations before dyld/objc is even set up) showing the same degenerate stub — which is expected and correct for that narrow window, not a bug. Attach-mode's late-injection path apparently cannot reliably unwind existing call stacks. Practical rule: any test, spike, or dogfooding session that needs real Allocations backtrace data MUST use launch mode, not attach — attach-mode backtrace data can look completely normal (right shape, right row count) while being silently worthless, with no signal in the response to suggest checking.
+
 ### thermal-poi-gcd-standalone-value — some instruments only make sense composed with a companion
 **Instrument/template/schema:** Thermal State, Points of Interest, general
 **Bug-type/category:** recording-composition

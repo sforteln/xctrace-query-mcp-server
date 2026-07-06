@@ -19,7 +19,7 @@ graph TD
 Registers all tools and lenses, wires up the MCP stdio transport. The only place new tools or lenses are added. See [howLensesWork.md](howLensesWork.md).
 
 **`src/engine/session.ts` — trace cache**  
-Owns the in-process session map. `openTrace()` loads a trace once; every subsequent tool call reuses the cached session. Parsed table rows accumulate in a per-(run, schema) cache so xctrace is never called twice for the same table. See [howSessionsWork.md](howSessionsWork.md).
+Owns the in-process session map. `openTrace()` loads a trace once; every subsequent tool call reuses the cached session. Parsed rows stream into a per-session SQLite DB (one table per (run, schema)) rather than accumulating in a JS array, so xctrace is never called twice for the same table and memory use is bounded by result size, not table size. See [howSessionsWork.md](howSessionsWork.md).
 
 **`src/engine/xctrace.ts` — xcrun shell-out**  
 The only place in the codebase that calls `xcrun xctrace`. Two modes: `--toc` (enumerate schemas) and `--xpath` (pull one table as XML). All failure modes become structured `XctraceError` — raw stderr never reaches the agent. See [howSessionsWork.md](howSessionsWork.md).
@@ -31,7 +31,7 @@ Convert xctrace XML output into typed row objects. Handle the `id`/`ref` dedupli
 Maps Xcode versions to rules versions and tracks which (version, schema) pairs have verified fixtures. The only place version-specific logic lives — the parser is intentionally version-unaware. See [howVersionResolutionWorks.md](howVersionResolutionWorks.md).
 
 **`src/core/` — universal verbs**  
-`query`, `aggregate`, `find`, `get_row`, `call_tree`, `describe_schema`, `list_instruments` — schema-agnostic tools that work on any instrument. Each reads from the session cache via `session.ts`. None contain instrument-specific logic.
+`query`, `aggregate`, `find`, `get_row`, `call_tree`, `describe_schema`, `list_instruments` — schema-agnostic tools that work on any instrument. Each reads from the session cache via `session.ts`. None contain instrument-specific logic. `aggregate`'s full op set (min/max/median/p50/p90/p95/p99, multi-column `groupBy`, `having`) and `query`'s `window` (running-total/delta/rank/row-number) were built into the core functions by PMT:round-rime but weren't actually wired into `index.ts`'s registered MCP tool schemas until PMT:slow-lake caught it — a real, load-bearing gap (zod would reject `op: "p95"` outright), not just a documentation one. If a core capability is ever added to `core/*.ts` without a matching change to its tool's `inputSchema`/description in `index.ts`, it's inert — verify new capabilities through the actual registered tool handler (`createServer()._registeredTools`), not just the internal function, before considering them shipped.
 
 **`src/lenses/` — per-instrument lenses**  
 Optional ergonomic layer over the core verbs. Each lens declares which schemas it handles, contributes a `quickStart` for `open_trace`, and can register its own MCP tools. Purely additive — schemas with no lens still work. See [howLensesWork.md](howLensesWork.md).
