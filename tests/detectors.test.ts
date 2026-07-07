@@ -17,7 +17,9 @@ import {
   criterionText,
   type Detector,
   type DetectorContext,
+  type RankedFinding,
 } from "../src/detectors/index.js";
+import { findingToNextAction } from "../src/detectors/surface.js";
 
 // ── Synthetic swiftui-updates table ──────────────────────────────────────────
 function ingestSwiftui(rows: Array<{ desc: string; durNs: number }>): ReturnType<typeof openSessionDb> {
@@ -113,6 +115,26 @@ describe("PMT:pure-hail runner gating + isolation", () => {
     };
     const ranked = runCheapDetectors([boom, fire("ok", 3)], ctxFor(db), new Set(["swiftui-updates"]));
     expect(ranked.map((r) => r.detectorId)).toEqual(["ok"]);
+  });
+});
+
+describe("PMT:pure-hail surfacing (findingToNextAction)", () => {
+  const rf = (callSpec: RankedFinding["callSpec"]): RankedFinding => ({
+    detectorId: "d", title: "D", summary: "SidebarRow.body storm", criterion: "count 1,000 over 100",
+    severity: "high", score: 10, callSpec, handles: [],
+  });
+
+  it("maps a single-schema verb's callSpec to an invokable NextAction (sessionId + schema injected)", () => {
+    const na = findingToNextAction(rf({ verb: "aggregate", schema: "swiftui-updates", args: { groupBy: "description", op: "sum" } }), "sess1");
+    expect(na.tool).toBe("aggregate");
+    expect(na.args).toEqual({ sessionId: "sess1", schema: "swiftui-updates", groupBy: "description", op: "sum" });
+    expect(na.description).toContain("SidebarRow.body storm");
+    expect(na.description).toContain("count 1,000 over 100");
+  });
+
+  it("does not inject a plain `schema` arg for relate (it carries its own schema params)", () => {
+    const na = findingToNextAction(rf({ verb: "relate", schema: "A", args: { schemaA: "A", schemaB: "B" } }), "sess1");
+    expect(na.args).toEqual({ sessionId: "sess1", schemaA: "A", schemaB: "B" });
   });
 });
 

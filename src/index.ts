@@ -63,6 +63,7 @@ import {
   withRecommended,
 } from "./core/response.js";
 import type { NextAction } from "./core/response.js";
+import { detectorNextActions } from "./detectors/surface.js";
 
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
@@ -260,14 +261,26 @@ export function createServer(): McpServer {
         // duplicated the top of nextActions) — one ranked list, not two
         // overlapping fields to reconcile.
         const quickStart = registry.quickStart(lastRunSchemas, result.sessionId, lastRunNum);
-        const recommended: NextAction | null = quickStart
+        const quickStartAction: NextAction | null = quickStart
           ? { tool: quickStart.tool, args: quickStart.args, description: quickStart.hint }
           : null;
+        // PMT:pure-hail: a FIRED cheap detector (over anything already ingested,
+        // e.g. a re-opened trace whose tables the .db still holds) becomes the
+        // single `recommended` pick, demoting the navigational quickStart to a
+        // plain alternative. On a fresh trace nothing's ingested → no findings →
+        // quickStart stays recommended (unchanged).
+        const detectorActions = await detectorNextActions(result.sessionId);
+        const recommended: NextAction | null =
+          detectorActions.length > 0 ? detectorActions[0] : quickStartAction;
+        const alternatives: NextAction[] =
+          detectorActions.length > 0
+            ? [...detectorActions.slice(1), ...(quickStartAction ? [quickStartAction] : []), ...actionsAfterOpen(result.sessionId)]
+            : actionsAfterOpen(result.sessionId);
         const payload = {
           ...result,
           ...(versionWarning && { versionWarning }),
         };
-        const response = envelope(payload, withRecommended(recommended, actionsAfterOpen(result.sessionId)));
+        const response = envelope(payload, withRecommended(recommended, alternatives));
         return text(toMcpText(response));
       })
   );
