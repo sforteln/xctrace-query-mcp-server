@@ -4,7 +4,9 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
 import { hintFor } from "../../engine/roleHints.js";
-import { peekTable } from "../../engine/session.js";
+import { peekTable, peekDb } from "../../engine/session.js";
+import { fmtCol } from "../../engine/sqlHydrate.js";
+import { quoteIdent } from "../../engine/sqliteStore.js";
 
 const NETWORK_STATS_SCHEMA = "NetworkConnectionStats";
 const NETWORK_UPDATE_SCHEMA = "network-connection-update";
@@ -35,16 +37,25 @@ const ZERO_TIMESTAMP = "00:00.000.000";
 function preExistingSnapshotHint(sessionId: string, run: number, schema: string): NextAction | null {
   if (schema !== NETWORK_DETECTED_SCHEMA) return null;
   const table = peekTable(sessionId, run, NETWORK_DETECTED_SCHEMA);
-  if (!table || table.rows.length === 0) return null;
+  const db = table ? peekDb(sessionId) : undefined;
+  if (!table || !db || table.rowCount === 0) return null;
 
-  const preExisting = table.rows.filter((r) => r["time"]?.fmt === ZERO_TIMESTAMP).length;
-  if (preExisting === 0 || preExisting / table.rows.length < 0.3) return null;
+  // A scalar COUNT(*) WHERE time__fmt = sentinel instead of fetching+hydrating
+  // every row just to count a subset (PMT:warm-mica) — table.rowCount already
+  // gives the denominator for free (peekTable/getTable's own row count).
+  const preExisting = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(table.tableName)} WHERE ${quoteIdent(fmtCol("time"))} = ?`)
+      .get(ZERO_TIMESTAMP) as { n: number }
+  ).n;
+  const total = table.rowCount;
+  if (preExisting === 0 || preExisting / total < 0.3) return null;
 
   return {
     tool: "find",
     args: { sessionId, schema: NETWORK_DETECTED_SCHEMA, run, where: [{ col: "time", op: "gt", val: 0 }] },
     description:
-      `${preExisting}/${table.rows.length} connections have timestamp 0 — a snapshot of connections ` +
+      `${preExisting}/${total} connections have timestamp 0 — a snapshot of connections ` +
       "that already existed before the recording started (often other processes' traffic), not events " +
       "that happened during capture. Filter to non-zero timestamps to see connections that actually " +
       "started during this recording, and filter by pid/process to scope to one target — attach does " +

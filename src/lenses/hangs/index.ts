@@ -137,17 +137,25 @@ const hangsLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (schemas.includes(HANGS_SCHEMA)) {
+      // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces
+      // a full-table scan regardless of size, and quickStart runs from
+      // schema names alone (no row count known yet). aggregate by hang-type
+      // (the same column this lens's own correlate call already keys on for
+      // this schema) answers "which kind of hang dominates" instead of "the
+      // single worst hang", staying bounded on a huge trace.
       return {
         schema: HANGS_SCHEMA,
-        tool: "query",
+        tool: "aggregate",
         args: {
           sessionId,
           schema: HANGS_SCHEMA,
           run,
-          sort: { by: HANGS_WEIGHT, dir: "desc" },
-          limit: 20,
+          groupBy: "hang-type",
+          measure: HANGS_WEIGHT,
+          op: "sum",
+          topN: 10,
         },
-        hint: `Hangs & Hitches trace — potential-hangs sorted by ${HANGS_WEIGHT} shows the worst hangs first; check hang-type (main-thread vs. background) and thread for root-cause clues`,
+        hint: `Hangs & Hitches trace — total ${HANGS_WEIGHT} by hang-type (main-thread vs. background) shows which kind of hang dominates; query with sort:{by:"${HANGS_WEIGHT}",dir:"desc"} for the single worst hang`,
       };
     }
 

@@ -9,7 +9,8 @@
  * column's role, the canonical primaryTime / primaryWeight to target, and a
  * by-role grouping of column mnemonics.
  */
-import { getSchemaMeta, lastRun, getSchemaModel } from "../engine/session.js";
+import { getSchemaMeta, lastRun, getSchemaModel, peekDb, peekTable } from "../engine/session.js";
+import { buildFieldResolver } from "../engine/fieldRef.js";
 import { findOne, findSchemaTableEntries } from "../engine/schemaModel.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import {
@@ -45,6 +46,16 @@ export interface SchemaDescription {
   columns: DescribedColumn[];
   /** Column mnemonics grouped by role — a compact map for forming queries. */
   rolesSummary: Record<ColumnRole, string[]>;
+  /**
+   * Queryable nested scalar fields as canonical dot-paths (thread.process.pid),
+   * usable anywhere a mnemonic is — filter/groupBy/where/sort (PMT:bare-shoal).
+   * Ref-identical duplicates are already collapsed to ONE canonical path here.
+   * Present only once the table has been ingested this session (the promoted
+   * columns don't exist until then); a first query/aggregate/find on the schema
+   * ingests it, after which these appear. Referencing an undiscovered path also
+   * returns an error listing the valid ones.
+   */
+  nestedFields?: string[];
 }
 
 /**
@@ -101,6 +112,22 @@ export async function describeSchema(
       ? findSchemaTableEntries(model, resolvedRun, schema)[position - 1]
       : findOne(model, resolvedRun, schema);
 
+  // Surface canonical nested dot-paths ONLY when the table is already ingested
+  // this session (its promoted columns + identity metadata exist by then).
+  // Deliberately does NOT force an ingest here — describeSchema stays a cheap
+  // metadata-only call (see getSchemaMeta's doc comment / the OOM history);
+  // the fields appear after the first real query on this schema.
+  let nestedFields: string[] | undefined;
+  const db = position === undefined ? peekDb(sessionId) : undefined;
+  const ingested = position === undefined ? peekTable(sessionId, resolvedRun, schema) : undefined;
+  if (db && ingested) {
+    const nested = buildFieldResolver(db, ingested.tableName, meta.cols)
+      .listFields()
+      .filter((f) => f.nested)
+      .map((f) => f.path);
+    if (nested.length > 0) nestedFields = nested;
+  }
+
   return {
     schema,
     run: resolvedRun,
@@ -112,5 +139,6 @@ export async function describeSchema(
     primaryWeight,
     columns,
     rolesSummary,
+    ...(nestedFields ? { nestedFields } : {}),
   };
 }

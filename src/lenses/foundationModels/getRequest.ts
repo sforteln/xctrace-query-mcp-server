@@ -13,8 +13,30 @@
  * getEvents — all rows sharing the same model-request-id, ordered by start,
  *   showing the multi-phase timeline (Prompt → Resolve → …).
  */
-import { getTable, lastRun as sessionLastRun } from "../../engine/session.js";
+import type { DatabaseSync } from "node:sqlite";
+import { getTable, getDb, lastRun as sessionLastRun } from "../../engine/session.js";
+import { fmtCol, rawCol, hydrateNormalizedRow, makeFrameLookup, makeInternResolver } from "../../engine/sqlHydrate.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../../engine/sqliteStore.js";
+import type { SqliteTableHandle } from "../../engine/session.js";
+import type { NormalizedRow } from "../../engine/parseTable.js";
 import { FM_SCHEMA } from "./listRequests.js";
+
+/**
+ * A single hydrated row by _row_idx — the same scoped WHERE _row_idx=? lookup
+ * get_row.ts uses, NOT fetchAllRowsHydrated's whole-table fetch (PMT:warm-mica).
+ * Each of getRequest/getResponse/getPrompt needs exactly one row; there's no
+ * reason to hydrate every other row in the table (fmt/raw/children/frame
+ * lookups) just to discard all but one.
+ */
+export function fetchHydratedRow(db: DatabaseSync, handle: SqliteTableHandle, rowIndex: number): NormalizedRow {
+  const sqlRow = db
+    .prepare(`SELECT * FROM ${quoteIdent(handle.tableName)} WHERE ${quoteIdent(ROW_IDX_COLUMN)} = ?`)
+    .get(rowIndex) as Record<string, unknown> | undefined;
+  if (!sqlRow) throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
+  // FM tables hold large interned values (instructions/response/content) —
+  // resolve them back on hydration (PMT:lime-bluff).
+  return hydrateNormalizedRow(handle.cols, sqlRow, makeFrameLookup(db), makeInternResolver(db));
+}
 
 /** Columns excluded from getRequest — the instructions blob. */
 const EXCLUDED_FROM_REQUEST = new Set(["instruction", "instructions"]);
@@ -87,13 +109,14 @@ export async function getFmRequest(
   opts: { run?: number } = {}
 ): Promise<FmRequestDetail> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, FM_SCHEMA);
+  const handle = await getTable(sessionId, run, FM_SCHEMA);
 
-  if (rowIndex < 0 || rowIndex >= table.rows.length) {
-    throw new Error(`rowIndex ${rowIndex} out of range (0–${table.rows.length - 1})`);
+  if (rowIndex < 0 || rowIndex >= handle.rowCount) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
   }
 
-  const row = table.rows[rowIndex];
+  const db = await getDb(sessionId);
+  const row = fetchHydratedRow(db, handle, rowIndex);
 
   const errorRaw = row["error-count"]?.raw;
   const errorCount = typeof errorRaw === "number" ? errorRaw : Number(errorRaw ?? 0);
@@ -134,13 +157,14 @@ export async function getFmResponse(
   opts: { run?: number } = {}
 ): Promise<FmResponseDetail> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, FM_SCHEMA);
+  const handle = await getTable(sessionId, run, FM_SCHEMA);
 
-  if (rowIndex < 0 || rowIndex >= table.rows.length) {
-    throw new Error(`rowIndex ${rowIndex} out of range (0–${table.rows.length - 1})`);
+  if (rowIndex < 0 || rowIndex >= handle.rowCount) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
   }
 
-  const row = table.rows[rowIndex];
+  const db = await getDb(sessionId);
+  const row = fetchHydratedRow(db, handle, rowIndex);
   return {
     rowIndex,
     requestId: row["model-request-id"]?.fmt ?? null,
@@ -157,33 +181,54 @@ export async function getFmEvents(
   opts: { run?: number } = {}
 ): Promise<FmEventsResult> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, FM_SCHEMA);
+  const handle = await getTable(sessionId, run, FM_SCHEMA);
 
-  if (rowIndex < 0 || rowIndex >= table.rows.length) {
-    throw new Error(`rowIndex ${rowIndex} out of range (0–${table.rows.length - 1})`);
+  if (rowIndex < 0 || rowIndex >= handle.rowCount) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
   }
 
-  const anchorRow = table.rows[rowIndex];
-  const requestId = anchorRow["model-request-id"]?.fmt ?? null;
+  const db = await getDb(sessionId);
+  const table = quoteIdent(handle.tableName);
 
-  // Collect all rows sharing the same model-request-id.
-  const events: FmEventRow[] = table.rows
-    .map((row, idx) => ({ row, idx }))
-    .filter(({ row }) => row["model-request-id"]?.fmt === requestId)
-    .map(({ row, idx }) => {
-      const errorRaw = row["error-count"]?.raw;
-      const errorCount = typeof errorRaw === "number" ? errorRaw : Number(errorRaw ?? 0);
-      return {
-        rowIndex: idx,
-        startTime: row["start"]?.fmt ?? null,
-        duration: row["duration"]?.fmt ?? null,
-        resolve: row["resolve"]?.fmt ?? null,
-        color: row["color"]?.fmt ?? null,
-        content: row["content"]?.fmt ?? null,
-        errorCount,
-        hasError: errorCount > 0,
-      };
-    });
+  // Anchor's model-request-id, via a single scoped row lookup — not a
+  // full-table hydration just to read one column of one row (PMT:warm-mica).
+  const anchorRow = db
+    .prepare(`SELECT ${quoteIdent(fmtCol("model-request-id"))} AS rid FROM ${table} WHERE ${quoteIdent(ROW_IDX_COLUMN)} = ?`)
+    .get(rowIndex) as { rid: string | null } | undefined;
+  if (!anchorRow) throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
+  const requestId = anchorRow.rid;
+
+  // All rows sharing the same model-request-id — a scoped SELECT (indexed-or-
+  // not, but bounded to the matching rows only, unlike hydrating the whole
+  // table), ordered by _row_idx ASC to match the original filter-preserving-
+  // array-order behavior.
+  const matchRows = db
+    .prepare(
+      `SELECT ${quoteIdent(ROW_IDX_COLUMN)} AS idx, ${quoteIdent(fmtCol("start"))} AS start, ` +
+        `${quoteIdent(fmtCol("duration"))} AS duration, ${quoteIdent(fmtCol("resolve"))} AS resolve, ` +
+        `${quoteIdent(fmtCol("color"))} AS color, ${quoteIdent(fmtCol("content"))} AS content, ` +
+        `${quoteIdent(rawCol("error-count"))} AS errorRaw ` +
+        `FROM ${table} WHERE ${quoteIdent(fmtCol("model-request-id"))} IS ? ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC`
+    )
+    .all(requestId) as Array<{
+      idx: number; start: string | null; duration: string | null; resolve: string | null;
+      color: string | null; content: string | null; errorRaw: number | string | null;
+    }>;
+
+  const unintern = makeInternResolver(db);
+  const events: FmEventRow[] = matchRows.map((row) => {
+    const errorCount = typeof row.errorRaw === "number" ? row.errorRaw : Number(row.errorRaw ?? 0);
+    return {
+      rowIndex: row.idx,
+      startTime: row.start,
+      duration: row.duration,
+      resolve: row.resolve,
+      color: row.color,
+      content: unintern(row.content) as string | null, // content may be interned (PMT:lime-bluff)
+      errorCount,
+      hasError: errorCount > 0,
+    };
+  });
 
   return { requestId, totalEvents: events.length, events };
 }
@@ -216,13 +261,14 @@ export async function getFmPrompt(
   opts: { run?: number } = {}
 ): Promise<FmPromptDetail> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, FM_SCHEMA);
+  const handle = await getTable(sessionId, run, FM_SCHEMA);
 
-  if (rowIndex < 0 || rowIndex >= table.rows.length) {
-    throw new Error(`rowIndex ${rowIndex} out of range (0–${table.rows.length - 1})`);
+  if (rowIndex < 0 || rowIndex >= handle.rowCount) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
   }
 
-  const row = table.rows[rowIndex];
+  const db = await getDb(sessionId);
+  const row = fetchHydratedRow(db, handle, rowIndex);
   const instruction = row["instruction"]?.fmt ?? null;
   const instructions = row["instructions"]?.fmt ?? null;
 

@@ -10,22 +10,34 @@
  *   FM noCitations  → [{ col: "response",      op: "contains", val: "referencedSections\": []" }]
  *   FM needsReform  → [{ col: "response",      op: "contains", val: "needsReformulation\": true" }]
  *   FM slow request → [{ col: "duration",      op: "gt",       val: 5000000000 }]  // >5 s in ns
+ *
+ * PMT:dusk-floe: conditions compile to SQL WHERE clauses (see sqlHydrate.ts's
+ * buildCondition, which mirrors the raw+fmt dual-check semantics the old
+ * testCondition used) instead of a JS-array scan; regex runs via a registered
+ * SQLite UDF since there's no native REGEXP.
  */
-import { getTable, getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
-import { matchesTimeRange } from "./tableFilter.js";
 import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
-import type { NormalizedRow } from "../engine/parseTable.js";
+import {
+  buildCondition,
+  buildTimeRangeFilter,
+  combineConditions,
+  rawCol,
+  buildDisplaySelect,
+  resolveBacktraceDisplayValues,
+  resolveInternedDisplayValues,
+  makeFrameLookup,
+  makeInternResolver,
+  type ConditionOp,
+} from "../engine/sqlHydrate.js";
+import { buildFieldResolver } from "../engine/fieldRef.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type ConditionOp =
-  | "eq" | "ne"
-  | "gt" | "gte" | "lt" | "lte"
-  | "contains" | "not-contains"
-  | "regex"
-  | "is-null" | "not-null";
+export type { ConditionOp };
 
 export interface Condition {
   /** Column mnemonic to test. */
@@ -72,99 +84,6 @@ export interface FindResult {
   columnsShown: string[];
 }
 
-// ─── Condition evaluation ─────────────────────────────────────────────────────
-
-function testCondition(row: NormalizedRow, cond: Condition, regexCache: Map<string, RegExp>): boolean {
-  const { col, op, val } = cond;
-  const cell = row[col];
-
-  if (op === "is-null") return cell === null || cell === undefined;
-  if (op === "not-null") return cell !== null && cell !== undefined;
-
-  // All other ops require a non-null cell.
-  if (cell === null || cell === undefined) return false;
-
-  const fmtStr = cell.fmt;
-  const rawVal = cell.raw;
-  const rawNum = typeof rawVal === "number" ? rawVal : Number(rawVal);
-
-  switch (op) {
-    case "eq":
-      if (val === undefined) return false;
-      if (typeof val === "number") return rawVal === val || rawNum === val;
-      return fmtStr === val || String(rawVal) === val;
-
-    case "ne":
-      if (val === undefined) return false;
-      if (typeof val === "number") return rawVal !== val && rawNum !== val;
-      return fmtStr !== val && String(rawVal) !== val;
-
-    case "gt":
-      if (val === undefined) return false;
-      return isFinite(rawNum) && rawNum > Number(val);
-
-    case "gte":
-      if (val === undefined) return false;
-      return isFinite(rawNum) && rawNum >= Number(val);
-
-    case "lt":
-      if (val === undefined) return false;
-      return isFinite(rawNum) && rawNum < Number(val);
-
-    case "lte":
-      if (val === undefined) return false;
-      return isFinite(rawNum) && rawNum <= Number(val);
-
-    case "contains":
-      if (val === undefined) return false;
-      return fmtStr.includes(String(val)) || String(rawVal).includes(String(val));
-
-    case "not-contains":
-      if (val === undefined) return false;
-      return !fmtStr.includes(String(val)) && !String(rawVal).includes(String(val));
-
-    case "regex": {
-      if (val === undefined) return false;
-      const pattern = String(val);
-      let re = regexCache.get(pattern);
-      if (!re) {
-        re = new RegExp(pattern, "i");
-        regexCache.set(pattern, re);
-      }
-      return re.test(fmtStr) || re.test(String(rawVal));
-    }
-
-    default:
-      return false;
-  }
-}
-
-function matchesAll(row: NormalizedRow, conditions: Condition[], regexCache: Map<string, RegExp>): boolean {
-  for (const cond of conditions) {
-    if (!testCondition(row, cond, regexCache)) return false;
-  }
-  return true;
-}
-
-// ─── Sort ─────────────────────────────────────────────────────────────────────
-
-function compareByCol(
-  a: NormalizedRow,
-  b: NormalizedRow,
-  by: string,
-  dir: "asc" | "desc"
-): number {
-  const aVal = a[by]?.raw ?? "";
-  const bVal = b[by]?.raw ?? "";
-  let cmp: number;
-  if (typeof aVal === "number" && typeof bVal === "number") {
-    cmp = aVal - bVal;
-  } else {
-    cmp = String(aVal).localeCompare(String(bVal), undefined, { numeric: true });
-  }
-  return dir === "desc" ? -cmp : cmp;
-}
-
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export async function findRows(
@@ -199,33 +118,7 @@ export async function findRows(
   // firstWithRole would only be correct by coincidence of column order.
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
-  const allMnemonics = meta.cols.map((c) => c.mnemonic);
-  const columnsShown =
-    columns && columns.length > 0
-      ? columns.filter((m) => allMnemonics.includes(m))
-      : allMnemonics;
-
-  // Project down to only display/condition/sort/time columns. Deliberately
-  // NOT passing timeRange to getProjectedTable (unlike aggregate.ts) —
-  // narrowing during the parse would shift which array index each surviving
-  // row lands at, and `tableIndex` below is a public contract get_row relies
-  // on to re-fetch this exact row from the FULL, unfiltered table. Only
-  // position-less (unambiguous) schemas get the fast path.
-  const wanted = new Set<string>([
-    ...columnsShown,
-    ...where.map((c) => c.col),
-    ...(sort?.by ? [sort.by] : []),
-    ...(timeColumn ? [timeColumn] : []),
-  ]);
-  const table =
-    position === undefined
-      ? await getProjectedTable(sessionId, run, schema, wanted)
-      : await getTable(sessionId, run, schema, position);
-
-  // Pre-compile regex patterns.
-  const regexCache = new Map<string, RegExp>();
-
-  // Validate regex patterns early and throw a clear error.
+  // Validate regex patterns early and throw a clear error — before touching SQL.
   for (const cond of where) {
     if (cond.op === "regex" && cond.val !== undefined) {
       try {
@@ -236,32 +129,69 @@ export async function findRows(
     }
   }
 
-  // Filter rows.
-  type Indexed = { row: NormalizedRow; tableIndex: number };
-  let filtered: Indexed[] = table.rows.map((row, i) => ({ row, tableIndex: i }));
+  // Ensures ingestion happened (a no-op if already cached this session).
+  const handle = await getTable(sessionId, run, schema, position);
+  const db = await getDb(sessionId);
+  const table = quoteIdent(handle.tableName);
 
-  if (timeRange && timeColumn) {
-    filtered = filtered.filter(({ row }) => matchesTimeRange(row, timeColumn, timeRange));
+  // Dot-path field resolution (PMT:bare-shoal), built after getTable. A
+  // condition's col / sort.by / a display column may be a nested dot-path
+  // (thread.process.pid); resolveComparable also rejects backtrace columns
+  // with a clear error (was assertNotBacktraceMnemonic).
+  const resolver = buildFieldResolver(db, handle.tableName, meta.cols);
+  const columnsShown =
+    columns && columns.length > 0
+      ? columns.filter((c) => resolver.tryResolve(c) !== null)
+      : meta.cols.map((c) => c.mnemonic);
+
+  // --- Build WHERE (each condition's col resolved to its physical base) ---
+  const conditions = where.map((c) =>
+    buildCondition(resolver.resolveComparable(c.col, "filter on").base, c.op, c.val)
+  );
+  const sortBase = sort?.by ? resolver.resolveComparable(sort.by, "sort by").base : undefined;
+  if (timeRange && timeColumn) conditions.push(buildTimeRangeFilter(timeColumn, timeRange));
+  const combined = combineConditions(conditions);
+
+  const matchCount = (
+    db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE ${combined.clause}`).get(...combined.params) as {
+      n: number;
+    }
+  ).n;
+
+  const displayFields = columnsShown.map((ref) => {
+    const f = resolver.resolve(ref);
+    return { ref, base: f.base, isBacktrace: f.isBacktrace };
+  });
+  const displayPlan = buildDisplaySelect(displayFields);
+  const selectCols = [quoteIdent(ROW_IDX_COLUMN), ...displayPlan.selectCols];
+
+  let orderBy = `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC`;
+  if (sortBase) {
+    const dir = (sort!.dir ?? "asc").toUpperCase();
+    // See query.ts's matching comment — known minor divergence from the old
+    // natural-sort comparator for TEXT columns with embedded digits.
+    orderBy = `ORDER BY ${quoteIdent(rawCol(sortBase))} ${dir}`;
   }
 
-  filtered = filtered.filter(({ row }) => matchesAll(row, where, regexCache));
-
-  // Sort.
-  if (sort?.by) {
-    const dir = sort.dir ?? "asc";
-    filtered = [...filtered].sort((a, b) => compareByCol(a.row, b.row, sort.by, dir));
+  const pageStmt = db.prepare(
+    `SELECT ${selectCols.join(", ")} FROM ${table} WHERE ${combined.clause} ${orderBy} LIMIT ? OFFSET ?`
+  );
+  let sqlRows = pageStmt.all(...combined.params, limit, offset) as Record<string, unknown>[];
+  if (displayPlan.backtraceMnemonics.length > 0) {
+    sqlRows = resolveBacktraceDisplayValues(sqlRows, displayPlan.backtraceMnemonics, makeFrameLookup(db));
   }
+  sqlRows = resolveInternedDisplayValues(sqlRows, columnsShown, makeInternResolver(db));
 
-  const matchCount = filtered.length;
-  const page = filtered.slice(offset, offset + limit);
-
-  const rows: FindRow[] = page.map(({ row, tableIndex }, pageIdx) => {
+  const rows: FindRow[] = sqlRows.map((sqlRow, pageIdx) => {
     const cells: Record<string, string | null> = {};
     for (const mnemonic of columnsShown) {
-      const cell = row[mnemonic];
-      cells[mnemonic] = cell === null || cell === undefined ? null : cell.fmt;
+      cells[mnemonic] = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
     }
-    return { index: offset + pageIdx, tableIndex, cells };
+    return {
+      index: offset + pageIdx,
+      tableIndex: sqlRow[ROW_IDX_COLUMN] as number,
+      cells,
+    };
   });
 
   const result: FindResult = {

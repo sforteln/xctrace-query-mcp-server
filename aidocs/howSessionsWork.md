@@ -4,7 +4,7 @@ A session is a load-once cache for one `.trace` file. It avoids calling `xcrun x
 
 ## Files
 
-- `src/engine/session.ts` — session registry, `openTrace()`, `getSession()`, table cache, `getSchemaMeta()`, `getDb()`, per-session ingestion serialization (`getProjectedTable()` is now dead — see below)
+- `src/engine/session.ts` — session registry, `openTrace()`, `getSession()`, table cache, `getSchemaMeta()`, `getDb()`, per-session ingestion serialization
 - `src/core/relate.ts` / `src/core/correlate.ts` — the generic cross-schema SQL join operator and its friendly time-range/exists preset (PMT:ruddy-stork)
 - `src/engine/xctrace.ts` — the only place `xcrun xctrace` is called
 - `src/engine/parseTable.ts` — parses schema-table XML into typed rows (streaming; also the countOnly/projected/SQLite-sink modes — see "Large-table hardening" below)
@@ -44,7 +44,7 @@ correlate(sessionId, intervalsSchema, eventsSchema, opts)   # now a preset over 
   → getSchemaMeta() on both schemas (classify which columns form the join)
   → getTable() on both (ensure ingested + role-indexed), then ONE SQL LEFT-JOIN aggregate
     (B.timestamp BETWEEN A.start AND A.start+A.duration [AND thread]) — an indexed range SEEK,
-    NOT the old getProjectedTable JS nested-loop parse
+    NOT a JS nested-loop parse
 
 relate(sessionId, schemaA, schemaB, opts)   # the generic cross-schema join operator (PMT:ruddy-stork)
   → same as correlate but with two knobs: joinCondition (time-range | equality) × polarity
@@ -58,14 +58,14 @@ timeline(sessionId, schemas[], opts)   # time-ordered origin-tagged merge — th
     BARE raw time column so the per-schema time index is a range SEEK, matching relate's 039.C caution
 ```
 
-The cache key is `${run}:${schema}`. A 40-second trace with 50k rows is parsed once and held in memory for the session lifetime. There is no eviction — sessions persist until the MCP server process exits. `getSchemaMeta`/`getProjectedTable` deliberately bypass this cache entirely (an incomplete view of a table must never be servable to a caller expecting full rows through cache reuse).
+The cache key is `${run}:${schema}`. A 40-second trace with 50k rows is ingested once and its handle held for the session lifetime. There is no in-process eviction — sessions persist until the MCP server process exits (the on-disk `.db` itself persists even longer, across processes — PMT:ruby-peak). `getSchemaMeta` deliberately bypasses `tableCache` entirely (a column-shape-only view must never be servable to a caller expecting full rows through cache reuse).
 
 ## Large-table hardening
 
 A large enough table can hold enough parsed rows to exceed Node's heap and fatally crash the WHOLE process (not just the offending call) — confirmed live twice: `swiftui-updates` at 736K rows, and `Allocations/Allocations List` at 823K rows with rich resolved backtraces. A fatal V8 OOM aborts before a response (or even a log line) can be written, so it reads to the client as a bare "Connection closed." Layers 1–3 below were the original mitigation stack; layer 4 (PMT:gravel-cape) is the structural fix for the ingestion side specifically.
 
 1. **A bigger ceiling** (`src/index.ts`, commit cdaa5eb) — re-execs with `--max-old-space-size=8192` (overridable via `INSTRUMENTS_MCP_MAX_HEAP_MB`) if the launch config didn't already request one. A mitigation, not a fix — an even larger table can still exceed it.
-2. **Don't materialize what isn't needed** — `parseTableStream`/`parseTrackDetailStream`'s shared internals support a `countOnly` mode (`getSchemaMeta` — column shape + row count, no row array at all), used by `describe_schema` and by correlate/relate to classify columns before touching rows. (There was also a projected mode via `getProjectedTable`, now dead — see the "surprising but intentional" note below.)
+2. **Don't materialize what isn't needed** — `parseTableStream`/`parseTrackDetailStream`'s shared internals support a `countOnly` mode (`getSchemaMeta` — column shape + row count, no row array at all), used by `describe_schema` and by correlate/relate to classify columns before touching rows.
 3. **A hard backstop for callers that DO need real rows** (`memoryGuard.ts`, `assertMemoryBudget`) — still called at the same `MEMORY_CHECK_INTERVAL` cadence from the SQLite-sink ingestion path (layer 4) too, now as cheap insurance against RefCache/binaryCache/frameCache retention rather than the primary defense — rows no longer accumulate in a JS array at all for the ingestion step, so the dominant OOM driver this layer was built for is gone for that step specifically. Row count alone was never a safe trigger on its own — confirmed live: 823K Allocations rows with rich backtraces exhausted the heap; 224K rows of the SAME schema from a different trace, where every backtrace happened to be one trivial sentinel frame, didn't come close.
 4. **Structural fix: stream straight into SQLite instead of a JS array** (`sqliteStore.ts`'s `SqliteTableWriter`, PMT:gravel-cape) — `parseTableStreamToSqlite`/`parseTrackDetailStreamToSqlite` write each row via a batched `INSERT` (transaction every `MEMORY_CHECK_INTERVAL` rows) into a per-(run,schema) SQLite table instead of pushing into `rows: NormalizedRow[]`. Memory use during ingestion is now bounded by the batch size, not the table size — verified live against a real 145,033-row/412MB Allocations trace (74,882 unique backtraces, genuine multi-frame stacks) with no heap pressure. Every verb (query/aggregate/find/get_row/correlate/relate/call_tree) now reads via SQL against the ingested table, so the memory-safety story extends all the way through — including call_tree, which used to be the one path exposed to a full-DOM OOM (PMT:elm-swamp; see the "surprising but intentional" note below).
 
@@ -99,8 +99,6 @@ All `xcrun` failures become a structured `XctraceError` with a `kind` discrimina
 **The persisted db does NOT use WAL — a deliberate reversal from the session-temp db's default.** WAL only earns its keep for concurrent reader/writer access; this db is write-once-during-ingest then read-only (no concurrent writer ever touches a schema after it loads), so WAL there is pure downside — it leaves `.db-wal`/`.db-shm` sidecar files next to the `.trace`, defeating the "one obvious file to manage" tidiness this feature is built around. `openSessionDb` takes a `journalMode` option (`"wal"` default, `"default"` for the persisted path) — the default rollback journal leaves only a transient `-journal` during a write transaction, deleted by SQLite on commit, so after ingest exactly one `.db` file sits next to the trace.
 
 **Orphaned `.db` files are deliberately left alone.** If a user deletes a `.trace` by hand but leaves its colocated `.db`, nothing actively cleans it up — a rare, low-urgency, harmless leftover for a human to notice, not worth building directory-scanning cleanup logic for (that would over-engineer the fallback path specifically called out as "the exception, not the common case").
-
-**`getProjectedTable` is now DEAD CODE.** It was correlate()'s narrow projected-parse fetch; PMT:ruddy-stork rewrote correlate() (and relate()) to read via SQL from the ingested SQLite tables instead, and PMT:dusk-floe already moved query/aggregate/find off it. Nothing calls `getProjectedTable` (or its `parseTableStreamProjected` helper) anymore — they're inert, and getProjectedTable's track-detail branch still carries a known-broken `as unknown as` cast from the gravel-cape cutover. Safe to delete in a cleanup pass; left in place only to keep ruddy-stork's blast radius contained.
 
 **Concurrent ingestion is serialized per session (PMT:ruddy-stork).** The single session db connection can't run two ingestion transactions at once — two concurrent `getTable` calls (e.g. relate()/correlate() self-joining a schema, or Promise.all over two different schemas) would hit "database is locked" (found live). `getTable` guards this two ways: a per-(run,schema) in-flight dedupe (`pendingIngest`) so same-schema concurrency shares one ingestion, and a per-session serialization chain (`sessionIngestChain`) so different-schema ingestions run one at a time.
 

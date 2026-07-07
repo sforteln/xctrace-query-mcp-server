@@ -19,9 +19,11 @@ import { XMLParser } from "fast-xml-parser";
 // gets the whole module.exports object regardless of static analysis.
 import sax from "sax";
 import type { Readable } from "node:stream";
+import type { DatabaseSync } from "node:sqlite";
 import { MiniXmlBuilder } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
 import { assertMemoryBudget, MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
+import { SqliteTableWriter } from "./sqliteStore.js";
 
 /** A resolved call frame from a track-detail inline backtrace. */
 export interface ResolvedFrame {
@@ -219,7 +221,14 @@ function parseCell(
   // check regardless of which shape a given "text-backtrace" column actually
   // uses (not independently confirmed live which shape Swift Concurrency's
   // columns carry in practice — this generalizes correctly either way).
-  if ((tagName === "backtrace" || tagName === "text-backtrace") && attrs.frame !== undefined) {
+  // "tagged-backtrace" (time-profile/cpu-profile sample stacks, PMT:elm-swamp)
+  // has the SAME <frame name addr><binary></frame> shape as "backtrace" — the
+  // only reason call_tree used a separate buffered parser was fast-xml-parser
+  // collapsing the repeated <frame> siblings, which the streaming MiniXmlBuilder
+  // (used here) arrays correctly. A ref-only <tagged-backtrace ref="N"/> is
+  // already resolved by parseCell's ref check above (returns the cached cell)
+  // before reaching here, so this branch only sees a real frame-bearing one.
+  if ((tagName === "backtrace" || tagName === "text-backtrace" || tagName === "tagged-backtrace") && attrs.frame !== undefined) {
     const frames = parseResolvedFrames(attrs, cache);
     const topName = frames[0]?.name ?? "";
     const cell: Cell = {
@@ -278,27 +287,11 @@ function parseCell(
 /**
  * Parse one <row> element into a NormalizedRow, mapping children positionally
  * onto the schema columns.
- *
- * `wanted`, when given, projects the result to only those mnemonics — but
- * every column is still fed through parseCell() regardless (never skipped),
- * because a later row's `ref` can point at an id this row defines on ANY
- * column, and queue-consumption order must stay correct for positional
- * fallback matching between same-engineering-type columns. Only the
- * ASSIGNMENT into the returned object is skipped for unwanted columns, so
- * the (possibly large) Cell value becomes garbage-collectable as soon as
- * this call returns instead of being retained in the final row array —
- * this is what makes correlate()'s column projection safe: real memory
- * savings for the common "many columns, only a few wanted" case, with zero
- * risk of breaking a wanted column's ref resolution. It does NOT reduce
- * RefCache's own retention of an id-registered heavy value for the rest of
- * the table's parse — see the caller-side note in session.ts's
- * getProjectedTable for why that's a separate, harder problem left alone here.
  */
 function parseRow(
   rowNode: Record<string, any>,
   cols: SchemaCol[],
-  cache: RefCache,
-  wanted?: Set<string>
+  cache: RefCache
 ): NormalizedRow {
   // fast-xml-parser gives us the row's child elements as keys on rowNode.
   // Children map positionally to cols, so we need them in document order.
@@ -326,14 +319,10 @@ function parseRow(
     // then fall back to iterating remaining tags in order.
     const expectedTag = col.engineeringType;
     const queue = tagQueues[expectedTag];
-    const keep = !wanted || wanted.has(col.mnemonic);
 
     if (queue && queue.length > 0) {
       const node = queue.shift()!;
-      // Always parse (ref/id registration + queue order must stay correct
-      // regardless of projection) — only the assignment is conditional.
-      const cell = parseCell(expectedTag, node, cache);
-      if (keep) result[col.mnemonic] = cell;
+      result[col.mnemonic] = parseCell(expectedTag, node, cache);
     } else {
       // Tag not found by engineering-type name — try positional fallback:
       // pick the first non-empty remaining queue in key order.
@@ -342,9 +331,8 @@ function parseRow(
       );
       if (fallbackKey) {
         const node = tagQueues[fallbackKey].shift()!;
-        const cell = parseCell(fallbackKey, node, cache);
-        if (keep) result[col.mnemonic] = cell;
-      } else if (keep) {
+        result[col.mnemonic] = parseCell(fallbackKey, node, cache);
+      } else {
         result[col.mnemonic] = null;
       }
     }
@@ -428,19 +416,9 @@ interface StreamParseResult {
  * column per row, held for the table's whole lifetime) for callers that only
  * need column shape + a row count (describe_schema).
  *
- * `wanted`/`timeMnemonic`/`timeRange` (mutually exclusive with countOnly)
- * implement PMT:still-wisp/PMT:rose-loch's column projection + real
- * streaming timeRange for correlate(): every column is still parsed (see
- * parseRow's own doc comment for why — ref/id correctness), but only
- * `wanted` mnemonics are RETAINED in the returned row, so an unwanted
- * column's Cell (potentially large — view-hierarchy, cause-graph-node, etc.)
- * becomes garbage-collectable immediately instead of living in the final
- * `rows` array for the table's whole lifetime. When `timeRange` is given,
- * a row outside the window is discarded during the parse (never pushed to
- * `rows` at all) rather than fetched-then-filtered. This does NOT reduce
- * RefCache's own retention of an id-registered heavy value for the rest of
- * the parse — see session.ts's getProjectedTable for why that's a separate,
- * unverified-safe problem left alone here.
+ * `sqlite`, when given, streams each parsed row straight into a SQLite table
+ * (PMT:gravel-cape) instead of accumulating a JS `rows` array — the real
+ * ingestion path; `rows` in the resolved result stays empty.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
  *         matched nothing), "parse-error" on malformed XML.
@@ -449,12 +427,10 @@ function parseTableStreamInternal(
   stdout: Readable,
   opts: {
     countOnly?: boolean;
-    wanted?: Set<string>;
-    timeMnemonic?: string;
-    timeRange?: { startNs?: number; endNs?: number };
+    sqlite?: { db: DatabaseSync; tableName: string };
   } = {}
 ): Promise<StreamParseResult> {
-  const { countOnly = false, wanted, timeMnemonic, timeRange } = opts;
+  const { countOnly = false, sqlite } = opts;
   return new Promise((resolve, reject) => {
     let settled = false;
     const settleReject = (err: XctraceError) => {
@@ -488,6 +464,7 @@ function parseTableStreamInternal(
     const rows: NormalizedRow[] = [];
     let rowCount = 0;
     let cache: RefCache = new Map();
+    let sqliteWriter: SqliteTableWriter | null = null;
 
     saxStream.on("opentag", (node) => {
       const tag = node.name;
@@ -525,26 +502,32 @@ function parseTableStreamInternal(
           if (tag === "schema") {
             schemaName = String(builtNode["@_name"] ?? "");
             cols = parseSchemaCols(builtNode);
+            // Column shape is only known once the <schema> block closes —
+            // this is the earliest point a SqliteTableWriter can be created,
+            // before any <row> arrives.
+            if (sqlite) {
+              sqliteWriter = new SqliteTableWriter(sqlite.db, sqlite.tableName, cols);
+            }
           } else if (tag === "row") {
             rowCount++;
             if (!countOnly) {
-              const row = parseRow(builtNode, cols, cache, wanted);
-              const inWindow = (() => {
-                if (!timeMnemonic || !timeRange) return true;
-                const t = row[timeMnemonic]?.raw;
-                const tNs = typeof t === "number" ? t : NaN;
-                if (!isFinite(tNs)) return true; // can't judge — don't drop unfiltered data
-                if (timeRange.startNs !== undefined && tNs < timeRange.startNs) return false;
-                if (timeRange.endNs !== undefined && tNs > timeRange.endNs) return false;
-                return true;
-              })();
-              if (inWindow) rows.push(row);
+              const row = parseRow(builtNode, cols, cache);
+              // Straight swap, not a parallel path (PMT:gravel-cape) — a
+              // sqlite-sink parse writes to disk instead of accumulating
+              // `rows`, it never does both.
+              if (sqliteWriter) sqliteWriter.writeRow(row);
+              else rows.push(row);
 
               // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE process,
               // not just this call, so this must fire well before that point.
-              if (rows.length % MEMORY_CHECK_INTERVAL === 0) {
+              // Keyed off rowCount (not rows.length) so this still fires at
+              // the same cadence in sqlite-sink mode, where `rows` never
+              // grows — RefCache retention (the thing this really guards
+              // against) scales with rowCount regardless of where parsed
+              // rows end up.
+              if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
                 try {
-                  assertMemoryBudget(rows.length, schemaName);
+                  assertMemoryBudget(rowCount, schemaName);
                 } catch (err) {
                   settleReject(err as XctraceError);
                   // sax's stream wrapper predates .destroy() (it's built on
@@ -578,6 +561,7 @@ function parseTableStreamInternal(
         );
         return;
       }
+      if (sqliteWriter) sqliteWriter.finish();
       settleResolve({ schema: schemaName, cols, rows, rowCount });
     });
 
@@ -606,19 +590,26 @@ export function parseTableStreamMeta(stdout: Readable): Promise<SchemaMeta> {
   return parseTableStreamInternal(stdout, { countOnly: true }).then(({ cols, rowCount }) => ({ cols, rowCount }));
 }
 
+/** Column shape + row count for a table streamed into SQLite instead of a JS array. */
+export interface SqliteIngestResult {
+  schema: string;
+  cols: SchemaCol[];
+  rowCount: number;
+}
+
 /**
- * Column-projected, time-windowed parse — for correlate(), which only ever
- * needs a small fixed set of mnemonics (start/duration/timestamp/thread/
- * groupBy/measure) and can narrow to a timeRange before full materialization.
- * See {@link parseTableStreamInternal} for what this does and does not solve.
+ * Streams a table straight into a SQLite table instead of a JS array —
+ * PMT:gravel-cape's ingestion path. Reuses parseRow/parseCell/RefCache
+ * unchanged; only the last step (push into `rows` vs. INSERT) differs, via
+ * {@link SqliteTableWriter}. `rows` in the resolved result is always empty —
+ * callers of this function must read data back out via SQL, not `.rows`.
  */
-export function parseTableStreamProjected(
+export function parseTableStreamToSqlite(
   stdout: Readable,
-  wanted: Set<string>,
-  timeMnemonic?: string,
-  timeRange?: { startNs?: number; endNs?: number }
-): Promise<ParsedTable> {
-  return parseTableStreamInternal(stdout, { wanted, timeMnemonic, timeRange }).then(
-    ({ schema, cols, rows }) => ({ schema, cols, rows })
+  db: DatabaseSync,
+  tableName: string
+): Promise<SqliteIngestResult> {
+  return parseTableStreamInternal(stdout, { sqlite: { db, tableName } }).then(
+    ({ schema, cols, rowCount }) => ({ schema, cols, rowCount })
   );
 }

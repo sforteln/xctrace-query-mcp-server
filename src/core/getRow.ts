@@ -11,9 +11,17 @@
  * surfaces the top-of-stack PC, frame count, and calling process from the
  * parsed kperf-bt children, and tells the agent to use call_tree for a full
  * aggregated + symbolicated call tree across all samples.
+ *
+ * PMT:dusk-floe: fetches the one SQL row by _row_idx and hydrates it into the
+ * same Cell shape the old JS-array path produced (buildCellDetail/
+ * extractKperfBt below are UNCHANGED — they always operated on Cell objects,
+ * not the array itself, so hydrateCell from sqlHydrate.ts slots in as a drop-
+ * in row source).
  */
-import { getTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints } from "../engine/roleHints.js";
+import { hydrateNormalizedRow, makeFrameLookup, makeInternResolver } from "../engine/sqlHydrate.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import type { Cell, ResolvedFrame } from "../engine/parseTable.js";
 import type { ColumnRole, WeightUnit } from "../engine/roleInference.js";
 
@@ -163,20 +171,33 @@ export async function getRow(
   opts: { run?: number; position?: number } = {}
 ): Promise<GetRowResult> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const table = await getTable(sessionId, run, schema, opts.position);
+  const handle = await getTable(sessionId, run, schema, opts.position);
 
-  if (rowIndex < 0 || rowIndex >= table.rows.length) {
+  if (rowIndex < 0 || rowIndex >= handle.rowCount) {
     throw new RangeError(
-      `rowIndex ${rowIndex} is out of bounds (table has ${table.rows.length} rows).`
+      `rowIndex ${rowIndex} is out of bounds (table has ${handle.rowCount} rows).`
     );
   }
 
-  const row = table.rows[rowIndex];
-  const classified = classifyWithHints(schema, table.cols);
+  const db = await getDb(sessionId);
+  const sqlRow = db
+    .prepare(`SELECT * FROM ${quoteIdent(handle.tableName)} WHERE ${quoteIdent(ROW_IDX_COLUMN)} = ?`)
+    .get(rowIndex) as Record<string, unknown> | undefined;
+
+  if (!sqlRow) {
+    throw new RangeError(
+      `rowIndex ${rowIndex} is out of bounds (table has ${handle.rowCount} rows).`
+    );
+  }
+
+  const getFrames = makeFrameLookup(db);
+  const row = hydrateNormalizedRow(handle.cols, sqlRow, getFrames, makeInternResolver(db));
+
+  const classified = classifyWithHints(schema, handle.cols);
   const roleMap = new Map(classified.map((c) => [c.mnemonic, c.roleInfo]));
 
   const cells: Record<string, CellDetail | null> = {};
-  for (const col of table.cols) {
+  for (const col of handle.cols) {
     const roleInfo = roleMap.get(col.mnemonic);
     cells[col.mnemonic] = buildCellDetail(
       col.mnemonic,
@@ -190,7 +211,7 @@ export async function getRow(
     schema,
     run,
     rowIndex,
-    totalRows: table.rows.length,
+    totalRows: handle.rowCount,
     cells,
   };
 }

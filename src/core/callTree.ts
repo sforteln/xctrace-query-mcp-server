@@ -1,76 +1,28 @@
 /**
- * callTree — folded call tree from tagged-backtrace columns.
+ * callTree — folded call tree from backtrace columns, SQLite-backed.
  *
- * The `time-profile` schema carries inline symbolicated call stacks as
- * `<tagged-backtrace>` elements with `<frame name="fn" addr="0x...">` children.
- * Frames are stored LEAF-FIRST (deepest call first), so we reverse them to
- * build a root-to-leaf prefix tree weighted by sample duration (the `weight`
- * column in nanoseconds).
- *
- * The generic `parseTableXml` can't handle `tagged-backtrace` because it uses
- * a global `isArray: () => false` config that collapses repeated `<frame>`
- * siblings. This module uses its own parser config with `isArray` for frame
- * and row arrays.
- *
- * Other schemas: if the schema has no `tagged-backtrace` column we return a
- * structured note suggesting `time-profile` instead.
+ * The `time-profile`/`cpu-profile` schemas carry inline symbolicated call
+ * stacks as `<tagged-backtrace>` frames; Allocations (track-detail) carries a
+ * resolved `<backtrace>` per row. Both now ingest through the normal streaming
+ * path (PMT:elm-swamp) — the tagged-backtrace column is a backtrace column
+ * like any other (see sqliteStore.ts's isBacktraceCol), its frames stored as
+ * queryable rows in the shared `frames` table. call_tree issues ONE bounded
+ * SELECT (weight + backtrace_id, filtered by thread/timeRange), resolves each
+ * backtrace_id to its frames from that table, and folds — the full table's
+ * rows never materialize at once, and there is no bespoke XML parser here
+ * anymore (the old buffered ctParser existed only because fast-xml-parser
+ * collapsed repeated <frame> siblings; the streaming MiniXmlBuilder arrays
+ * them correctly, so time-profile parses through the same path as everything
+ * else). Frames are LEAF-FIRST (deepest call first); we reverse for a
+ * root-to-leaf prefix tree weighted by the sample's weight column.
  */
-import { XMLParser } from "fast-xml-parser";
-import { exportXPath, buildTableXPath, buildTableXPathAtPosition, XctraceError } from "../engine/xctrace.js";
-import { exportToc } from "../engine/xctrace.js";
-import { getSession, getTable, lastRun as sessionLastRun } from "../engine/session.js";
-import { assertUnambiguousSchema } from "../engine/schemaModel.js";
-import { hintFor } from "../engine/roleHints.js";
-import type { ResolvedFrame } from "../engine/parseTable.js";
-
-// ─── XML parser ───────────────────────────────────────────────────────────────
-
-const ctParser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  parseTagValue: false,
-  parseAttributeValue: false,
-  isArray: (tagName) => tagName === "frame" || tagName === "row" || tagName === "node",
-  allowBooleanAttributes: true,
-});
-
-function asArray<T>(v: T | T[] | undefined): T[] {
-  if (v === undefined || v === null) return [];
-  return Array.isArray(v) ? v : [v];
-}
-
-// ─── Ref/id resolution ────────────────────────────────────────────────────────
-
-type RefCache = Map<number, Record<string, any>>;
-
-/** Recursively register every element with @_id into the cache. */
-function registerIds(obj: unknown, cache: RefCache): void {
-  if (!obj || typeof obj !== "object") return;
-  if (Array.isArray(obj)) {
-    for (const item of obj) registerIds(item, cache);
-    return;
-  }
-  const record = obj as Record<string, any>;
-  const id = record["@_id"];
-  if (id !== undefined) {
-    cache.set(Number(id), record);
-  }
-  for (const key of Object.keys(record)) {
-    if (!key.startsWith("@_") && key !== "#text") {
-      registerIds(record[key], cache);
-    }
-  }
-}
-
-/** Resolve a node that may be a ref-only placeholder. */
-function resolveRef(obj: Record<string, any> | undefined, cache: RefCache): Record<string, any> | null {
-  if (!obj) return null;
-  const ref = obj["@_ref"];
-  if (ref !== undefined) {
-    return cache.get(Number(ref)) ?? null;
-  }
-  return obj;
-}
+import type { DatabaseSync } from "node:sqlite";
+import { XctraceError } from "../engine/xctrace.js";
+import { getSession, getTable, getDb, lastRun as sessionLastRun } from "../engine/session.js";
+import { classifyWithHints, hintFor } from "../engine/roleHints.js";
+import { firstWithRole } from "../engine/roleInference.js";
+import { quoteIdent, isBacktraceCol } from "../engine/sqliteStore.js";
+import type { SchemaCol } from "../engine/parseTable.js";
 
 // ─── Tree types ───────────────────────────────────────────────────────────────
 
@@ -223,17 +175,24 @@ function getOrCreate(map: Map<string, TreeNode>, key: string, name: string, bina
   return node;
 }
 
-function addSample(roots: Map<string, TreeNode>, frames: Array<{ name: string; binary: string | null }>, weight: number): void {
+/**
+ * Add one distinct stack to the tree with its AGGREGATED weight + sample count
+ * (PMT:elm-swamp folds per distinct backtrace, not per row — identical stacks
+ * share a backtrace_id, so `weight` is the SUM and `count` the COUNT across all
+ * that stack's samples). Arithmetically identical to `count` individual
+ * single-sample adds, because every accumulation here is additive.
+ */
+function addSample(roots: Map<string, TreeNode>, frames: Array<{ name: string; binary: string | null }>, weight: number, count: number): void {
   let level = roots;
   for (let i = 0; i < frames.length; i++) {
     const { name, binary } = frames[i];
     const key = `${name}@${binary ?? "?"}`;
     const node = getOrCreate(level, key, name, binary);
     node.totalWeight += weight;
-    node.totalSamples += 1;
+    node.totalSamples += count;
     if (i === frames.length - 1) {
       node.selfWeight += weight;
-      node.selfSamples += 1;
+      node.selfSamples += count;
     }
     level = node.children;
   }
@@ -259,7 +218,8 @@ interface HotAccum {
 function addHotSample(
   hot: Map<string, HotAccum>,
   frames: Array<{ name: string; binary: string | null }>,
-  weight: number
+  weight: number,
+  count: number
 ): void {
   const seenThisSample = new Set<string>();
   for (let i = 0; i < frames.length; i++) {
@@ -270,14 +230,17 @@ function addHotSample(
       entry = { name, binary, totalWeight: 0, totalSamples: 0, selfWeight: 0, selfSamples: 0 };
       hot.set(key, entry);
     }
+    // Dedup within this one distinct stack (a recursive function counts once
+    // for total), same as the per-sample dedup was — all `count` samples of
+    // this backtrace share the identical stack, so their aggregate lands here.
     if (!seenThisSample.has(key)) {
       seenThisSample.add(key);
       entry.totalWeight += weight;
-      entry.totalSamples += 1;
+      entry.totalSamples += count;
     }
     if (i === frames.length - 1) {
       entry.selfWeight += weight;
-      entry.selfSamples += 1;
+      entry.selfSamples += count;
     }
   }
 }
@@ -684,20 +647,109 @@ function emptyCallTreeResult(
 }
 
 /**
- * call_tree for track-detail schemas (Allocations/Allocations List) —
- * weighted by allocated bytes (the schema's pinned primaryWeight, "size" for
- * Allocations/Allocations List) instead of sample duration, folding each
- * row's already-resolved backtrace the same way a tagged-backtrace sample
- * folds. Reuses the normal session-cached getTable() (not a bespoke xpath
- * fetch the way the schema-table path below needs) since parseTrackDetail.ts
- * already produces correctly-resolved frames (including the ref/id dedup fix —
- * see PMT:spare-cairn) via the same cache every other verb uses.
+ * Fold a call tree from the ingested SQLite table (PMT:elm-swamp), bounded in
+ * memory: AGGREGATE weight + sample count per DISTINCT backtrace_id in SQL
+ * first (identical stacks already share a backtrace_id via the frames dedup),
+ * then process each distinct stack ONCE — resolving its frames on the spot and
+ * letting them GC before the next. This is what keeps the fold bounded to
+ * (tree size + one backtrace): the earlier version memoized every unique
+ * backtrace's full frame array across the whole fold and OOM'd at ~74K
+ * backtraces on a real Allocations trace (found live). Aggregating and folding
+ * per distinct stack is arithmetically identical to per-row folding because
+ * every accumulation in addSample/addHotSample is additive. Shared by both
+ * call_tree sources.
+ */
+interface FoldResult {
+  roots: Map<string, TreeNode>;
+  hot: Map<string, HotAccum>;
+  totalWeight: number;
+  totalSamples: number;
+}
+
+function foldFromSql(
+  db: DatabaseSync,
+  tableName: string,
+  weightMnemonic: string,
+  btMnemonic: string,
+  view: "tree" | "hot" | "spine",
+  filters: {
+    threadCol?: string | null;
+    thread?: string;
+    timeCol?: string | null;
+    timeRange?: { startNs?: number; endNs?: number };
+  } = {}
+): FoldResult {
+  const roots = new Map<string, TreeNode>();
+  const hot = new Map<string, HotAccum>();
+  let totalWeight = 0;
+  let totalSamples = 0;
+
+  const btIdCol = quoteIdent(`${btMnemonic}__backtrace_id`);
+  const conds: string[] = [`${btIdCol} IS NOT NULL`];
+  const params: Array<string | number> = [];
+  if (filters.threadCol && filters.thread) {
+    conds.push(`${quoteIdent(`${filters.threadCol}__fmt`)} LIKE ?`);
+    params.push(`%${filters.thread}%`);
+  }
+  if (filters.timeCol && filters.timeRange) {
+    if (filters.timeRange.startNs !== undefined) {
+      conds.push(`CAST(${quoteIdent(filters.timeCol)} AS REAL) >= ?`);
+      params.push(filters.timeRange.startNs);
+    }
+    if (filters.timeRange.endNs !== undefined) {
+      conds.push(`CAST(${quoteIdent(filters.timeCol)} AS REAL) <= ?`);
+      params.push(filters.timeRange.endNs);
+    }
+  }
+
+  // One (weight, count) per distinct stack — the filters apply per-row BEFORE
+  // the grouping, so thread/timeRange scoping stays correct.
+  const aggStmt = db.prepare(
+    `SELECT ${btIdCol} AS btid, SUM(CAST(${quoteIdent(weightMnemonic)} AS REAL)) AS w, COUNT(*) AS cnt ` +
+    `FROM ${quoteIdent(tableName)} WHERE ${conds.join(" AND ")} GROUP BY ${btIdCol}`
+  );
+  const framesStmt = db.prepare(
+    "SELECT name, binary FROM frames WHERE backtrace_id = ? ORDER BY frame_index ASC"
+  );
+
+  for (const g of aggStmt.iterate(...params) as Iterable<{ btid: number; w: number; cnt: number }>) {
+    const weight = Number(g.w);
+    if (!isFinite(weight) || weight <= 0) continue;
+    const frameRows = framesStmt.all(g.btid) as Array<{ name: string; binary: string | null }>;
+    if (frameRows.length === 0) continue;
+    // Frames are leaf-first (frame_index 0 = deepest) — reverse for a root-first tree.
+    const frames = [];
+    for (let i = frameRows.length - 1; i >= 0; i--) {
+      frames.push({ name: frameRows[i].name || "?", binary: frameRows[i].binary });
+    }
+    // Build only what this view consumes (buildViewResult reads `roots` for
+    // tree/spine, `hot` for hot) — building both is wasted memory, and the
+    // tree is the heavier structure, so skipping it for "hot" matters most.
+    if (view === "hot") addHotSample(hot, frames, weight, g.cnt);
+    else addSample(roots, frames, weight, g.cnt);
+    totalWeight += weight;
+    totalSamples += g.cnt;
+  }
+  return { roots, hot, totalWeight, totalSamples };
+}
+
+/** The backtrace column's mnemonic for a schema (isBacktraceCol picks the one the writer stored as __backtrace_id). */
+function backtraceMnemonic(cols: SchemaCol[]): string | null {
+  return cols.find(isBacktraceCol)?.mnemonic ?? null;
+}
+
+/**
+ * call_tree for track-detail schemas (Allocations/Allocations List) — weighted
+ * by allocated bytes (the schema's pinned primaryWeight, "size") instead of
+ * sample duration, folding from the SQLite table (PMT:elm-swamp) the same way
+ * the schema-table path does.
  *
- * Deliberately does NOT support `thread`/`timeRange` — track-detail rows have
- * no comparable columns (`thread-id`, not `thread`; `timestamp` is a
- * formatted string, not a raw ns value like schema-table's time columns) and
- * building that out is real design work, not a quick shim — noted honestly
- * in the response rather than silently ignored or half-applied.
+ * Supports `timeRange` now that track-detail's timestamp is parsed to numeric
+ * ns at ingest (PMT:light-reed) — the filter pushes into foldFromSql's SELECT
+ * exactly like the schema-table path. `thread` is still unsupported: an
+ * Allocations row's thread is a bare hex `thread-id` (engineering-type
+ * "string"), not a "thread"-role column with a display name to substring-match
+ * — noted honestly in the response when passed.
  */
 async function buildTrackDetailCallTree(
   sessionId: string,
@@ -710,9 +762,9 @@ async function buildTrackDetailCallTree(
   maxDepth: number,
   topN: number
 ): Promise<CallTreeResult> {
-  let table;
+  let handle;
   try {
-    table = await getTable(sessionId, run, schema, position);
+    handle = await getTable(sessionId, run, schema, position);
   } catch (err) {
     if (err instanceof XctraceError && err.kind === "empty-result") {
       return emptyCallTreeResult(schema, run, view, thread, "B", `No data found for schema "${schema}" in run ${run}.`);
@@ -720,8 +772,8 @@ async function buildTrackDetailCallTree(
     throw err;
   }
 
-  const backtraceCol = table.cols.find((c) => c.engineeringType === "backtrace");
-  if (!backtraceCol) {
+  const btMnemonic = backtraceMnemonic(handle.cols);
+  if (!btMnemonic) {
     const isLeaks = schema.startsWith("Leaks/");
     return emptyCallTreeResult(
       schema, run, view, thread, "B",
@@ -735,41 +787,23 @@ async function buildTrackDetailCallTree(
   }
 
   const weightMnemonic = hintFor(schema)?.primaryWeight ?? "size";
+  // Time filter pushes into the fold's SELECT (PMT:light-reed) — the timestamp
+  // is now a numeric-ns column just like a schema-table time role. thread has
+  // no comparable column here, so it's still ignored (noted below).
+  const classified = classifyWithHints(schema, handle.cols);
+  const timeCol = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
+  const db = await getDb(sessionId);
+  const { roots, hot, totalWeight, totalSamples } = foldFromSql(
+    db, handle.tableName, weightMnemonic, btMnemonic, view,
+    { timeCol, timeRange }
+  );
 
-  const roots: Map<string, TreeNode> = new Map();
-  const hot: Map<string, HotAccum> = new Map();
-  let totalWeight = 0;
-  let totalSamples = 0;
+  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, "bytes", roots, hot, totalWeight, totalSamples);
 
-  for (const row of table.rows) {
-    const btCell = row[backtraceCol.mnemonic];
-    const resolvedFrames = btCell?.resolvedFrames;
-    if (!resolvedFrames || resolvedFrames.length === 0) continue;
-
-    const weightCell = row[weightMnemonic];
-    const weightValue = typeof weightCell?.raw === "number" ? weightCell.raw : 0;
-    if (!isFinite(weightValue) || weightValue <= 0) continue;
-
-    // Resolved frames are leaf-first, same convention as tagged-backtrace —
-    // reverse for a root-first tree.
-    const frames = [...resolvedFrames].reverse().map((f: ResolvedFrame) => ({
-      name: f.name || "?",
-      binary: f.binaryName,
-    }));
-
-    addSample(roots, frames, weightValue);
-    if (view === "hot") addHotSample(hot, frames, weightValue);
-    totalWeight += weightValue;
-    totalSamples++;
-  }
-
-  const result = buildViewResult(schema, run, view, thread, undefined, maxDepth, topN, "bytes", roots, hot, totalWeight, totalSamples);
-
-  if (thread || timeRange) {
-    const ignored = [thread ? "thread" : null, timeRange ? "timeRange" : null].filter(Boolean).join(" and ");
+  if (thread) {
     const filterNote =
-      `${ignored} ${thread && timeRange ? "were" : "was"} ignored — not yet supported for track-detail ` +
-      `schemas like "${schema}" (no comparable thread/time columns to filter on).`;
+      `thread was ignored — not yet supported for track-detail schemas like "${schema}" ` +
+      "(an allocation's thread-id is a bare hex value, not a named thread column to match on).";
     result.note = result.note ? `${filterNote} ${result.note}` : filterNote;
   }
 
@@ -797,44 +831,25 @@ export async function callTree(
     return buildTrackDetailCallTree(sessionId, schema, run, position, view, thread, timeRange, maxDepth, topN);
   }
 
-  // Export the raw XML for this schema. callTree builds its own xpath rather
-  // than going through session.getTable, so it needs its own ambiguity guard.
-  let xpath: string;
-  if (position !== undefined) {
-    xpath = buildTableXPathAtPosition(run, schema, position);
-  } else {
-    assertUnambiguousSchema(session.schemaModel, run, schema);
-    xpath = buildTableXPath(run, schema);
-  }
-  const xml = await exportXPath(session.tracePath, xpath);
-
-  const doc = ctParser.parse(xml) as Record<string, any>;
-  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
-
-  if (nodes.length === 0) {
-    return emptyCallTreeResult(schema, run, view, thread, "ns", `No data found for schema "${schema}" in run ${run}.`);
+  // Ingest via the NORMAL streaming path — no bespoke XML parser anymore
+  // (getTable handles the ambiguity guard + position). tagged-backtrace is a
+  // backtrace column like any other now (PMT:elm-swamp).
+  let handle;
+  try {
+    handle = await getTable(sessionId, run, schema, position);
+  } catch (err) {
+    if (err instanceof XctraceError && err.kind === "empty-result") {
+      return emptyCallTreeResult(schema, run, view, thread, "ns", `No data found for schema "${schema}" in run ${run}.`);
+    }
+    throw err;
   }
 
-  // Check whether the schema has a tagged-backtrace column.
-  const firstSchema = nodes[0].schema as Record<string, any>;
-  const cols = asArray<Record<string, any>>(firstSchema?.col);
-  const hasTaggedBt = cols.some(c => String(c["engineering-type"] ?? "") === "tagged-backtrace");
-
-  // Verified live: cpu-profile's weight column is engineering-type
-  // "cycle-weight" (raw CPU cycles) — structurally parseable the same way as
-  // time-profile's "weight" (nanoseconds, despite the generic type name),
-  // but a different physical quantity. Detected from the real schema, never
-  // assumed from the schema name, so any future sample-based schema with a
-  // cycle-weight column gets this for free too.
-  const weightCol = cols.find((c) => String(c.mnemonic ?? "") === "weight");
-  const weightTag = String(weightCol?.["engineering-type"] ?? "weight");
-  const weightKind: WeightKind = weightTag === "cycle-weight" ? "cycles" : "ns";
-
-  if (!hasTaggedBt) {
+  const taggedBtCol = handle.cols.find((c) => c.engineeringType === "tagged-backtrace");
+  if (!taggedBtCol) {
     // A plain "backtrace"-typed column (distinct from "tagged-backtrace")
     // carries one already-resolved stack per row, not a sample tree to
     // aggregate — get_row already returns it directly, no call_tree needed.
-    const hasResolvedBt = cols.some((c) => String(c["engineering-type"] ?? "") === "backtrace");
+    const hasResolvedBt = handle.cols.some((c) => c.engineeringType === "backtrace");
     return emptyCallTreeResult(
       schema, run, view, thread, "ns",
       hasResolvedBt
@@ -843,74 +858,24 @@ export async function callTree(
     );
   }
 
-  // Build the call tree (always — "spine" walks it too). "hot" additionally
-  // accumulates a path-independent per-function map alongside it, same pass.
-  const roots: Map<string, TreeNode> = new Map();
-  const hot: Map<string, HotAccum> = new Map();
-  let totalWeight = 0;
-  let totalSamples = 0;
+  // Verified live: cpu-profile's weight column is engineering-type
+  // "cycle-weight" (raw CPU cycles) — a different physical quantity from
+  // time-profile's "weight" (nanoseconds despite the generic type name).
+  // Detected from the real column, never assumed from the schema name.
+  const weightCol = handle.cols.find((c) => c.mnemonic === "weight");
+  const weightKind: WeightKind = weightCol?.engineeringType === "cycle-weight" ? "cycles" : "ns";
 
-  for (const node of nodes) {
-    const cache: RefCache = new Map();
+  // Thread (substring on fmt) and timeRange (on the primary time column, which
+  // for time-profile is the sample-time column) filters push into the SELECT.
+  const classified = classifyWithHints(schema, handle.cols);
+  const threadCol = handle.cols.find((c) => c.engineeringType === "thread")?.mnemonic ?? null;
+  const timeCol = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
-    for (const rowNode of asArray<Record<string, any>>(node.row)) {
-      // Register all id definitions in this row first (forward-ref safety).
-      registerIds(rowNode, cache);
-
-      // Weight — skip sentinel rows. The row's XML element is named after
-      // the column's engineering-type, not its mnemonic (same convention
-      // parseTable.ts documents) — "weight" only coincidentally matches for
-      // time-profile; cpu-profile's own weight column is tagged
-      // <cycle-weight>, and hardcoding "weight" here silently dropped every
-      // single row for that schema (weightNode always undefined). Resolved
-      // from the real schema instead.
-      const weightNode = resolveRef(rowNode[weightTag] as Record<string, any>, cache);
-      if (!weightNode || weightNode["@_fmt"] === undefined) continue;
-      const weightValue = Number(weightNode["#text"] ?? "0");
-      if (!isFinite(weightValue) || weightValue <= 0) continue;
-
-      // Thread filter.
-      if (thread) {
-        const threadNode = resolveRef(rowNode.thread as Record<string, any>, cache);
-        const fmt = threadNode?.["@_fmt"] ?? "";
-        if (!fmt.includes(thread)) continue;
-      }
-
-      // TimeRange filter on sample-time.
-      if (timeRange) {
-        const timeNode = resolveRef(rowNode["sample-time"] as Record<string, any>, cache);
-        const timeNs = Number(timeNode?.["#text"] ?? "0");
-        if (timeRange.startNs !== undefined && timeNs < timeRange.startNs) continue;
-        if (timeRange.endNs !== undefined && timeNs > timeRange.endNs) continue;
-      }
-
-      // Frames from tagged-backtrace.
-      const btNode = resolveRef(rowNode["tagged-backtrace"] as Record<string, any>, cache);
-      if (!btNode) continue;
-      const frameNodes = asArray<Record<string, any>>(btNode.frame);
-      if (frameNodes.length === 0) continue;
-
-      const frames: Array<{ name: string; binary: string | null }> = [];
-      for (const fNode of frameNodes) {
-        const resolved = resolveRef(fNode, cache);
-        if (!resolved) continue;
-        const name = resolved["@_name"] ?? "?";
-        const binaryNode = resolveRef(resolved.binary as Record<string, any>, cache);
-        const binary = binaryNode?.["@_name"] ?? null;
-        frames.push({ name, binary });
-      }
-
-      if (frames.length === 0) continue;
-
-      // Frames are leaf-first in the XML; reverse for root-first tree.
-      frames.reverse();
-
-      addSample(roots, frames, weightValue);
-      if (view === "hot") addHotSample(hot, frames, weightValue);
-      totalWeight += weightValue;
-      totalSamples++;
-    }
-  }
+  const db = await getDb(sessionId);
+  const { roots, hot, totalWeight, totalSamples } = foldFromSql(
+    db, handle.tableName, weightCol?.mnemonic ?? "weight", taggedBtCol.mnemonic, view,
+    { threadCol, thread, timeCol, timeRange }
+  );
 
   return buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples);
 }

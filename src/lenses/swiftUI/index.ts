@@ -6,11 +6,20 @@ import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
 import { envelope, toMcpText } from "../../core/response.js";
 import { safeTool, text } from "../../core/toolUtils.js";
-import { getSchemaModel, getTableAtPosition, lastRun as sessionLastRun } from "../../engine/session.js";
+import { getSchemaModel, getTableAtPosition, getDb, lastRun as sessionLastRun } from "../../engine/session.js";
 import { findSchemaTableEntries } from "../../engine/schemaModel.js";
-import { compareRows } from "../../core/tableFilter.js";
 import { aggregateTable } from "../../core/aggregate.js";
-import type { ParsedTable } from "../../engine/parseTable.js";
+import {
+  rawCol,
+  buildDisplaySelect,
+  resolveBacktraceDisplayValues,
+  resolveInternedDisplayValues,
+  makeFrameLookup,
+  makeInternResolver,
+  type DisplayField,
+} from "../../engine/sqlHydrate.js";
+import { isBacktraceCol, quoteIdent, ROW_IDX_COLUMN } from "../../engine/sqliteStore.js";
+import type { SqliteTableHandle } from "../../engine/session.js";
 
 const SWIFTUI_UPDATES_SCHEMA = "swiftui-updates";
 const SWIFTUI_CHANGES_SCHEMA = "swiftui-changes";
@@ -88,45 +97,71 @@ const HEAVY_COLUMNS = new Set([
   "full-cause-graph-node",
 ]);
 
-/** Paginate and format a ParsedTable into the standard query result shape. */
-function paginateTable(
-  table: ParsedTable,
+/**
+ * Paginate and format a SqliteTableHandle's rows into the standard query
+ * result shape — a direct scoped SQL page (ORDER BY/LIMIT/OFFSET), not a
+ * fetchAllRowsHydrated full-table scan (PMT:warm-mica). handle.rowCount is
+ * already known (from ingestion) so totalRows needs no extra query.
+ */
+async function paginateTable(
+  sessionId: string,
+  handle: SqliteTableHandle,
   schema: string,
   run: number,
   opts: { sort?: { by: string; dir?: "asc" | "desc" }; limit?: number; offset?: number; columns?: string[] }
 ) {
   const limit = Math.min(opts.limit ?? 20, 500);
   const offset = opts.offset ?? 0;
-  const allMnemonics = table.cols.map((c) => c.mnemonic);
+  const allMnemonics = handle.cols.map((c) => c.mnemonic);
   const columnsShown =
     opts.columns && opts.columns.length > 0
       ? opts.columns.filter((m) => allMnemonics.includes(m))
       : allMnemonics.filter((m) => !HEAVY_COLUMNS.has(m));
 
-  type Indexed = { tableIndex: number; row: (typeof table.rows)[0] };
-  let rows: Indexed[] = table.rows.map((row, i) => ({ tableIndex: i, row }));
+  const db = await getDb(sessionId);
+  const table = quoteIdent(handle.tableName);
+  const colByMnemonic = new Map(handle.cols.map((c) => [c.mnemonic, c]));
+  const displayFields: DisplayField[] = columnsShown.map((m) => ({
+    ref: m,
+    base: m,
+    isBacktrace: isBacktraceCol(colByMnemonic.get(m)!),
+  }));
+  const displayPlan = buildDisplaySelect(displayFields);
+  const selectCols = [quoteIdent(ROW_IDX_COLUMN), ...displayPlan.selectCols];
 
-  if (opts.sort?.by) {
-    const by = opts.sort.by;
-    const dir = opts.sort.dir ?? "asc";
-    rows = [...rows].sort((a, b) => compareRows(a.row, b.row, by, dir));
+  const totalRows = handle.rowCount;
+
+  // Sort on the raw column, like query.ts's own ORDER BY — same known minor
+  // divergence from the old JS natural-sort comparator (localeCompare with
+  // {numeric:true}) for TEXT columns with embedded digits, already accepted
+  // there (PMT:dusk-floe); no explicit sort falls back to insertion order.
+  const orderBy = opts.sort?.by
+    ? `ORDER BY ${quoteIdent(rawCol(opts.sort.by))} ${(opts.sort.dir ?? "asc").toUpperCase()}`
+    : `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC`;
+
+  const pageStmt = db.prepare(
+    `SELECT ${selectCols.join(", ")} FROM ${table} ${orderBy} LIMIT ? OFFSET ?`
+  );
+  let sqlRows = pageStmt.all(limit, offset) as Record<string, unknown>[];
+  if (displayPlan.backtraceMnemonics.length > 0) {
+    sqlRows = resolveBacktraceDisplayValues(sqlRows, displayPlan.backtraceMnemonics, makeFrameLookup(db));
   }
-
-  const totalRows = rows.length;
-  const page = rows.slice(offset, offset + limit);
+  // swiftui-updates' blob columns (view-hierarchy, cause-graph-node) are the
+  // canonical interned values (PMT:lime-bluff) — resolve them for display.
+  sqlRows = resolveInternedDisplayValues(sqlRows, columnsShown, makeInternResolver(db));
 
   return {
     schema,
     run,
     totalRows,
-    returnedRows: page.length,
+    returnedRows: sqlRows.length,
     offset,
     limit,
-    hasMore: offset + page.length < totalRows,
-    rows: page.map(({ tableIndex, row }, pageIdx) => ({
+    hasMore: offset + sqlRows.length < totalRows,
+    rows: sqlRows.map((sqlRow, pageIdx) => ({
       index: offset + pageIdx,
-      tableIndex,
-      cells: Object.fromEntries(columnsShown.map((m) => [m, row[m]?.fmt ?? null])),
+      tableIndex: sqlRow[ROW_IDX_COLUMN] as number,
+      cells: Object.fromEntries(columnsShown.map((m) => [m, (sqlRow[`__out_${m}`] as string | null) ?? null])),
     })),
     columnsShown,
   };
@@ -191,7 +226,7 @@ const swiftUILens: Lens = {
             SWIFTUI_FILTERED_UPDATES_SCHEMA,
             position
           );
-          const result = paginateTable(table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
+          const result = await paginateTable(sessionId, table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
             sort,
             limit,
             offset,
@@ -293,7 +328,7 @@ const swiftUILens: Lens = {
             SWIFTUI_FILTERED_UPDATES_SCHEMA,
             position
           );
-          const result = paginateTable(table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
+          const result = await paginateTable(sessionId, table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
             sort,
             limit,
             offset,
@@ -396,7 +431,7 @@ const swiftUILens: Lens = {
             SWIFTUI_FILTERED_UPDATES_SCHEMA,
             position
           );
-          const result = paginateTable(table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
+          const result = await paginateTable(sessionId, table, SWIFTUI_FILTERED_UPDATES_SCHEMA, run, {
             sort,
             limit,
             offset,
@@ -570,18 +605,27 @@ const swiftUILens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     // swiftui-updates is the comprehensive update view — prefer it when present.
+    // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces a
+    // full-table scan regardless of size, and quickStart runs from schema
+    // names alone (no row count known yet). This is the ACTUAL schema that
+    // crashed the server at 736,282 rows (see engine/memoryGuard.ts) — the
+    // concrete case this policy exists for. aggregate by view-name answers
+    // "which view cost the most total main-thread time" instead of "the
+    // single slowest update", staying bounded regardless of trace size.
     if (schemas.includes(SWIFTUI_UPDATES_SCHEMA)) {
       return {
         schema: SWIFTUI_UPDATES_SCHEMA,
-        tool: "query",
+        tool: "aggregate",
         args: {
           sessionId,
           schema: SWIFTUI_UPDATES_SCHEMA,
           run,
-          sort: { by: "duration", dir: "desc" },
-          limit: 20,
+          groupBy: "view-name",
+          measure: "duration",
+          op: "sum",
+          topN: 20,
         },
-        hint: "SwiftUI trace — sorted by duration shows what actually blocked the main thread longest (this update's own inclusive wall time); sort by downstream-cost instead to find which update triggered the most cascading work in OTHER views — the two can diverge sharply and rank very differently, so pick the one that matches the question. Check view-name, severity, and root-causes (use the columns param to include them — excluded from the default to keep responses small). The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present as three pre-filtered instances (view-body/representable/other) — use aggregate_swiftui_filtered_updates(kind=...) to compare them directly.",
+        hint: "SwiftUI trace — total duration by view-name shows which view cost the most cumulative main-thread time (this update's own inclusive wall time); measure downstream-cost instead to find which view triggers the most cascading work in OTHER views — the two can diverge sharply and rank very differently, so pick the one that matches the question. query with sort:{by:\"duration\",dir:\"desc\"} for the single slowest individual update (a raw sort — potentially slow on a very large trace). The category column splits View Body / Layout / Other. SwiftUIFilteredUpdates is also present as three pre-filtered instances (view-body/representable/other) — use aggregate_swiftui_filtered_updates(kind=...) to compare them directly.",
       };
     }
 
@@ -607,33 +651,40 @@ const swiftUILens: Lens = {
     }
 
     // SwiftUILayoutUpdates2 adds depth to swiftui-layout-updates — prefer it.
+    // Bounded-by-construction (PMT:spare-goat) — same reasoning as
+    // swiftui-updates above: quickStart can't know row count up front, so
+    // default to the aggregate that stays bounded regardless of trace size.
     if (schemas.includes(SWIFTUI_LAYOUT_UPDATES2_SCHEMA)) {
       return {
         schema: SWIFTUI_LAYOUT_UPDATES2_SCHEMA,
-        tool: "query",
+        tool: "aggregate",
         args: {
           sessionId,
           schema: SWIFTUI_LAYOUT_UPDATES2_SCHEMA,
           run,
-          sort: { by: "duration", dir: "desc" },
-          limit: 20,
+          groupBy: "view-name",
+          measure: "duration",
+          op: "sum",
+          topN: 20,
         },
-        hint: "SwiftUI layout trace — sorted by duration shows the most expensive layout passes; cached=false rows are uncached (most costly); depth shows nesting level; compare duration vs self-duration to see subtree vs self cost.",
+        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=false rows are uncached/most costly; depth shows nesting level; compare duration vs self-duration for subtree vs self cost).",
       };
     }
 
     if (schemas.includes(SWIFTUI_LAYOUT_UPDATES_SCHEMA)) {
       return {
         schema: SWIFTUI_LAYOUT_UPDATES_SCHEMA,
-        tool: "query",
+        tool: "aggregate",
         args: {
           sessionId,
           schema: SWIFTUI_LAYOUT_UPDATES_SCHEMA,
           run,
-          sort: { by: "duration", dir: "desc" },
-          limit: 20,
+          groupBy: "view-name",
+          measure: "duration",
+          op: "sum",
+          topN: 20,
         },
-        hint: "SwiftUI layout trace — sorted by duration shows the most expensive layout passes; cached=false rows are uncached (most costly); compare duration vs self-duration to see how much of the cost is from child layout vs this view alone.",
+        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=false rows are uncached/most costly; compare duration vs self-duration for how much cost is child layout vs this view alone).",
       };
     }
 

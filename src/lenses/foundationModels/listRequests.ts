@@ -8,7 +8,9 @@
  * listRequests surfaces both rows as one-liners so the agent can quickly scan
  * which requests were slow, had errors, or triggered re-prompting.
  */
-import { getTable, lastRun as sessionLastRun } from "../../engine/session.js";
+import { getTable, getDb, lastRun as sessionLastRun } from "../../engine/session.js";
+import { fmtCol, rawCol, resolveInternedDisplayValues, makeInternResolver } from "../../engine/sqlHydrate.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../../engine/sqliteStore.js";
 
 export const FM_SCHEMA = "ModelInferenceTable";
 
@@ -63,15 +65,34 @@ export async function listFmRequests(
   const offset = opts.offset ?? 0;
   const limit = Math.min(opts.limit ?? 50, 200);
 
-  const table = await getTable(sessionId, run, FM_SCHEMA);
-  const totalRows = table.rows.length;
-  const page = table.rows.slice(offset, offset + limit);
+  const handle = await getTable(sessionId, run, FM_SCHEMA);
+  const db = await getDb(sessionId);
+  const totalRows = handle.rowCount;
+
+  // A direct scoped page — SELECT only the fmt/raw columns this one-liner
+  // needs, LIMIT/OFFSET at the SQL layer — instead of fetchAllRowsHydrated's
+  // whole-table fetch (PMT:warm-mica). Natural table order (no sort param
+  // here), so tableIndex is exactly _row_idx, matching the prior offset+pageIdx.
+  const FMT_FIELDS = ["start", "duration", "agent-name", "prompt", "total-tokens", "prompt-tokens", "response-tokens", "cached-tokens", "resolve", "color"];
+  const selectCols = [
+    quoteIdent(ROW_IDX_COLUMN),
+    ...FMT_FIELDS.map((m) => `${quoteIdent(fmtCol(m))} AS ${quoteIdent(`__out_${m}`)}`),
+    `${quoteIdent(rawCol("error-count"))} AS __raw_error_count`,
+  ];
+  const pageStmt = db.prepare(
+    `SELECT ${selectCols.join(", ")} FROM ${quoteIdent(handle.tableName)} ` +
+      `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC LIMIT ? OFFSET ?`
+  );
+  let page = pageStmt.all(limit, offset) as Record<string, unknown>[];
+  // prompt (and other one-liner fields) can be a large interned value — resolve
+  // the display columns back to content before snippeting (PMT:lime-bluff).
+  page = resolveInternedDisplayValues(page, FMT_FIELDS, makeInternResolver(db));
 
   const requests: FmRequestRow[] = page.map((row, pageIdx) => {
-    const errorRaw = row["error-count"]?.raw;
+    const errorRaw = row.__raw_error_count;
     const errorCount = typeof errorRaw === "number" ? errorRaw : Number(errorRaw ?? 0);
 
-    const promptFmt = row["prompt"]?.fmt ?? null;
+    const promptFmt = row.__out_prompt as string | null;
     const promptSnippet = promptFmt
       ? promptFmt.length > PROMPT_SNIPPET_LEN
         ? promptFmt.slice(0, PROMPT_SNIPPET_LEN) + "…"
@@ -80,19 +101,19 @@ export async function listFmRequests(
 
     return {
       index: offset + pageIdx,
-      tableIndex: offset + pageIdx,
-      startTime: row["start"]?.fmt ?? null,
-      duration: row["duration"]?.fmt ?? null,
-      agentName: row["agent-name"]?.fmt ?? null,
+      tableIndex: row[ROW_IDX_COLUMN] as number,
+      startTime: row.__out_start as string | null,
+      duration: row.__out_duration as string | null,
+      agentName: row["__out_agent-name"] as string | null,
       promptSnippet,
-      totalTokens: row["total-tokens"]?.fmt ?? null,
-      promptTokens: row["prompt-tokens"]?.fmt ?? null,
-      responseTokens: row["response-tokens"]?.fmt ?? null,
-      cachedTokens: row["cached-tokens"]?.fmt ?? null,
+      totalTokens: row["__out_total-tokens"] as string | null,
+      promptTokens: row["__out_prompt-tokens"] as string | null,
+      responseTokens: row["__out_response-tokens"] as string | null,
+      cachedTokens: row["__out_cached-tokens"] as string | null,
       errorCount,
       hasError: errorCount > 0,
-      resolve: row["resolve"]?.fmt ?? null,
-      color: row["color"]?.fmt ?? null,
+      resolve: row.__out_resolve as string | null,
+      color: row.__out_color as string | null,
     };
   });
 

@@ -27,9 +27,11 @@ import sax from "sax";
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
+import type { DatabaseSync } from "node:sqlite";
 import { MiniXmlBuilder, PERCENT_PLACEHOLDER } from "./saxTreeBuilder.js";
 import { XctraceError } from "./xctrace.js";
 import { assertMemoryBudget, MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
+import { SqliteTableWriter } from "./sqliteStore.js";
 import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame, SchemaMeta } from "./parseTable.js";
 
 // ─── XML parser ───────────────────────────────────────────────────────────────
@@ -52,6 +54,53 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 /** Mirror parseTable.ts coerceRaw: all-digit → number, else string. */
 function coerceRaw(s: string): number | string {
   return /^\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim();
+}
+
+/** Engineering-types that carry a time value — mirrors session.ts's TIME_ENGINEERING_TYPES. */
+const TIME_ENG_TYPES = new Set(["start-time", "sample-time", "start", "timestamp"]);
+
+/**
+ * Parse Instruments' fixed-width `MM:SS.mmm.µµµ` (or `HH:MM:SS.mmm.µµµ`) time
+ * string to nanoseconds, or null if it isn't that shape. Precision is
+ * microseconds — all the formatted string carries (schema-table's element-text
+ * raw keeps the sub-µs nanoseconds the fmt drops; track-detail only ever gives
+ * us the fmt), which is orders of magnitude finer than any timeRange/join
+ * window. Verified against schema-table pairs: fmt "00:06.181.618" ↔ raw
+ * 6181618125 ns → this returns 6181618000 (the µs-truncation). See PMT:light-reed.
+ */
+function parseInstrumentsTimeToNs(s: string): number | null {
+  const dot = s.indexOf(".");
+  if (dot === -1) return null;
+  const frac = /^(\d{3})\.(\d{3})$/.exec(s.slice(dot + 1));
+  if (!frac) return null;
+  const clock = s.slice(0, dot).split(":");
+  if (clock.length < 2 || clock.length > 3 || !clock.every((c) => /^\d+$/.test(c))) return null;
+  const n = clock.map(Number);
+  const seconds = n.length === 2 ? n[0] * 60 + n[1] : (n[0] * 60 + n[1]) * 60 + n[2];
+  return seconds * 1_000_000_000 + Number(frac[1]) * 1_000_000 + Number(frac[2]) * 1_000;
+}
+
+/**
+ * The raw (machine) value for a track-detail attribute. For a time-role
+ * attribute (only `timestamp` today, engineering-type "start-time"), the XML
+ * gives us ONLY a formatted `MM:SS.mmm.µµµ` string — unlike schema-table time
+ * columns, whose element text is the nanosecond integer. Left as a string it
+ * can't be timeRange-filtered, range-joined (relate/correlate), timeline-
+ * merged, or numerically ordered against a schema-table time column — worse,
+ * SQLite sorts every number before every string, so a string timestamp makes
+ * those numeric comparisons SILENTLY wrong (no error, just wrong rows). So a
+ * time-role attribute is parsed to ns here; everything else keeps coerceRaw's
+ * all-digit→number behavior. Keyed on engineering-type (not a value-shape
+ * guess) so a non-time string that happens to look like a clock is never
+ * mis-converted; and a hypothetical future track-detail schema that emits a
+ * plain-integer timestamp still works (parse returns null → coerceRaw). (PMT:light-reed)
+ */
+function coerceTrackDetailRaw(engType: string, strVal: string): number | string {
+  if (TIME_ENG_TYPES.has(engType)) {
+    const ns = parseInstrumentsTimeToNs(strVal);
+    if (ns !== null) return ns;
+  }
+  return coerceRaw(strVal);
 }
 
 /**
@@ -239,49 +288,62 @@ function buildParsedTable(
     const frameCache: FrameCache = new Map();
 
     for (const rowNode of asArray<Record<string, any>>(node?.row)) {
-      const row: NormalizedRow = {};
-
-      // Attribute cells.
-      for (const attrName of attrOrder) {
-        const raw = rowNode[`@_${attrName}`];
-        if (raw === undefined) {
-          row[attrName] = null;
-        } else {
-          const strVal = String(raw);
-          row[attrName] = {
-            type: cols.find((c) => c.mnemonic === attrName)?.engineeringType ?? "string",
-            fmt: strVal,
-            raw: coerceRaw(strVal),
-          };
-        }
-      }
-
-      // Backtrace cell (if column exists).
-      if (hasBacktrace) {
-        const btNode = rowNode?.[BACKTRACE_MNEMONIC];
-        if (btNode !== undefined && btNode !== null) {
-          const frames = parseBacktrace(
-            btNode as Record<string, any>,
-            binaryCache,
-            frameCache
-          );
-          const topName = frames[0]?.name ?? "";
-          row[BACKTRACE_MNEMONIC] = {
-            type: "backtrace",
-            fmt: frames.length > 0 ? `${frames.length} frames, top: ${topName}` : "0 frames",
-            raw: frames.length,
-            resolvedFrames: frames,
-          };
-        } else {
-          row[BACKTRACE_MNEMONIC] = null;
-        }
-      }
-
-      rows.push(row);
+      rows.push(buildRow(rowNode, attrOrder, hasBacktrace, cols, binaryCache, frameCache));
     }
   }
 
   return { schema: syntheticSchema, cols, rows };
+}
+
+/**
+ * Build one NormalizedRow from an already-assembled row node — shared by
+ * {@link buildParsedTable}'s two-pass (discover-then-build) path and
+ * {@link collectTrackDetailNodesToSqlite}'s single-pass streaming path (which
+ * takes already-known `cols`/`hasBacktrace` from a prior discovery-only call
+ * instead of discovering them from a collected `nodes` array).
+ */
+function buildRow(
+  rowNode: Record<string, any>,
+  attrOrder: string[],
+  hasBacktrace: boolean,
+  cols: SchemaCol[],
+  binaryCache: BinaryCache,
+  frameCache: FrameCache
+): NormalizedRow {
+  const row: NormalizedRow = {};
+
+  for (const attrName of attrOrder) {
+    const raw = rowNode[`@_${attrName}`];
+    if (raw === undefined) {
+      row[attrName] = null;
+    } else {
+      const strVal = String(raw);
+      const engType = cols.find((c) => c.mnemonic === attrName)?.engineeringType ?? "string";
+      row[attrName] = {
+        type: engType,
+        fmt: strVal,
+        raw: coerceTrackDetailRaw(engType, strVal),
+      };
+    }
+  }
+
+  if (hasBacktrace) {
+    const btNode = rowNode?.[BACKTRACE_MNEMONIC];
+    if (btNode !== undefined && btNode !== null) {
+      const frames = parseBacktrace(btNode as Record<string, any>, binaryCache, frameCache);
+      const topName = frames[0]?.name ?? "";
+      row[BACKTRACE_MNEMONIC] = {
+        type: "backtrace",
+        fmt: frames.length > 0 ? `${frames.length} frames, top: ${topName}` : "0 frames",
+        raw: frames.length,
+        resolvedFrames: frames,
+      };
+    } else {
+      row[BACKTRACE_MNEMONIC] = null;
+    }
+  }
+
+  return row;
 }
 
 /**
@@ -538,4 +600,147 @@ export async function parseTrackDetailStream(
 export async function parseTrackDetailStreamMeta(stdout: Readable, syntheticSchema: string): Promise<SchemaMeta> {
   const { discovery, rowCount } = await collectTrackDetailNodes(stdout, true, syntheticSchema);
   return buildSchemaMetaFromDiscovery(discovery, rowCount);
+}
+
+/**
+ * Streams rows straight into a SQLite table instead of a JS array —
+ * PMT:gravel-cape's ingestion path for track-detail schemas (Allocations,
+ * Leaks, VM Tracker).
+ *
+ * Unlike parseTable.ts's schema-table format (which has an upfront <schema>
+ * block, so columns are known before any row arrives), track-detail has NO
+ * such block — column shape is only knowable from the union of attributes
+ * across every row, exactly what {@link parseTrackDetailStreamMeta}'s
+ * discovery-only pass already computes. So this function takes `cols` as an
+ * ALREADY-KNOWN parameter rather than discovering them itself: the caller
+ * (session.ts) runs the cheap discovery pass first (one xctrace export,
+ * bounded memory, no row data materialized), then re-exports and calls this
+ * for the real ingest pass using those now-final columns. Two xctrace
+ * export subprocess calls instead of one — a real, deliberate cost, traded
+ * for never having to hold the whole table in memory to learn its own shape
+ * (the two-pass buildParsedTable/collectTrackDetailNodes route this
+ * replaces would otherwise need the exact same "see everything once" step,
+ * just with a full row array retained afterward instead of discarded).
+ *
+ * Reuses parseBacktrace/parseBinary/buildRow unchanged — only the last step
+ * (push into an array vs. INSERT) differs, via {@link SqliteTableWriter}.
+ */
+export function parseTrackDetailStreamToSqlite(
+  stdout: Readable,
+  cols: SchemaCol[],
+  db: DatabaseSync,
+  tableName: string
+): Promise<{ rowCount: number }> {
+  const attrOrder = cols.filter((c) => c.mnemonic !== BACKTRACE_MNEMONIC).map((c) => c.mnemonic);
+  const hasBacktrace = cols.some((c) => c.mnemonic === BACKTRACE_MNEMONIC);
+  const writer = new SqliteTableWriter(db, tableName, cols);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settleReject = (err: XctraceError) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+    const settleResolve = (result: { rowCount: number }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+
+    // See the matching comment in collectTrackDetailNodes — sax's 64 KB
+    // default MAX_BUFFER_LENGTH (a global, not per-instance) rejects
+    // oversized single attribute values.
+    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
+    const saxStream = sax.createStream(true, { trim: false, normalize: false });
+
+    const pathStack: string[] = [];
+    let activeBuilder: MiniXmlBuilder | null = null;
+    let sawNode = false;
+    let rowCount = 0;
+    let binaryCache: BinaryCache = new Map();
+    let frameCache: FrameCache = new Map();
+
+    saxStream.on("opentag", (node) => {
+      const tag = node.name;
+      if (activeBuilder) {
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+        return;
+      }
+      pathStack.push(tag);
+      const path = pathStack.join(">");
+      if (path === "trace-query-result>node") {
+        sawNode = true;
+        // Binary/frame ids are node-local — fresh caches per node, same as
+        // collectTrackDetailNodes/buildParsedTable.
+        binaryCache = new Map();
+        frameCache = new Map();
+      } else if (path === "trace-query-result>node>row") {
+        activeBuilder = new MiniXmlBuilder();
+        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
+      }
+    });
+
+    saxStream.on("text", (text) => {
+      if (activeBuilder) activeBuilder.onText(text);
+    });
+
+    saxStream.on("closetag", (tag) => {
+      if (activeBuilder) {
+        const finished = activeBuilder.onCloseTag(tag);
+        if (finished) {
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+          const builtNode = activeBuilder.result!;
+          rowCount++;
+          const row = buildRow(builtNode, attrOrder, hasBacktrace, cols, binaryCache, frameCache);
+          writer.writeRow(row);
+
+          // See memoryGuard.ts. RefCache-equivalent retention here is
+          // binaryCache/frameCache, which are per-node and much smaller
+          // than a full RefCache (only backtrace-bearing values), but the
+          // same periodic check is cheap insurance regardless.
+          if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
+            try {
+              assertMemoryBudget(rowCount, tableName);
+            } catch (err) {
+              settleReject(err as XctraceError);
+              stdout.destroy();
+              activeBuilder = null;
+              return;
+            }
+          }
+          activeBuilder = null;
+        }
+        return;
+      }
+      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+    });
+
+    saxStream.on("error", (err: Error) => {
+      settleReject(
+        new XctraceError("parse-error", `Failed to parse streamed track-detail XML: ${err.message}`, {})
+      );
+    });
+
+    saxStream.on("end", () => {
+      if (!sawNode) {
+        settleReject(
+          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
+        );
+        return;
+      }
+      const finalCount = writer.finish();
+      settleResolve({ rowCount: finalCount });
+    });
+
+    stdout.on("error", (err: Error) => {
+      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
+    });
+
+    const sanitizer = new PercentAttributeNameSanitizer();
+    sanitizer.on("error", (err: Error) => {
+      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
+    });
+    stdout.pipe(sanitizer).pipe(saxStream);
+  });
 }

@@ -117,17 +117,26 @@ const thermalLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(THERMAL_SCHEMA)) return null;
+    // Bounded-by-construction (PMT:spare-goat) — a raw query sorted by
+    // duration forces a full-table scan regardless of table size, and
+    // quickStart runs from schema names alone (no row count known yet) so it
+    // can't tell a short trace from a long one before recommending. thermal-
+    // state naturally partitions into a handful of named states, so "total
+    // time per state" (aggregate) answers the same "what dominated" question
+    // as a sorted list of individual intervals, without the unbounded scan.
     return {
       schema: THERMAL_SCHEMA,
-      tool: "query",
+      tool: "aggregate",
       args: {
         sessionId,
         schema: THERMAL_SCHEMA,
         run,
-        sort: { by: THERMAL_WEIGHT, dir: "desc" },
-        limit: 20,
+        groupBy: "thermal-state",
+        measure: THERMAL_WEIGHT,
+        op: "sum",
+        topN: 10,
       },
-      hint: `Thermal state trace — query sorted by ${THERMAL_WEIGHT} shows the longest-held states first; this schema has no backtrace of its own, correlate against Time Profiler samples to see what was driving load`,
+      hint: `Thermal state trace — total ${THERMAL_WEIGHT} per thermal-state shows which state dominated the recording; this schema has no backtrace of its own, correlate against Time Profiler samples to see what was driving load`,
     };
   },
 };

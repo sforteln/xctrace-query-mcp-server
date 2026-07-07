@@ -92,7 +92,7 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Processor Trace": ["Points of Interest"],
   "Network": ["Points of Interest"],
   "App Launch": ["Time Profiler"],
-  "Animation Hitches": ["Hangs", "Time Profiler"],
+  "Animation Hitches": ["Hangs", "Points of Interest", "Time Profiler"],
   "Swift Concurrency": ["Hangs", "Points of Interest", "Time Profiler"],
 };
 
@@ -367,12 +367,11 @@ export const RECORDING_INTENTS = {
       "After opening, query the 'hitches' schema — like 'potential-hangs', it carries no " +
       "backtrace of its own, but UNLIKE 'hangs' (type: \"hangs\"), you don't need to compose " +
       "anything extra to find out what was running: the Animation Hitches template already " +
-      "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
-      "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
-      "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
-      "timeRange: <the hitch's window>), no re-recording needed. Points of Interest is NOT " +
-      "bundled though — if the app calls os_signpost, pass instruments: [\"Points of Interest\"] " +
-      "to also see which named app operation was running when the frame dropped.",
+      "bundles Hangs + Points of Interest + Time Profiler for free (with a tighter 33ms hang " +
+      "threshold tuned for hitch detection, vs. the default 250ms) — correlate a hitch's " +
+      "[start, start+duration] against Time Profiler's samples directly, or call_tree(view: " +
+      "\"hot\" or \"spine\", timeRange: <the hitch's window>), no re-recording needed. If the " +
+      "app calls os_signpost, its events are already captured — no extra instrument needed.",
   },
   "swift-concurrency": {
     label: "Swift Concurrency",

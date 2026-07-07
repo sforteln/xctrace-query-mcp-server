@@ -5,13 +5,32 @@
  * Full row detail (raw values, resolved backtraces, compound children) is
  * deferred to getRow. Role awareness lets callers specify a timeRange window
  * without knowing which column carries timestamps.
+ *
+ * PMT:dusk-floe: runs as SQL against the SQLite table PMT:gravel-cape
+ * ingested, instead of a JS-array scan. getTable() always ensures ingestion
+ * happened first — SQLite's own WHERE/ORDER BY/LIMIT means there's no longer
+ * a reason for the old "projected fetch to avoid materializing everything in
+ * JS" optimization the pre-SQLite correlate() relied on.
  */
-import { getTable, getSchemaMeta, getProjectedTable, lastRun as sessionLastRun } from "../engine/session.js";
+import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole } from "../engine/roleInference.js";
-import { matchesFilter, matchesTimeRange, compareRows } from "./tableFilter.js";
 import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
-import type { NormalizedRow } from "../engine/parseTable.js";
+import {
+  buildEqualityFilter,
+  buildTimeRangeFilter,
+  combineConditions,
+  rawCol,
+  buildDisplaySelect,
+  resolveBacktraceDisplayValues,
+  resolveInternedDisplayValues,
+  makeFrameLookup,
+  makeInternResolver,
+  buildWindowExpr,
+  type WindowSpec,
+} from "../engine/sqlHydrate.js";
+import { buildFieldResolver } from "../engine/fieldRef.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
@@ -38,6 +57,15 @@ export interface QueryOptions {
   limit?: number;
   /** Rows to skip before returning (for pagination). */
   offset?: number;
+  /**
+   * Compute a window function value per row (running total, inter-arrival
+   * delta, rank, or row-number). Added as each row's `window` field. The
+   * window is computed over the FULL filtered set (before limit/offset), so
+   * a running total is correct across pages. When present and no explicit
+   * `sort` is given, rows default to `window.orderBy` ascending so the
+   * computed values read naturally down the page.
+   */
+  window?: WindowSpec;
 }
 
 /** One summary row: mnemonic → formatted display value (or null for sentinel). */
@@ -51,6 +79,8 @@ export interface QueryRow {
   tableIndex: number;
   /** Formatted display values keyed by mnemonic. */
   cells: Record<string, string | null>;
+  /** Computed window-function value for this row — present only when the `window` option was supplied. */
+  window?: number | null;
 }
 
 export interface QueryResult {
@@ -88,6 +118,7 @@ export async function queryTable(
     offset = 0,
     limit: rawLimit,
     position,
+    window,
   } = opts;
 
   const limit = Math.min(rawLimit ?? DEFAULT_LIMIT, MAX_LIMIT);
@@ -99,7 +130,7 @@ export async function queryTable(
   // returns instantly — see callCache.ts's header comment for why this
   // matters beyond simple speedup (client-side timeouts vs. server-side
   // completion on multi-minute schemas).
-  const cacheKey = callCacheKey("query", run, schema, { position, filter, columns, timeRange, sort, offset, limit });
+  const cacheKey = callCacheKey("query", run, schema, { position, filter, columns, timeRange, sort, offset, limit, window });
   const cached = getCachedCall<QueryResult>(sessionId, cacheKey);
   if (cached) return cached;
 
@@ -110,70 +141,109 @@ export async function queryTable(
   const classified = classifyWithHints(schema, meta.cols);
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
-  // Determine which column mnemonics to include in the response.
-  const allMnemonics = meta.cols.map((c) => c.mnemonic);
+  if (window && window.op === "running-total" && !window.measure) {
+    throw new Error('window op "running-total" requires a measure column to accumulate.');
+  }
+
+  // Ensures ingestion happened (a no-op if already cached this session).
+  const handle = await getTable(sessionId, run, schema, position);
+  const db = await getDb(sessionId);
+  const table = quoteIdent(handle.tableName);
+
+  // Dot-path field resolution (PMT:bare-shoal) — needs the ingested table's
+  // promoted-column metadata, so it's built after getTable. A mnemonic or a
+  // nested dot-path (thread.process.pid) both resolve here; resolveComparable
+  // also rejects backtrace columns with a clear error (was
+  // assertNotBacktraceMnemonic — the same guard, now dot-path aware).
+  const resolver = buildFieldResolver(db, handle.tableName, meta.cols);
+
+  // Determine which columns to include in the response — mnemonics by default,
+  // or caller-supplied refs (which may be nested dot-paths); unresolvable ones
+  // are dropped silently, matching the old allMnemonics.includes filter.
   const columnsShown =
     columns && columns.length > 0
-      ? columns.filter((m) => allMnemonics.includes(m))
-      : allMnemonics;
+      ? columns.filter((c) => resolver.tryResolve(c) !== null)
+      : meta.cols.map((c) => c.mnemonic);
 
-  // Project down to only the columns this call actually touches — display
-  // columns, filter/sort keys, and (if this schema has one) the time column
-  // used for timeRange, PLUS the filter/sort mnemonics even when the caller
-  // didn't ask for them in `columns` (matchesFilter/compareRows need the
-  // cell present, an absent one silently reads as "doesn't match"/"equal").
-  // Deliberately NOT passing timeRange to getProjectedTable here (unlike
-  // aggregate.ts) — narrowing during the parse would change which array
-  // index each surviving row lands at, and `tableIndex` below is a public
-  // contract get_row relies on to re-fetch this exact row from the FULL,
-  // unfiltered table. Only position-less (unambiguous) schemas get the fast
-  // path; getProjectedTable doesn't support `position`, so an ambiguous
-  // schema falls back to the full fetch, same as before this change.
-  const wanted = new Set<string>([
-    ...columnsShown,
-    ...Object.keys(filter ?? {}),
-    ...(sort?.by ? [sort.by] : []),
-    ...(timeColumn ? [timeColumn] : []),
-  ]);
-  const table =
-    position === undefined
-      ? await getProjectedTable(sessionId, run, schema, wanted)
-      : await getTable(sessionId, run, schema, position);
+  // --- Build WHERE (filter keys resolved to physical base columns) ---
+  const resolvedFilter: Record<string, string | number> = {};
+  for (const [ref, val] of Object.entries(filter ?? {})) {
+    resolvedFilter[resolver.resolveComparable(ref, "filter on").base] = val;
+  }
+  const sortBase = sort?.by ? resolver.resolveComparable(sort.by, "sort by").base : undefined;
+  const resolvedWindow: WindowSpec | undefined = window
+    ? {
+        op: window.op,
+        orderBy: resolver.resolveComparable(window.orderBy, "window orderBy").base,
+        ...(window.partitionBy ? { partitionBy: resolver.resolveComparable(window.partitionBy, "window partitionBy").base } : {}),
+        ...(window.measure ? { measure: resolver.resolveComparable(window.measure, "window measure").base } : {}),
+      }
+    : undefined;
 
-  // Track raw table positions through filter + sort so get_row can use them.
-  type IndexedRow = { row: NormalizedRow; tableIndex: number };
-  let filtered: IndexedRow[] = table.rows.map((row, i) => ({ row, tableIndex: i }));
+  const conditions = [];
+  if (Object.keys(resolvedFilter).length > 0) conditions.push(buildEqualityFilter(resolvedFilter));
+  if (timeRange && timeColumn) conditions.push(buildTimeRangeFilter(timeColumn, timeRange));
+  const where = combineConditions(conditions);
 
-  // --- Filter ---
-  if (filter && Object.keys(filter).length > 0) {
-    filtered = filtered.filter(({ row }) => matchesFilter(row, filter));
+  // --- Total count (matching filter, before limit/offset) ---
+  const totalRows = (
+    db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE ${where.clause}`).get(...where.params) as { n: number }
+  ).n;
+
+  // --- Build the page query ---
+  // Select _row_idx (the tableIndex contract get_row relies on) plus each
+  // shown column's display value. query only ever needs the display value —
+  // full detail is getRow's job. Each column ref is resolved to its physical
+  // base so a nested dot-path displays the value at its promoted column.
+  const displayFields = columnsShown.map((ref) => {
+    const f = resolver.resolve(ref);
+    return { ref, base: f.base, isBacktrace: f.isBacktrace };
+  });
+  const displayPlan = buildDisplaySelect(displayFields);
+  const selectCols = [quoteIdent(ROW_IDX_COLUMN), ...displayPlan.selectCols];
+  // The window value is computed by SQLite over the FULL filtered set (the
+  // OVER clause is evaluated before LIMIT/OFFSET), so a running total stays
+  // correct across pages.
+  if (resolvedWindow) selectCols.push(`${buildWindowExpr(resolvedWindow)} AS __window`);
+
+  let orderBy = `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC`;
+  if (sortBase) {
+    const dir = (sort!.dir ?? "asc").toUpperCase();
+    // Sorting on the raw column — SQLite's own type-then-value ordering
+    // (NULL < numeric < text) matches JS behavior for homogeneous-type
+    // columns (the common case: a column's raw values share one JS type).
+    // Known minor divergence from the old JS natural-sort comparator
+    // (localeCompare with {numeric:true}) for TEXT columns containing
+    // embedded digits (e.g. "item2" vs "item10") — not replicated via a
+    // custom collation; flagged rather than silently claimed identical.
+    orderBy = `ORDER BY ${quoteIdent(rawCol(sortBase))} ${dir}`;
+  } else if (resolvedWindow) {
+    // No explicit sort + a window present → display in window order (asc) so
+    // the running total / delta / rank reads naturally down the page.
+    orderBy = `ORDER BY ${quoteIdent(rawCol(resolvedWindow.orderBy))} ASC`;
   }
 
-  if (timeRange && timeColumn) {
-    filtered = filtered.filter(({ row }) =>
-      matchesTimeRange(row, timeColumn, timeRange)
-    );
+  const pageStmt = db.prepare(
+    `SELECT ${selectCols.join(", ")} FROM ${table} WHERE ${where.clause} ${orderBy} LIMIT ? OFFSET ?`
+  );
+  let sqlRows = pageStmt.all(...where.params, limit, offset) as Record<string, unknown>[];
+  if (displayPlan.backtraceMnemonics.length > 0) {
+    sqlRows = resolveBacktraceDisplayValues(sqlRows, displayPlan.backtraceMnemonics, makeFrameLookup(db));
   }
+  // Resolve any interned large display values back to their content (PMT:lime-bluff).
+  sqlRows = resolveInternedDisplayValues(sqlRows, columnsShown, makeInternResolver(db));
 
-  // --- Sort ---
-  if (sort?.by) {
-    const dir = sort.dir ?? "asc";
-    filtered = [...filtered].sort((a, b) =>
-      compareRows(a.row, b.row, sort.by, dir)
-    );
-  }
-
-  const totalRows = filtered.length;
-  const page = filtered.slice(offset, offset + limit);
-
-  // --- Project to summary rows ---
-  const rows: QueryRow[] = page.map(({ row, tableIndex }, pageIdx) => {
+  const rows: QueryRow[] = sqlRows.map((sqlRow, pageIdx) => {
     const cells: Record<string, string | null> = {};
     for (const mnemonic of columnsShown) {
-      const cell = row[mnemonic];
-      cells[mnemonic] = cell === null || cell === undefined ? null : cell.fmt;
+      cells[mnemonic] = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
     }
-    return { index: offset + pageIdx, tableIndex, cells };
+    return {
+      index: offset + pageIdx,
+      tableIndex: sqlRow[ROW_IDX_COLUMN] as number,
+      cells,
+      ...(window ? { window: (sqlRow.__window as number | null) ?? null } : {}),
+    };
   });
 
   const result: QueryResult = {

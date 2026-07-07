@@ -11,8 +11,11 @@
  * cachedTokenCount/consumedTokenCount/generatedTokenCount/deltasCount live
  * only in the response_complete event's JSON payload.
  */
-import { getTable, lastRun as sessionLastRun } from "../../engine/session.js";
+import { getTable, getDb, lastRun as sessionLastRun } from "../../engine/session.js";
+import { fmtCol, rawCol, makeInternResolver } from "../../engine/sqlHydrate.js";
+import { quoteIdent } from "../../engine/sqliteStore.js";
 import { FM_SCHEMA } from "./listRequests.js";
+import { fetchHydratedRow } from "./getRequest.js";
 
 const EVENT_SCHEMA = "FMEventTable";
 
@@ -75,13 +78,15 @@ export async function getFmTiming(
   opts: { run?: number } = {}
 ): Promise<FmTimingResult> {
   const run = opts.run ?? sessionLastRun(sessionId);
-  const inferenceTable = await getTable(sessionId, run, FM_SCHEMA);
+  const inferenceHandle = await getTable(sessionId, run, FM_SCHEMA);
 
-  if (rowIndex < 0 || rowIndex >= inferenceTable.rows.length) {
-    throw new Error(`rowIndex ${rowIndex} out of range (0–${inferenceTable.rows.length - 1})`);
+  if (rowIndex < 0 || rowIndex >= inferenceHandle.rowCount) {
+    throw new Error(`rowIndex ${rowIndex} out of range (0–${inferenceHandle.rowCount - 1})`);
   }
 
-  const requestId = inferenceTable.rows[rowIndex]["model-request-id"]?.fmt ?? null;
+  const db = await getDb(sessionId);
+  const inferenceRow = fetchHydratedRow(db, inferenceHandle, rowIndex);
+  const requestId = inferenceRow["model-request-id"]?.fmt ?? null;
   const empty = {
     rowIndex, requestId, prefillMs: null, generationMs: null, totalMs: null,
     cachedTokenCount: null, consumedTokenCount: null, generatedTokenCount: null, deltasCount: null,
@@ -89,16 +94,38 @@ export async function getFmTiming(
   };
   if (!requestId) return empty;
 
-  const eventsTable = await getTable(sessionId, run, EVENT_SCHEMA);
+  const eventsHandle = await getTable(sessionId, run, EVENT_SCHEMA);
 
+  // A scoped SELECT instead of fetchAllRowsHydrated's whole-table fetch
+  // (PMT:warm-mica) — FMEventTable can carry many more rows than this one
+  // request cares about. The message format is "TAG,eventId,requestId,
+  // turnId,sessionId::{json}" (see this file's header), so requestId is
+  // always bounded by a comma on both sides — INSTR(...) is a correctness-
+  // preserving PRE-FILTER (a literal substring match, no LIKE wildcard risk),
+  // narrowing to candidate rows before the same exact parseEventMessage +
+  // strict requestId equality check the original ran over every row.
+  const table = quoteIdent(eventsHandle.tableName);
+  const msgCol = quoteIdent(fmtCol("message"));
+  const requestIdMarker = `,${requestId},`;
+  // A large message is stored as an intern sentinel (PMT:lime-bluff), so the
+  // INSTR pre-filter can't see its content — widen the pre-filter to ALSO admit
+  // every sentinel row (SUBSTR = char(1)), then resolve + re-check in JS. Inline
+  // messages still get the cheap INSTR narrowing; interned ones are never missed.
+  const candidateRows = db
+    .prepare(
+      `SELECT ${quoteIdent(rawCol("timestamp"))} AS ts, ${msgCol} AS msg ` +
+        `FROM ${table} WHERE INSTR(${msgCol}, ?) > 0 OR SUBSTR(${msgCol}, 1, 1) = char(1)`
+    )
+    .all(requestIdMarker) as Array<{ ts: number | string | null; msg: string | null }>;
+
+  const unintern = makeInternResolver(db);
   const events: ParsedEvent[] = [];
-  for (const row of eventsTable.rows) {
-    const msgCell = row["message"];
-    const tsCell = row["timestamp"];
-    if (!msgCell || !tsCell) continue;
-    const timestampNs = typeof tsCell.raw === "number" ? tsCell.raw : Number(tsCell.raw);
+  for (const row of candidateRows) {
+    const msg = unintern(row.msg) as string | null;
+    if (msg === null || row.ts === null) continue;
+    const timestampNs = typeof row.ts === "number" ? row.ts : Number(row.ts);
     if (!isFinite(timestampNs)) continue;
-    const parsed = parseEventMessage(msgCell.fmt, timestampNs);
+    const parsed = parseEventMessage(msg, timestampNs);
     if (parsed && parsed.requestId === requestId) events.push(parsed);
   }
 

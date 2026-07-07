@@ -20,6 +20,31 @@ export interface NextAction {
   args: Record<string, unknown>;
   /** One-line description of what this call does / why it is useful here. */
   description: string;
+  /**
+   * Set on the single best-guess pick, when there is one (PMT:spare-goat).
+   * Never fabricate a strict ranking of the whole list otherwise — at most
+   * ONE entry carries this flag; every other entry is a plain, unranked
+   * alternative. Absent (not `false`) on every non-recommended entry.
+   */
+  recommended?: true;
+}
+
+/**
+ * Merge a single best-guess recommendation into a plain alternatives list,
+ * flagging it `recommended: true` — the one-ranked-list shape PMT:spare-goat
+ * replaced `suggestedStart` + a separate `nextActions` with. Collapsing these
+ * into one array removes the old "is suggestedStart the top of nextActions,
+ * or a different thing?" reconciliation cost for the caller, while keeping
+ * the "one clear pick + a menu of alternatives" value the split used to
+ * provide (recommended IS the single winner — see PMT:pure-hail for how a
+ * fired detector becomes this same entry). `recommended` may be null (no
+ * lens/detector had a pick for this trace/schema) — in that case this is a
+ * plain passthrough of `alternatives`, matching mcp-server-design's "don't
+ * fabricate a ranking you can't justify."
+ */
+export function withRecommended(recommended: NextAction | null, alternatives: NextAction[]): NextAction[] {
+  if (!recommended) return alternatives;
+  return [{ ...recommended, recommended: true }, ...alternatives];
 }
 
 /** The shared envelope every tool returns. */
@@ -48,7 +73,7 @@ export function actionsAfterOpen(sessionId: string): NextAction[] {
     {
       tool: "list_instruments",
       args: { sessionId },
-      description: "List all schemas with documentation and cross-run diffs — use when suggestedStart is absent or doesn't match your goal.",
+      description: "List all schemas with documentation and cross-run diffs — use when no nextAction is flagged recommended or none match your goal.",
     },
     {
       tool: "describe_schema",
@@ -98,28 +123,39 @@ export function actionsAfterDescribeSchema(
   run: number,
   opts: { primaryWeight: string | null; groupByCandidate: string | null; hasBacktrace: boolean }
 ): NextAction[] {
-  const actions: NextAction[] = [
-    {
-      tool: "query",
-      args: { sessionId, schema, run, limit: 20 },
-      description: "Fetch a bounded first page of rows (summaries first).",
+  // Both candidates below are already bounded-by-construction regardless of
+  // table size (query: LIMIT 20, no sort; aggregate: bounded by distinct
+  // group count) — there's no risky unbounded-sort shape to guard against
+  // here (unlike a lens quickStart's own recommendation; see PMT:spare-goat).
+  // The pick is about which is more ACTIONABLE: a real weight column makes
+  // "top N by weight" answerable (this project's own stated workhorse
+  // question), so aggregate wins when primaryWeight is known; otherwise a
+  // plain page is the more useful default.
+  const queryAction: NextAction = {
+    tool: "query",
+    args: { sessionId, schema, run, limit: 20 },
+    description: "Fetch a bounded first page of rows (summaries first).",
+  };
+  const aggregateAction: NextAction = {
+    tool: "aggregate",
+    args: {
+      sessionId,
+      schema,
+      run,
+      groupBy: opts.groupByCandidate ?? "<label-mnemonic>",
+      measure: opts.primaryWeight ?? "<weight-mnemonic>",
+      op: opts.primaryWeight ? "sum" : "count",
+      topN: 10,
     },
-    {
-      tool: "aggregate",
-      args: {
-        sessionId,
-        schema,
-        run,
-        groupBy: opts.groupByCandidate ?? "<label-mnemonic>",
-        measure: opts.primaryWeight ?? "<weight-mnemonic>",
-        op: opts.primaryWeight ? "sum" : "count",
-        topN: 10,
-      },
-      description: opts.primaryWeight
-        ? `Top N by weight: sum ${opts.primaryWeight} grouped by ${opts.groupByCandidate ?? "a label column"}.`
-        : `Top N by count grouped by ${opts.groupByCandidate ?? "a label column"} (no measure column — counts rows).`,
-    },
-  ];
+    description: opts.primaryWeight
+      ? `Top N by weight: sum ${opts.primaryWeight} grouped by ${opts.groupByCandidate ?? "a label column"}.`
+      : `Top N by count grouped by ${opts.groupByCandidate ?? "a label column"} (no measure column — counts rows).`,
+  };
+  const [recommended, alternative] = opts.primaryWeight
+    ? [aggregateAction, queryAction]
+    : [queryAction, aggregateAction];
+  const actions: NextAction[] = withRecommended(recommended, [alternative]);
+
   if (opts.hasBacktrace) {
     actions.push({
       tool: "call_tree",
@@ -142,10 +178,15 @@ export function actionsAfterAggregate(
   sessionId: string,
   schema: string,
   run: number,
-  groupBy: string,
+  groupBy: string | string[],
   topKey: string | null,
   hasBacktrace: boolean
 ): NextAction[] {
+  // A composite groupBy's topKey is a " / "-joined string across every key
+  // part (aggregate.ts's AggregateGroup.key) — not a single field's value, so
+  // it can't safely pre-fill a single-field equality filter the way a plain
+  // string groupBy's topKey can. Only pre-fill for the single-column case.
+  const singleGroupBy = typeof groupBy === "string" ? groupBy : null;
   const actions: NextAction[] = [
     {
       tool: "query",
@@ -153,10 +194,10 @@ export function actionsAfterAggregate(
         sessionId,
         schema,
         run,
-        ...(topKey ? { filter: { [groupBy]: topKey } } : {}),
+        ...(singleGroupBy && topKey ? { filter: { [singleGroupBy]: topKey } } : {}),
         limit: 20,
       },
-      description: topKey
+      description: singleGroupBy && topKey
         ? `Query rows for the top group "${topKey}" to see individual samples.`
         : "Query all rows in this table.",
     },

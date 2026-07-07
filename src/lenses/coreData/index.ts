@@ -101,11 +101,18 @@ const coreDataLens: Lens = {
     }
 
     if (schemas.includes(FETCH_SCHEMA)) {
+      // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces
+      // a full-table scan regardless of size, and quickStart runs from
+      // schema names alone (no row count known yet). aggregate by
+      // fetch-entity (same call this lens's own nextActions already offers
+      // for this schema) answers "which entity's fetches cost the most
+      // total time" instead of "the single slowest fetch" — a related,
+      // similarly actionable question that stays bounded on a huge trace.
       return {
         schema: FETCH_SCHEMA,
-        tool: "query",
-        args: { sessionId, schema: FETCH_SCHEMA, run, sort: { by: FETCH_WEIGHT, dir: "desc" }, limit: 20 },
-        hint: `${TRACE_LABEL} — fetch requests sorted by ${FETCH_WEIGHT} shows the slowest fetches; inspect the predicate and result count to identify missing indexes`,
+        tool: "aggregate",
+        args: { sessionId, schema: FETCH_SCHEMA, run, groupBy: "fetch-entity", measure: FETCH_WEIGHT, op: "sum", topN: 10 },
+        hint: `${TRACE_LABEL} — total ${FETCH_WEIGHT} by fetch-entity shows which entity's fetches cost the most; query with sort:{by:"${FETCH_WEIGHT}",dir:"desc"} for the single slowest individual fetch`,
       };
     }
 
@@ -119,11 +126,15 @@ const coreDataLens: Lens = {
     }
 
     if (schemas.includes(SAVE_SCHEMA)) {
+      // Bounded-by-construction (PMT:spare-goat) — same reasoning as
+      // FETCH_SCHEMA above; aggregate by thread (already offered by this
+      // lens's own nextActions for this schema) surfaces the common "saves
+      // clustered on the main thread" cause without an unbounded full scan.
       return {
         schema: SAVE_SCHEMA,
-        tool: "query",
-        args: { sessionId, schema: SAVE_SCHEMA, run, sort: { by: SAVE_WEIGHT, dir: "desc" }, limit: 20 },
-        hint: `${TRACE_LABEL} — save operations sorted by ${SAVE_WEIGHT} shows the slowest commits; check the backtrace column to find call sites causing expensive saves`,
+        tool: "aggregate",
+        args: { sessionId, schema: SAVE_SCHEMA, run, groupBy: "thread", measure: SAVE_WEIGHT, op: "sum", topN: 10 },
+        hint: `${TRACE_LABEL} — total ${SAVE_WEIGHT} by thread shows whether saves are clustered on the main thread (a common cause of UI hitches); query with sort:{by:"${SAVE_WEIGHT}",dir:"desc"} for the single slowest individual save`,
       };
     }
 

@@ -4,8 +4,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Lens, QuickStart } from "../types.js";
 import type { NextAction } from "../../core/response.js";
 import type { CellDetail } from "../../core/getRow.js";
-import { peekTable } from "../../engine/session.js";
+import { peekTable, peekDb } from "../../engine/session.js";
 import { hintFor } from "../../engine/roleHints.js";
+import { fmtCol } from "../../engine/sqlHydrate.js";
+import { quoteIdent, ROW_IDX_COLUMN } from "../../engine/sqliteStore.js";
 
 const LEAKS_SCHEMA = "Leaks/Leaks";
 const ALLOCATIONS_LIST_SCHEMA = "Allocations/Allocations List";
@@ -19,9 +21,12 @@ const UNRESOLVED_CALLER = "<Call stack limit reached>";
 const LEAKS_WEIGHT = hintFor(LEAKS_SCHEMA)!.primaryWeight!;
 const LIST_WEIGHT = hintFor(ALLOCATIONS_LIST_SCHEMA)!.primaryWeight!;
 const STATS_WEIGHT = hintFor(ALLOCATIONS_STATS_SCHEMA)!.primaryWeight!;
-// Track-detail attributes have no separate raw-nanosecond/formatted split like
-// schema-table cells do — timestamp's `.raw` is this same formatted string, not
-// a number. Pre-attach snapshot rows all carry this exact sentinel value.
+// Pre-attach snapshot rows all carry this exact sentinel timestamp. This
+// detection keys off the fmt string (the `timestamp__fmt` column), which is
+// the direct, exact representation of the sentinel. (As of PMT:light-reed the
+// track-detail timestamp's `.raw` is now numeric ns — parsed from the
+// "MM:SS.mmm.µµµ" fmt at ingest — so `raw === 0` would work equally, but the
+// fmt match stays the clearest expression of "this specific sentinel value".)
 //
 // Independently verified against Instruments.app itself (not just inferred
 // from this timestamp): opening the same trace directly in the Leaks/
@@ -49,11 +54,26 @@ function buildAllocationJoinAction(
 ): NextAction {
   const baseArgs = { sessionId, schema: ALLOCATIONS_LIST_SCHEMA, run, filter: { address } };
   const cached = peekTable(sessionId, run, ALLOCATIONS_LIST_SCHEMA);
-  const match = cached?.rows.find((r) => r["address"]?.fmt === address);
+  const db = cached ? peekDb(sessionId) : undefined;
+  // A scoped single-row lookup (LIMIT 1, first match in _row_idx order —
+  // matching the original Array.find's first-match semantics exactly) instead
+  // of fetchAllRowsHydrated's whole-table fetch (PMT:warm-mica). peek-only:
+  // db is only defined when the table is already cached, so this never
+  // triggers a fetch/ingestion of its own.
+  const match =
+    cached && db
+      ? (db
+          .prepare(
+            `SELECT ${quoteIdent(fmtCol("timestamp"))} AS ts, ${quoteIdent(fmtCol("responsible-caller"))} AS caller ` +
+              `FROM ${quoteIdent(cached.tableName)} WHERE ${quoteIdent(fmtCol("address"))} = ? ` +
+              `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC LIMIT 1`
+          )
+          .get(address) as { ts: string | null; caller: string | null } | undefined)
+      : undefined;
 
   if (match) {
-    const isPreAttach = match["timestamp"]?.fmt === ZERO_TIMESTAMP;
-    const callerFmt = match["responsible-caller"]?.fmt ?? null;
+    const isPreAttach = match.ts === ZERO_TIMESTAMP;
+    const callerFmt = match.caller ?? null;
     const isUnresolved = !isPreAttach && (callerFmt === null || callerFmt === UNRESOLVED_CALLER);
 
     if (isPreAttach) {
@@ -113,26 +133,39 @@ function unattributableFractionHint(
   if (!allSchemas.includes(ALLOCATIONS_LIST_SCHEMA)) return null;
   const leaksTable = peekTable(sessionId, run, LEAKS_SCHEMA);
   const allocTable = peekTable(sessionId, run, ALLOCATIONS_LIST_SCHEMA);
-  if (!leaksTable || !allocTable || leaksTable.rows.length === 0) return null;
+  const db = leaksTable && allocTable ? peekDb(sessionId) : undefined;
+  if (!leaksTable || !allocTable || !db || leaksTable.rowCount === 0) return null;
 
-  const allocByAddress = new Map<string, (typeof allocTable.rows)[number]>();
-  for (const row of allocTable.rows) {
-    const addr = row["address"]?.fmt;
-    if (addr) allocByAddress.set(addr, row);
-  }
+  // A direct SQL semi-join + property-check (PMT:warm-mica) — NOT relate(),
+  // which only answers "matched / not matched"; this needs "matched, AND a
+  // property of the specific match". CAREFUL semantic preserved from the
+  // original: an address can legitimately recur in Allocations List (alloc
+  // -> free -> realloc reuse), so the original built a JS Map that let a
+  // LATER row overwrite an earlier one for the same address ("last-wins").
+  // ROW_NUMBER() OVER (PARTITION BY address ORDER BY _row_idx DESC) picks
+  // the exact same winner (rn=1 = highest _row_idx per address) in one SQL
+  // pass over just the 3 columns needed, instead of hydrating every column
+  // of every row in both tables into JS Cell objects first.
+  const leaksT = quoteIdent(leaksTable.tableName);
+  const allocT = quoteIdent(allocTable.tableName);
+  const addrCol = quoteIdent(fmtCol("address"));
+  const tsCol = quoteIdent(fmtCol("timestamp"));
+  const callerCol = quoteIdent(fmtCol("responsible-caller"));
+  const sql =
+    `WITH ranked_alloc AS (` +
+    `  SELECT ${addrCol} AS addr, ${tsCol} AS ts, ${callerCol} AS caller, ` +
+    `         ROW_NUMBER() OVER (PARTITION BY ${addrCol} ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} DESC) AS rn ` +
+    `  FROM ${allocT} WHERE ${addrCol} IS NOT NULL` +
+    `), best_alloc AS (SELECT addr, ts, caller FROM ranked_alloc WHERE rn = 1) ` +
+    `SELECT ` +
+    `  SUM(CASE WHEN ba.addr IS NOT NULL THEN 1 ELSE 0 END) AS matched, ` +
+    `  SUM(CASE WHEN ba.addr IS NOT NULL AND (ba.ts = ? OR ba.caller IS NULL OR ba.caller = ?) THEN 1 ELSE 0 END) AS unattributable ` +
+    `FROM ${leaksT} l LEFT JOIN best_alloc ba ON ba.addr = l.${addrCol} ` +
+    `WHERE l.${addrCol} IS NOT NULL`;
 
-  let matched = 0;
-  let unattributable = 0;
-  for (const leak of leaksTable.rows) {
-    const addr = leak["address"]?.fmt;
-    if (!addr) continue;
-    const allocRow = allocByAddress.get(addr);
-    if (!allocRow) continue;
-    matched++;
-    const isPreAttach = allocRow["timestamp"]?.fmt === ZERO_TIMESTAMP;
-    const callerFmt = allocRow["responsible-caller"]?.fmt ?? null;
-    if (isPreAttach || callerFmt === null || callerFmt === UNRESOLVED_CALLER) unattributable++;
-  }
+  const row = db.prepare(sql).get(ZERO_TIMESTAMP, UNRESOLVED_CALLER) as { matched: number | null; unattributable: number | null };
+  const matched = row.matched ?? 0;
+  const unattributable = row.unattributable ?? 0;
 
   if (matched === 0 || unattributable / matched < 0.5) return null;
 
@@ -231,6 +264,17 @@ const leaksLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(LEAKS_SCHEMA)) return null;
+    // Deliberately KEPT as a raw sorted query, unlike the other quickStart
+    // branches PMT:spare-goat swapped to aggregate — Leaks/Leaks is different
+    // in kind from those high-volume event logs (thermal-state samples,
+    // hang/hitch occurrences, Core Data fetches/saves): a leak is a DIAGNOSED
+    // object, not a raw per-event log entry, so this table is realistically
+    // bounded regardless of trace length or duration. Grouping by
+    // responsible-library (already offered elsewhere in this lens's
+    // nextActions) answers a genuinely different, less immediately actionable
+    // question ("which library leaked most") than seeing the actual leaked
+    // objects biggest-first — the raw sort IS the more useful default here,
+    // and the size risk the other branches guard against doesn't apply.
     return {
       schema: LEAKS_SCHEMA,
       tool: "query",

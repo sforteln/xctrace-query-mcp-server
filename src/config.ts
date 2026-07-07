@@ -19,16 +19,30 @@ import { homedir } from "node:os";
 export interface ServerConfig {
   /** User-added directories to scan for .trace files. */
   searchRoots: string[];
+  /**
+   * Fallback cache directory for a persisted trace .db when the trace's own
+   * directory isn't writable (a read-only mount, a permissions issue, an
+   * Xcode-managed autosave dir — PMT:ruby-peak). null = use the OS-convention
+   * default (`defaultFallbackCacheDir()`); user-configurable via
+   * set_cache_dir, mirroring the searchRoots pattern above.
+   */
+  fallbackCacheDir: string | null;
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
   searchRoots: [],
+  fallbackCacheDir: null,
 };
 
 // ─── Path ─────────────────────────────────────────────────────────────────────
 
 export function configPath(): string {
   return join(homedir(), "Library", "Application Support", "far-swan", "config.json");
+}
+
+/** OS-convention default for the fallback trace-cache directory (PMT:ruby-peak) — sibling to config.json. */
+export function defaultFallbackCacheDir(): string {
+  return join(homedir(), "Library", "Application Support", "far-swan", "trace-cache");
 }
 
 // ─── Load ─────────────────────────────────────────────────────────────────────
@@ -45,6 +59,7 @@ export async function loadConfig(): Promise<ServerConfig> {
     const parsed = JSON.parse(raw) as Partial<ServerConfig>;
     return {
       searchRoots: Array.isArray(parsed.searchRoots) ? parsed.searchRoots : [],
+      fallbackCacheDir: typeof parsed.fallbackCacheDir === "string" ? parsed.fallbackCacheDir : null,
     };
   } catch (err: unknown) {
     // ENOENT (missing) and SyntaxError (malformed) both get defaults.

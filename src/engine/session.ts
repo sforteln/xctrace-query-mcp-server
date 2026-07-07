@@ -12,12 +12,33 @@
 import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
+import type { DatabaseSync } from "node:sqlite";
 import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
-import { parseTableStream, parseTableStreamMeta, parseTableStreamProjected, ParsedTable, SchemaMeta } from "./parseTable.js";
-import { parseTrackDetailStream, parseTrackDetailStreamMeta } from "./parseTrackDetail.js";
+import { parseTableStreamMeta, parseTableStreamToSqlite, SchemaCol, SchemaMeta } from "./parseTable.js";
+import { parseTrackDetailStreamMeta, parseTrackDetailStreamToSqlite } from "./parseTrackDetail.js";
+import { quoteIdent, loadIngestedSchemaCols } from "./sqliteStore.js";
+import { resolveAndOpenTraceDb } from "./traceCache.js";
+import { registerRegexpUdf, registerPercentileUdfs } from "./sqlHydrate.js";
+import { classifyWithHints } from "./roleHints.js";
 import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
+
+/**
+ * A schema-per-table SQLite ingestion result (PMT:gravel-cape) — the handle
+ * every verb reads through. No `rows` array: callers read data back out via
+ * SQL against (dbPath, tableName), not by iterating a JS array. Every verb
+ * (query/aggregate/find/get_row/call_tree/relate/correlate/timeline) reads
+ * from SQL against this handle — the JS-array `.rows` shape this replaced is
+ * gone entirely (PMT:dusk-floe onward).
+ */
+export interface SqliteTableHandle {
+  schema: string;
+  cols: SchemaCol[];
+  dbPath: string;
+  tableName: string;
+  rowCount: number;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,9 +84,22 @@ export interface TraceSession {
   instruments: InstrumentSummary[];
   /** Populated lazily from the first time-bearing table parsed. */
   timeRange: TimeRange | null;
-  /** Per-(run,schema) parsed table cache. Key: `${run}:${schema}`. This is the
-   *  real load-once cache — parsed tables are reused across tool calls. */
-  tableCache: Map<string, ParsedTable>;
+  /** Per-(run,schema) SQLite ingestion cache. Key: `${run}:${schema}`. This
+   *  is the real load-once cache — a schema is ingested into SQLite at most
+   *  once per session; a cache hit means "already a table in dbPath," not
+   *  "rows held in this Map" (see PMT:gravel-cape). */
+  tableCache: Map<string, SqliteTableHandle>;
+  /** Absolute path to this session's persisted SQLite DB file — one file,
+   *  one SQL table per (run,schema) inside it. Colocated next to the .trace
+   *  (or in the fallback cache directory) and NOT deleted on close_trace
+   *  (PMT:ruby-peak) — a later session reopening the same trace path reuses
+   *  it, including tables a PRIOR PROCESS already ingested. Null until the
+   *  first table fetch resolves+opens it (see getSessionDb) — open_trace
+   *  itself never touches this. */
+  dbPath: string | null;
+  /** Lazily opened on first table fetch — cheap to defer since open_trace
+   *  itself never touches row data. */
+  db: DatabaseSync | null;
   /** Memoized query/aggregate/find results keyed by callCache.ts's cacheKey —
    *  see that module's header comment for why this exists (client-side
    *  timeouts vs. server-side completion). */
@@ -173,10 +207,63 @@ export async function openTrace(
     callCache: new Map(),
     schemaModel: buildSchemaModel(toc.runs),
     xcodeVersion,
+    dbPath: null,
+    db: null,
   };
 
   sessions.set(sessionId, session);
   return { sessionId, runs, instruments, timeRange: null, xcodeVersion };
+}
+
+/**
+ * Lazily resolve + open (and cache on the session) the persisted SQLite DB
+ * backing this session's ingested tables (PMT:ruby-peak). Deferred until the
+ * first table fetch — cheap to defer since open_trace never touches row
+ * data, and this itself stays cheap regardless of WHEN it runs (a local
+ * sqlite file open + a one-row _meta read, no xctrace call).
+ */
+async function getSessionDb(session: TraceSession): Promise<DatabaseSync> {
+  if (session.db) return session.db;
+  const resolved = await resolveAndOpenTraceDb(session.tracePath);
+  session.dbPath = resolved.dbPath;
+  session.db = resolved.db;
+  // Registered once per connection, not per query — find()'s regex op compiles
+  // down to the regex UDF, aggregate()'s percentile ops to the percentile
+  // aggregates (see PMT:dusk-floe / PMT:round-rime / sqlHydrate.ts's headers).
+  registerRegexpUdf(session.db);
+  registerPercentileUdfs(session.db);
+  return session.db;
+}
+
+/**
+ * Index the columns query/aggregate/find actually filter/group/sort by most —
+ * time/thread/weight roles, per aggregate's own "top N by weight" workhorse
+ * pattern. Done ONCE, right after ingestion completes, not lazily at query
+ * time (PMT:dusk-floe) — a schema should arrive "ready to go." Indexes both
+ * the raw column (numeric comparisons, timeRange) and the __fmt column
+ * (equality/groupBy, which key off the display value — see aggregate.ts's
+ * `groupCell.fmt` groupBy key).
+ */
+function indexRoleColumns(db: DatabaseSync, tableName: string, cols: SchemaCol[], schema: string): void {
+  const classified = classifyWithHints(schema, cols);
+  for (const col of classified) {
+    if (col.roleInfo.role !== "time" && col.roleInfo.role !== "thread" && col.roleInfo.role !== "weight") continue;
+    // Backtrace-typed columns only have a __backtrace_id column, no raw/__fmt —
+    // never true for time/thread/weight roles, but a defensive skip regardless.
+    for (const suffix of ["", "__fmt"]) {
+      const physicalCol = `${col.mnemonic}${suffix}`;
+      const idxName = `idx_${tableName}_${physicalCol}`.replace(/[^a-zA-Z0-9_]/g, "_");
+      try {
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS "${idxName}" ON "${tableName}" ("${physicalCol.replace(/"/g, '""')}")`
+        );
+      } catch {
+        // A promoted/renamed column shape that doesn't exist under this exact
+        // name is not worth failing ingestion over — indexing is an
+        // optimization, not a correctness requirement.
+      }
+    }
+  }
 }
 
 /**
@@ -195,15 +282,37 @@ export function getSession(sessionId: string): TraceSession {
 }
 
 /**
+ * Public accessor for the session's SQLite connection — used by
+ * query/aggregate/find/get_row (PMT:dusk-floe) to run SQL directly against
+ * an already-ingested table. Always call getTable/getTableAtPosition FIRST
+ * (this never triggers ingestion itself) so the target table actually exists.
+ */
+export async function getDb(sessionId: string): Promise<DatabaseSync> {
+  return getSessionDb(getSession(sessionId));
+}
+
+/**
  * Return the already-cached table for a run + schema, or undefined if it
  * hasn't been fetched yet. Never triggers an xctrace export — use this when
  * a cheap, synchronous caller (e.g. a lens's nextActions) wants to enrich its
  * response with data from another schema only when that data is already warm,
  * without risking turning a fast call into a multi-minute one on a cold fetch.
  */
-export function peekTable(sessionId: string, run: number, schema: string): ParsedTable | undefined {
+export function peekTable(sessionId: string, run: number, schema: string): SqliteTableHandle | undefined {
   const session = getSession(sessionId);
   return session.tableCache.get(`${run}:${schema}`);
+}
+
+/**
+ * Synchronous counterpart to getDb, for callers (lens nextActions hints) that
+ * only ever run after confirming peekTable() already found a cached handle —
+ * if a table is cached, session.db must already be open (getTable/
+ * getTableAtPosition always open it before ingesting), so there's no async
+ * lazy-init path to await here. Returns undefined if nothing has been
+ * ingested yet this session at all.
+ */
+export function peekDb(sessionId: string): DatabaseSync | undefined {
+  return getSession(sessionId).db ?? undefined;
 }
 
 /**
@@ -216,16 +325,37 @@ export async function getTableAtPosition(
   run: number,
   schema: string,
   position: number
-): Promise<ParsedTable> {
+): Promise<SqliteTableHandle> {
   const session = getSession(sessionId);
   const cacheKey = `${run}:${schema}[${position}]`;
 
   const cached = session.tableCache.get(cacheKey);
   if (cached) return cached;
 
-  const xpath = buildTableXPathAtPosition(run, schema, position);
-  const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-  const [table] = await Promise.all([parseTableStream(stdout), done]);
+  const db = await getSessionDb(session);
+
+  // PMT:ruby-peak reuse check — see getTable's matching comment.
+  const reusedCols = loadIngestedSchemaCols(db, cacheKey);
+  let cols: SchemaCol[];
+  let rowCount: number;
+  if (reusedCols) {
+    cols = reusedCols;
+    rowCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(cacheKey)}`).get() as { n: number }).n;
+  } else {
+    const xpath = buildTableXPathAtPosition(run, schema, position);
+    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+    const [ingested] = await Promise.all([parseTableStreamToSqlite(stdout, db, cacheKey), done]);
+    cols = ingested.cols;
+    rowCount = ingested.rowCount;
+  }
+  indexRoleColumns(db, cacheKey, cols, schema);
+  const handle: SqliteTableHandle = {
+    schema,
+    cols,
+    dbPath: session.dbPath!,
+    tableName: cacheKey,
+    rowCount,
+  };
 
   // session.instruments has one entry per TOC <table> occurrence, in the same
   // order as schema-table positions — index into it by position, not .find(),
@@ -235,15 +365,17 @@ export async function getTableAtPosition(
     (i) => i.run === run && i.schema === schema
   );
   const entry = matchingEntries[position - 1];
-  if (entry) entry.rowCount = table.rows.length;
+  if (entry) entry.rowCount = handle.rowCount;
 
-  session.tableCache.set(cacheKey, table);
-  return table;
+  session.tableCache.set(cacheKey, handle);
+  return handle;
 }
 
 /**
- * Return (and cache) the parsed table for a given run + schema within a session.
- * First call shells out to xctrace; subsequent calls return the cached ParsedTable.
+ * Return (and cache) the ingested-table handle for a given run + schema within
+ * a session. First call ingests (xctrace export → SQLite, or a zero-parse reuse
+ * of a persisted cache — see getSessionDb/PMT:ruby-peak); subsequent calls
+ * return the cached SqliteTableHandle.
  *
  * Pass `position` (1-based) when the schema appears more than once in this run's
  * TOC — an unqualified fetch on an ambiguous schema would silently concatenate
@@ -256,7 +388,7 @@ export async function getTable(
   run: number,
   schema: string,
   position?: number
-): Promise<ParsedTable> {
+): Promise<SqliteTableHandle> {
   const session = getSession(sessionId);
 
   if (position !== undefined) {
@@ -270,40 +402,117 @@ export async function getTable(
   const cached = session.tableCache.get(cacheKey);
   if (cached) return cached;
 
-  // Look up the schema model entry to decide which fetch+parse path to use.
-  const modelEntry = session.schemaModel.find(
-    (e) => e.run === run && e.toc.schema === schema
-  );
+  // Two layers guard the single session db connection against concurrent
+  // ingestion (which interleaves transactions and hits "database is locked" —
+  // found live via a thread-info self-join in relate()):
+  //   (1) per-(run,schema) dedupe — two concurrent calls for the SAME table
+  //       (relate() self-joining a schema, or two tool calls racing an
+  //       uncached schema) share ONE ingestion.
+  //   (2) per-session serialization — two calls for DIFFERENT schemas
+  //       (relate()'s Promise.all over A and B) can't both DROP/CREATE/INSERT
+  //       on the one connection at once, so each ingestion awaits any prior
+  //       one on this session before touching the db.
+  const pendKey = `${sessionId}:${cacheKey}`;
+  const inflight = pendingIngest.get(pendKey);
+  if (inflight) return inflight;
 
-  let table: ParsedTable;
-  if (modelEntry?.source === "track-detail" && modelEntry.trackDetail) {
-    const { trackName, detailName } = modelEntry.trackDetail;
-    const xpath = buildTrackDetailXPath(run, trackName, detailName);
-    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-    [table] = await Promise.all([parseTrackDetailStream(stdout, schema), done]);
-  } else {
-    const xpath = buildTableXPath(run, schema);
-    const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-    [table] = await Promise.all([parseTableStream(stdout), done]);
+  const prior = sessionIngestChain.get(sessionId) ?? Promise.resolve();
+  const ingestion = (async (): Promise<SqliteTableHandle> => {
+    await prior.catch(() => {}); // serialize after any prior ingestion; its failure isn't ours
+    const db = await getSessionDb(session);
+
+    // PMT:ruby-peak reuse check — this exact (run,schema) table may already
+    // sit fully ingested in this SAME persisted db file, left by a PRIOR
+    // PROCESS that opened this trace path before (getSessionDb already
+    // confirmed the file is fresh — its mtime matches the live .trace — so a
+    // table recorded in it is trustworthy). If so, skip xctrace entirely:
+    // no export, no parse, not even the track-detail schema's usual second
+    // discovery pass. This is the actual "zero re-parse cost" this feature
+    // exists to deliver — resolving WHERE the .db lives is necessary but not
+    // sufficient without this.
+    const reusedCols = loadIngestedSchemaCols(db, cacheKey);
+
+    let cols: SchemaCol[];
+    let rowCount: number;
+    if (reusedCols) {
+      cols = reusedCols;
+      rowCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(cacheKey)}`).get() as { n: number }).n;
+    } else {
+      // Look up the schema model entry to decide which fetch+parse path to use.
+      const modelEntry = session.schemaModel.find(
+        (e) => e.run === run && e.toc.schema === schema
+      );
+
+      if (modelEntry?.source === "track-detail" && modelEntry.trackDetail) {
+        const { trackName, detailName } = modelEntry.trackDetail;
+        const xpath = buildTrackDetailXPath(run, trackName, detailName);
+        // Track-detail has no upfront <schema> block — column shape is only
+        // knowable from the union of attributes across every row. A cheap
+        // discovery-only pass (bounded memory, no row data) learns cols first;
+        // a second real export+pass ingests using those now-known columns. See
+        // parseTrackDetailStreamToSqlite's own doc comment for why this is two
+        // xctrace exports instead of one.
+        const discoverExport = await exportXPathStream(session.tracePath, xpath);
+        const [meta] = await Promise.all([
+          parseTrackDetailStreamMeta(discoverExport.stdout, schema),
+          discoverExport.done,
+        ]);
+        cols = meta.cols;
+        const ingestExport = await exportXPathStream(session.tracePath, xpath);
+        const [ingested] = await Promise.all([
+          parseTrackDetailStreamToSqlite(ingestExport.stdout, cols, db, cacheKey),
+          ingestExport.done,
+        ]);
+        rowCount = ingested.rowCount;
+      } else {
+        const xpath = buildTableXPath(run, schema);
+        const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
+        const [ingested] = await Promise.all([parseTableStreamToSqlite(stdout, db, cacheKey), done]);
+        cols = ingested.cols;
+        rowCount = ingested.rowCount;
+      }
+    }
+
+    indexRoleColumns(db, cacheKey, cols, schema);
+    const handle: SqliteTableHandle = { schema, cols, dbPath: session.dbPath!, tableName: cacheKey, rowCount };
+
+    // Update row count on the instruments summary entry.
+    const entry = session.instruments.find(
+      (i) => i.run === run && i.schema === schema
+    );
+    if (entry) entry.rowCount = rowCount;
+
+    // Populate column definitions in the schema model.
+    updateSchemaCols(session.schemaModel, run, schema, cols);
+
+    // Lazily update session timeRange from any time-bearing column in this table.
+    if (session.timeRange === null) {
+      updateTimeRange(session, db, handle);
+    }
+
+    session.tableCache.set(cacheKey, handle);
+    return handle;
+  })();
+
+  pendingIngest.set(pendKey, ingestion);
+  sessionIngestChain.set(sessionId, ingestion.then(() => {}, () => {}));
+  try {
+    return await ingestion;
+  } finally {
+    pendingIngest.delete(pendKey);
   }
-
-  // Update row count on the instruments summary entry.
-  const entry = session.instruments.find(
-    (i) => i.run === run && i.schema === schema
-  );
-  if (entry) entry.rowCount = table.rows.length;
-
-  // Populate column definitions in the schema model.
-  updateSchemaCols(session.schemaModel, run, schema, table.cols);
-
-  // Lazily update session timeRange from any time-bearing column in this table.
-  if (session.timeRange === null) {
-    updateTimeRange(session, table);
-  }
-
-  session.tableCache.set(cacheKey, table);
-  return table;
 }
+
+/**
+ * In-flight ingestion promises keyed by `${sessionId}:${run}:${schema}` —
+ * layer (1), per-table dedupe. See getTable.
+ */
+const pendingIngest = new Map<string, Promise<SqliteTableHandle>>();
+/**
+ * Tail of the per-session ingestion chain — layer (2), serialization. Each new
+ * ingestion awaits this before touching the db, then becomes the new tail. See getTable.
+ */
+const sessionIngestChain = new Map<string, Promise<void>>();
 
 /**
  * Like getTable but never materializes row data — column shape and a row
@@ -341,7 +550,29 @@ export async function getSchemaMeta(
   const cacheKey = position !== undefined ? `${run}:${schema}[${position}]` : `${run}:${schema}`;
   const cachedFull = session.tableCache.get(cacheKey);
   if (cachedFull) {
-    return { cols: cachedFull.cols, rowCount: cachedFull.rows.length };
+    return { cols: cachedFull.cols, rowCount: cachedFull.rowCount };
+  }
+
+  // PMT:ruby-peak fast path — a PRIOR PROCESS may have already ingested this
+  // exact table into the SAME persisted db file this session just opened,
+  // even though THIS process's own in-memory schemaModel/tableCache (both
+  // process-local, checked above) don't know about it yet. Opening the
+  // session db is cheap (a local file open, no xctrace call) regardless of
+  // whether this fast path pans out, so it's safe to check unconditionally.
+  const db = await getSessionDb(session);
+  const reusedCols = loadIngestedSchemaCols(db, cacheKey);
+  if (reusedCols) {
+    const rowCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(cacheKey)}`).get() as { n: number }).n;
+    if (position !== undefined) {
+      const matchingEntries = session.instruments.filter((i) => i.run === run && i.schema === schema);
+      const entry = matchingEntries[position - 1];
+      if (entry) entry.rowCount = rowCount;
+    } else {
+      const entry = session.instruments.find((i) => i.run === run && i.schema === schema);
+      if (entry) entry.rowCount = rowCount;
+      updateSchemaCols(session.schemaModel, run, schema, reusedCols);
+    }
+    return { cols: reusedCols, rowCount };
   }
 
   let meta: SchemaMeta;
@@ -376,52 +607,6 @@ export async function getSchemaMeta(
   }
 
   return meta;
-}
-
-/**
- * Column-projected, optionally time-windowed fetch — for correlate(), which
- * only ever needs a small fixed set of mnemonics and can narrow to a
- * timeRange before full materialization (see PMT:still-wisp/PMT:rose-loch).
- * Schema-table only: a track-detail schema (Allocations/Leaks/VM Tracker)
- * falls back to the normal full getTable() fetch — those schemas aren't
- * correlate()'s primary use case, and track-detail's own column-discovery
- * pass already requires seeing every row's raw attributes regardless (see
- * parseTrackDetail.ts's header comment), so projection wouldn't help there
- * as directly as it does for schema-table's upfront <schema> block.
- *
- * Deliberately bypasses session.tableCache entirely (like getSchemaMeta) —
- * a projected/windowed result is a different, incomplete view of the table
- * and must never be served to a caller expecting full rows via cache reuse.
- * Repeated correlate() calls on the same schema each re-parse from scratch;
- * acceptable since correlate() is typically called once or twice per
- * investigation, not in a tight loop.
- */
-export async function getProjectedTable(
-  sessionId: string,
-  run: number,
-  schema: string,
-  wanted: Set<string>,
-  timeMnemonic?: string,
-  timeRange?: { startNs?: number; endNs?: number }
-): Promise<ParsedTable> {
-  const session = getSession(sessionId);
-  assertUnambiguousSchema(session.schemaModel, run, schema);
-
-  const cached = session.tableCache.get(`${run}:${schema}`);
-  if (cached) return cached; // already fully fetched by someone else — reuse it, don't re-parse narrower
-
-  const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
-  if (modelEntry?.source === "track-detail") {
-    return getTable(sessionId, run, schema);
-  }
-
-  const xpath = buildTableXPath(run, schema);
-  const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-  const [table] = await Promise.all([
-    parseTableStreamProjected(stdout, wanted, timeMnemonic, timeRange),
-    done,
-  ]);
-  return table;
 }
 
 /**
@@ -466,38 +651,46 @@ export function lastRun(sessionId: string): number {
 }
 
 /**
- * Close a session and free its memory. Optional — the process dying achieves
- * the same thing, but explicit close lets agents hand back resources.
+ * Close a session and free its in-process memory. Optional — the process
+ * dying achieves the same thing, but explicit close lets agents hand back
+ * resources.
+ *
+ * Does NOT delete the session's SQLite DB file (PMT:ruby-peak) — it's now a
+ * persisted cache colocated with the .trace (or in the fallback cache
+ * directory), meant to outlive this process so a later session reopening the
+ * same trace path pays zero re-parse cost. Only the connection is closed;
+ * the file, and every table already ingested into it, stays on disk.
  */
 export function closeSession(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (session?.db) session.db.close();
   sessions.delete(sessionId);
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function updateTimeRange(session: TraceSession, table: ParsedTable): void {
-  // Find the first column whose engineering-type is time-bearing.
-  const timeCol = table.cols.find((c) =>
-    TIME_ENGINEERING_TYPES.has(c.engineeringType)
-  );
-  if (!timeCol || table.rows.length === 0) return;
+/**
+ * Find the session's overall time bounds from a just-ingested table via a
+ * SQL MIN/MAX query — the SQLite-backed counterpart of the old JS loop over
+ * `table.rows` (PMT:gravel-cape; there is no rows array to loop over anymore).
+ */
+function updateTimeRange(session: TraceSession, db: DatabaseSync, handle: SqliteTableHandle): void {
+  const timeCol = handle.cols.find((c) => TIME_ENGINEERING_TYPES.has(c.engineeringType));
+  if (!timeCol || handle.rowCount === 0) return;
 
   const mnemonic = timeCol.mnemonic;
-  let startNs = Infinity;
-  let endNs = -Infinity;
-  let startFmt = "";
-  let endFmt = "";
+  const raw = `"${mnemonic.replace(/"/g, '""')}"`;
+  const fmt = `"${mnemonic.replace(/"/g, '""')}__fmt"`;
+  const table = `"${handle.tableName.replace(/"/g, '""')}"`;
 
-  for (const row of table.rows) {
-    const cell = row[mnemonic];
-    if (!cell) continue;
-    const ns = typeof cell.raw === "number" ? cell.raw : Number(cell.raw);
-    if (!isFinite(ns)) continue;
-    if (ns < startNs) { startNs = ns; startFmt = cell.fmt; }
-    if (ns > endNs) { endNs = ns; endFmt = cell.fmt; }
-  }
+  const minRow = db.prepare(
+    `SELECT ${raw} as ns, ${fmt} as fmt FROM ${table} WHERE ${raw} IS NOT NULL ORDER BY ${raw} ASC LIMIT 1`
+  ).get() as { ns: number; fmt: string } | undefined;
+  const maxRow = db.prepare(
+    `SELECT ${raw} as ns, ${fmt} as fmt FROM ${table} WHERE ${raw} IS NOT NULL ORDER BY ${raw} DESC LIMIT 1`
+  ).get() as { ns: number; fmt: string } | undefined;
 
-  if (isFinite(startNs) && isFinite(endNs)) {
-    session.timeRange = { startNs, endNs, startFmt, endFmt };
+  if (minRow && maxRow && isFinite(minRow.ns) && isFinite(maxRow.ns)) {
+    session.timeRange = { startNs: minRow.ns, endNs: maxRow.ns, startFmt: minRow.fmt, endFmt: maxRow.fmt };
   }
 }

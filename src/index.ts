@@ -19,6 +19,8 @@ import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
 import { correlate } from "./core/correlate.js";
+import { relate } from "./core/relate.js";
+import { timeline } from "./core/timeline.js";
 import { callTree } from "./core/callTree.js";
 import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
@@ -35,7 +37,7 @@ import swiftUILens from "./lenses/swiftUI/index.js";
 import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
-import { getConfig, updateConfig, configPath } from "./config.js";
+import { getConfig, updateConfig, configPath, defaultFallbackCacheDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace } from "./core/discovery.js";
 import {
@@ -58,25 +60,28 @@ import {
   actionsAfterAggregate,
   actionsAfterFind,
   toMcpText,
+  withRecommended,
 } from "./core/response.js";
+import type { NextAction } from "./core/response.js";
 
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
 
 // ─── Heap guard ─────────────────────────────────────────────────────────────
 //
-// session.tableCache holds a fully-parsed table in memory for the life of the
-// session, with no eviction (see howSessionsWork.md). Large real traces —
-// swiftui-updates on a busy, multi-instrument recording in particular — can
-// hold enough parsed rows to exceed Node's default old-space limit (~4 GB on
-// most systems), which aborts the ENTIRE process with a fatal OOM. That kills
-// the MCP connection outright (no error reaches the client — it just reads as
-// "Connection closed") and wipes every open session, not just the one query
-// that tripped it. Re-exec with a larger heap if the launch config (Xcode's
-// MCP registration, `claude mcp add`, etc.) didn't already request one,
-// rather than requiring every possible launcher to know to pass this flag.
-// A larger ceiling is a mitigation, not a fix for the underlying unbounded
-// cache growth — an even larger trace can still exceed it.
+// As of PMT:gravel-cape, session.tableCache holds a lightweight
+// SqliteTableHandle (column metadata + a row count), not a fully-parsed
+// table — ingested rows live in an on-disk SQLite DB, not this process's
+// heap (see howSessionsWork.md's "Large-table hardening" section). This
+// ceiling is still real insurance, not dead weight: ref/id resolution
+// caches (RefCache, binaryCache, frameCache) are still retained per-parse,
+// column-role classification and response serialization still need
+// headroom, and query/aggregate/find/get_row/call_tree (once PMT:dusk-floe/
+// PMT:elm-swamp rewire them to read via SQL) will still process real
+// result sets in memory — just bounded by result size now, not table size.
+// Re-exec with a larger heap if the launch config (Xcode's MCP
+// registration, `claude mcp add`, etc.) didn't already request one, rather
+// than requiring every possible launcher to know to pass this flag.
 const HEAP_MB = Number(process.env.INSTRUMENTS_MCP_MAX_HEAP_MB) || 8192;
 if (
   process.argv[1] === fileURLToPath(import.meta.url) &&
@@ -163,10 +168,22 @@ const SERVER_INSTRUCTIONS =
   "1. Record a new trace: start_recording → exercise the app (or ask the user to) → " +
   "stop_recording (this auto-opens the resulting trace and returns a sessionId, so you can " +
   "go straight into analysis) → analyze via list_instruments/describe_schema/query/aggregate/" +
-  "get_row/call_tree/find/correlate and any per-instrument lens tools, following each " +
-  "response's nextActions → close_trace once you have your answer.\n\n" +
+  "get_row/call_tree/find/relate/correlate/timeline and any per-instrument lens tools, following " +
+  "each response's nextActions (one entry is flagged `recommended: true` when a lens has a strong " +
+  "pick for this trace — the rest are plain alternatives, not a ranking) → close_trace once you " +
+  "have your answer.\n\n" +
   "2. Analyze an existing trace: open_trace → analyze (same verbs) → close_trace once you " +
   "have your answer.\n\n" +
+  "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
+  "If a question is exploratory (\"what actually happened, in order, across subsystems, around " +
+  "this event\"), use timeline() to merge 2+ schemas into one time-ordered stream before forming a " +
+  "hypothesis. Once you have a specific hypothesis (\"does this interval CONTAIN that event\", " +
+  "\"was this allocation ever freed\", \"is there a stretch with NO activity\"), use relate() (or its " +
+  "friendlier correlate() preset) to confirm/quantify it over the full population, not just the " +
+  "window you happened to look at. A schema with no backtrace/thread/process column of its own " +
+  "(Leaks/Leaks, Hangs, Thermal State) almost always needs a join into a companion schema to answer " +
+  "WHY, not just WHEN — check each response's nextActions for one already suggested before assuming " +
+  "a single-schema query is the whole answer.\n\n" +
   "Always call close_trace when you're done analyzing a session, even if nothing prompts you " +
   "to. Sessions are cached for the life of the server process and are never evicted " +
   "automatically — an agent that opens a trace, answers the question, and stops without " +
@@ -221,8 +238,9 @@ export function createServer(): McpServer {
         "Load an Instruments .trace file and return a sessionId for subsequent calls. " +
         "The trace is loaded once and cached — all later tools reuse this session. " +
         "Returns runs with `recordedAt` timestamps so the agent can identify 'the run I just created'; " +
-        "instruments (schemas); and when a lens recognises the trace type, a `suggestedStart` block " +
-        "with the exact next tool call to make — follow it to reach first real data in 2 calls total. " +
+        "instruments (schemas); and, in `nextActions`, one entry flagged `recommended: true` when a " +
+        "lens recognises the trace type — follow it to reach first real data in 2 calls total; the " +
+        "rest of `nextActions` are unranked alternatives. " +
         "Always call this first. Call close_trace on this sessionId once you're done analyzing — " +
         "sessions are never evicted automatically, so nothing else will free it. " +
         "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
@@ -237,13 +255,19 @@ export function createServer(): McpServer {
         const versionWarning = buildVersionWarning(result.xcodeVersion, schemas);
         const lastRunNum = Math.max(...result.runs.map((r) => r.number));
         const lastRunSchemas = result.runs.find((r) => r.number === lastRunNum)?.schemas ?? [];
-        const suggestedStart = registry.quickStart(lastRunSchemas, result.sessionId, lastRunNum);
+        // PMT:spare-goat: a lens's quickStart becomes the single `recommended:
+        // true` nextAction (was a separate `suggestedStart` payload field that
+        // duplicated the top of nextActions) — one ranked list, not two
+        // overlapping fields to reconcile.
+        const quickStart = registry.quickStart(lastRunSchemas, result.sessionId, lastRunNum);
+        const recommended: NextAction | null = quickStart
+          ? { tool: quickStart.tool, args: quickStart.args, description: quickStart.hint }
+          : null;
         const payload = {
           ...result,
           ...(versionWarning && { versionWarning }),
-          ...(suggestedStart && { suggestedStart }),
         };
-        const response = envelope(payload, actionsAfterOpen(result.sessionId));
+        const response = envelope(payload, withRecommended(recommended, actionsAfterOpen(result.sessionId)));
         return text(toMcpText(response));
       })
   );
@@ -310,7 +334,7 @@ export function createServer(): McpServer {
         "then becomes a real number — `0` means genuinely fetched and confirmed empty, not unfetched; " +
         "don't read `null` as \"no rows\". " +
         "Cheap: no xctrace calls. " +
-        "Use this when open_trace did not return a suggestedStart, when you need cross-run comparison, " +
+        "Use this when open_trace's nextActions had no entry flagged recommended, when you need cross-run comparison, " +
         "or when you want schema documentation before querying.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
@@ -340,6 +364,9 @@ export function createServer(): McpServer {
         "and primaryWeight columns, row count, and a by-role grouping of columns. " +
         "Output is sufficient to form a query or aggregate call with no further " +
         "schema knowledge. `run` is optional and defaults to the most recent run. " +
+        "`nestedFields` lists queryable nested scalar values as dot-paths (e.g. " +
+        "\"thread.process.pid\" to filter/group by process) — usable anywhere a " +
+        "mnemonic is; it populates once the schema has been queried at least once. " +
         "⚠️ Not for reading row data — call query or find after this to access actual rows.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
@@ -388,8 +415,12 @@ export function createServer(): McpServer {
       title: "Query Table",
       description:
         "Fetch rows from any instrument table with optional filter, column projection, " +
-        "timeRange window, sort, and pagination. Returns summary rows (formatted display " +
-        "values — no raw numbers or backtrace frames). Use get_row for full detail on a " +
+        "timeRange window, sort, pagination, and a per-row window function (running total, " +
+        "inter-arrival delta, rank). Returns summary rows (formatted display values — no raw " +
+        "numbers or backtrace frames). Use `window` to answer growth-over-time (\"running-total\" " +
+        "of a size/weight column) or storm-detection (\"delta\" between consecutive timestamps — " +
+        "tiny gaps next to each other mean temporal clustering, not just a high count) questions in " +
+        "one call instead of hand-accumulating across pages. Use get_row for full detail on a " +
         "specific row. Defaults to the first 20 rows of the most recent run. " +
         "Always call describe_schema first to know which columns/mnemonics exist. " +
         "⚠️ Not for full row detail or resolved backtraces — use get_row for that. " +
@@ -402,11 +433,11 @@ export function createServer(): McpServer {
         filter: z
           .record(z.union([z.string(), z.number()]))
           .optional()
-          .describe("Equality filter: { mnemonic: value }. Rows must match ALL entries. Values compared against fmt (display) and raw."),
+          .describe("Equality filter: { field: value }. Rows must match ALL entries. Values compared against fmt (display) and raw. A field is a column mnemonic OR a nested dot-path (e.g. \"thread.process.pid\" to filter by process) — see describe_schema.nestedFields for the available nested paths."),
         columns: z
           .array(z.string())
           .optional()
-          .describe("Column mnemonics to include. Omit for all columns."),
+          .describe("Fields to include — column mnemonics and/or nested dot-paths. Omit for all columns."),
         timeRange: z
           .object({
             startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
@@ -416,13 +447,28 @@ export function createServer(): McpServer {
           .describe("Restrict rows to a time window. Applied to the primary time column for this schema."),
         sort: z
           .object({
-            by: z.string().describe("Column mnemonic to sort by."),
+            by: z.string().describe("Field to sort by — a column mnemonic or a nested dot-path."),
             dir: z.enum(["asc", "desc"]).optional().describe("Sort direction. Default: asc."),
           })
           .optional()
           .describe("Sort rows by a column value."),
         limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 20, max 500)."),
         offset: z.number().int().min(0).optional().describe("Rows to skip for pagination (default 0)."),
+        window: z
+          .object({
+            op: z.enum(["running-total", "delta", "rank", "row-number"]).describe(
+              "\"running-total\": cumulative sum of `measure` in `orderBy` order (a growth-over-time curve — requires measure). " +
+              "\"delta\": this row's value minus the previous row's in `orderBy` order (inter-arrival time when orderBy is a time column) — diffs `measure` if given, else `orderBy` itself; tiny deltas next to each other reveal temporal clustering (a \"storm\"), not just a high count. " +
+              "\"rank\"/\"row-number\": position within the partition, ordered by `orderBy`."
+            ),
+            orderBy: z.string().describe("Field that orders the window — a column mnemonic or nested dot-path, usually a time column."),
+            partitionBy: z.string().optional().describe("Field to partition/reset the window by (e.g. a label or thread column) — a column mnemonic or nested dot-path."),
+            measure: z.string().optional().describe("Field to accumulate (running-total) or diff (delta) — a column mnemonic or nested dot-path. Required for running-total; optional for delta (defaults to orderBy); ignored for rank/row-number."),
+          })
+          .optional()
+          .describe(
+            "Compute a per-row window function value (running total, inter-arrival delta, rank, or row-number), added as each row's `window` field. Computed over the FULL filtered set before limit/offset, so a running total stays correct across pages. When set with no explicit `sort`, rows default to ordering by `window.orderBy` ascending."
+          ),
         position: z
           .number()
           .int()
@@ -434,9 +480,9 @@ export function createServer(): McpServer {
           ),
       },
     },
-    async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, position }) =>
-      safeToolWithLog("query", { sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, position }, async () => {
-        const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset, position });
+    async ({ sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, window, position }) =>
+      safeToolWithLog("query", { sessionId, schema, run, filter, columns, timeRange, sort, limit, offset, window, position }, async () => {
+        const result = await queryTable(sessionId, schema, { run, filter, columns, timeRange, sort, limit, offset, window, position });
         const response = envelope(
           result,
           [
@@ -454,11 +500,17 @@ export function createServer(): McpServer {
     {
       title: "Aggregate Table",
       description:
-        "Group rows by any label or thread column and aggregate a weight column by sum, count, or avg — " +
-        "the workhorse for most profiling questions. Returns the top N groups sorted heaviest-first " +
-        "with values formatted in the correct unit (s/ms/µs, MB/KB/B, count). " +
+        "Group rows by any label or thread column (or several, for a composite key) and aggregate a " +
+        "weight column by sum/count/avg/min/max/median/p50/p90/p95/p99 — the workhorse for most " +
+        "profiling questions. Returns the top N groups sorted heaviest-first with values formatted " +
+        "in the correct unit (s/ms/µs, MB/KB/B, count). " +
         "Examples: top threads by sample count (Time Profiler), total duration per agent " +
-        "(Foundation Models), largest allocation groups. A `note` fires if the top group's key is " +
+        "(Foundation Models), largest allocation groups, p95/p99 hitch duration for a real " +
+        "distribution instead of just min/max/sum. Pass an array to `groupBy` for a composite key " +
+        "(e.g. [\"view-name\", \"thread\"] for \"hot view broken down by thread\") — a row is excluded " +
+        "if ANY groupBy field is null for it. Use `having` to filter to only the groups that matter " +
+        "(e.g. minRowCount to find storms/hotspots — many occurrences of the same thing — not just " +
+        "the single heaviest group). A `note` fires if the top group's key is " +
         "empty — a plausible-looking but wrong result on schemas that split row identity across " +
         "more than one column by row type (e.g. swiftui-updates); try a different groupBy. Also " +
         "fires on a handful of schemas (e.g. hitches-renders' frame-color) whose groupBy column is " +
@@ -468,15 +520,26 @@ export function createServer(): McpServer {
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name."),
-        groupBy: z.string().describe("Mnemonic of the column to group by (typically a label or thread column)."),
+        groupBy: z
+          .union([z.string(), z.array(z.string())])
+          .describe(
+            "Field(s) to group by (typically a label or thread column) — a column mnemonic or a nested " +
+            "dot-path (e.g. \"thread.process.pid\" to group by process; see describe_schema.nestedFields). " +
+            "Pass an array for a composite key across several fields (e.g. [\"view-name\",\"thread\"])."
+          ),
         measure: z
           .string()
           .optional()
-          .describe("Mnemonic of the weight column to aggregate. Required for sum/avg; ignored for count."),
+          .describe("Weight field to aggregate — a column mnemonic or nested dot-path. Required for every op except count; ignored for count."),
         op: z
-          .enum(["sum", "count", "avg"])
+          .enum(["sum", "count", "avg", "min", "max", "median", "p50", "p90", "p95", "p99"])
           .optional()
-          .describe("Aggregation operation (default: sum)."),
+          .describe(
+            "Aggregation operation (default: sum). The percentile ops (p50/p90/p95/p99, median = p50 " +
+            "alias) return an ACTUAL observed value via nearest-rank, not an interpolated number — use " +
+            "these for a real distribution (\"what's the worst-case hitch, ignoring one outlier\") instead " +
+            "of only ever seeing min/max/sum."
+          ),
         topN: z
           .number()
           .int()
@@ -488,7 +551,7 @@ export function createServer(): McpServer {
         filter: z
           .record(z.union([z.string(), z.number()]))
           .optional()
-          .describe("Pre-filter rows before grouping: { mnemonic: value }."),
+          .describe("Pre-filter rows before grouping: { field: value } (field = mnemonic or nested dot-path)."),
         timeRange: z
           .object({
             startNs: z.number().optional(),
@@ -496,6 +559,15 @@ export function createServer(): McpServer {
           })
           .optional()
           .describe("Restrict to a time window (nanoseconds) before grouping."),
+        having: z
+          .object({
+            minValue: z.number().optional().describe("Keep only groups whose computed value is at least this."),
+            maxValue: z.number().optional().describe("Keep only groups whose computed value is at most this."),
+            minRowCount: z.number().optional().describe("Keep only groups with at least this many rows — e.g. minRowCount:100 to find storms/hotspots, not just the single heaviest occurrence."),
+            maxRowCount: z.number().optional().describe("Keep only groups with at most this many rows."),
+          })
+          .optional()
+          .describe("Post-aggregation filter on each group's computed value or row count, applied before topN."),
         position: z
           .number()
           .int()
@@ -507,10 +579,10 @@ export function createServer(): McpServer {
           ),
       },
     },
-    async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, position }) =>
-      safeToolWithLog("aggregate", { sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, position }, async () => {
+    async ({ sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, having, position }) =>
+      safeToolWithLog("aggregate", { sessionId, schema, groupBy, measure, op, topN, run, filter, timeRange, having, position }, async () => {
         const result = await aggregateTable(sessionId, schema, {
-          run, groupBy, measure, op, topN, filter, timeRange, position,
+          run, groupBy, measure, op, topN, filter, timeRange, having, position,
         });
         const hasBacktrace = false; // aggregate doesn't resolve backtraces
         const topKey = result.groups[0]?.key ?? null;
@@ -621,6 +693,138 @@ export function createServer(): McpServer {
           return text(toMcpText(envelope(result, actions)));
         }
       )
+  );
+
+  // ── relate ────────────────────────────────────────────────────────────────
+  server.registerTool(
+    "relate",
+    {
+      title: "Relate Two Schemas (generic join)",
+      description:
+        "Join rows of schema A against schema B to answer four cross-instrument questions from two " +
+        "knobs — joinCondition (how A and B match) × polarity (whether you want matches or non-matches):\n" +
+        "  • equality + not-exists → LEAK: A rows (e.g. allocations) with NO matching B row (e.g. a free) — on:[{a:\"address\",b:\"address\"}]\n" +
+        "  • equality + exists → A rows that DID have a match (e.g. allocations that were freed)\n" +
+        "  • time-range + not-exists → an A interval with NO B event inside it (idle / GPU-bound window)\n" +
+        "  • time-range + exists → causality: an A interval that CONTAINS B events — this is what the friendlier `correlate` tool presets\n" +
+        "Groups A rows by an A label column; per group reports how many A rows matched vs didn't, total match " +
+        "multiplicity, and a measure sum (over matched B for exists, over unmatched A for not-exists, e.g. total " +
+        "leaked bytes). Pass listRows:true to also get the actual matched/unmatched A rows (with their tableIndex " +
+        "for get_row drill-down), not just counts. Both schemas must be in the SAME trace on the SAME clock. " +
+        "`run` defaults to the most recent run.\n" +
+        "⚠️ Not for the common causality case — use `correlate`, the friendly time-range/exists preset with " +
+        "interval/event vocabulary. ⚠️ Not for aggregating within ONE schema — use `aggregate`.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schemaA: z.string().describe("The 'left' schema whose rows are classified as matched/unmatched (e.g. \"Allocations/Allocations List\")."),
+        schemaB: z.string().describe("The 'right' schema searched for matches (e.g. a free/dealloc schema, or an events schema)."),
+        joinCondition: z.enum(["equality", "time-range"]).describe(
+          "\"equality\": A and B match on shared key column(s) via `on`. \"time-range\": B's timestamp falls inside A's [start, start+duration] window."
+        ),
+        polarity: z.enum(["exists", "not-exists"]).describe(
+          "\"exists\": A rows WITH a match. \"not-exists\": A rows with NO match (the anti-join — leaks, idle windows)."
+        ),
+        groupBy: z.string().describe("Mnemonic of an schemaA label column to group results by."),
+        on: z.array(z.object({ a: z.string(), b: z.string() }))
+          .optional()
+          .describe("equality only (required): A↔B column pairs to match on (AND semantics), e.g. [{a:\"address\", b:\"address\"}]."),
+        matchThread: z.boolean().optional().describe(
+          "time-range only: require the matched B row to be on the same thread as A (default true; the discriminator that turns temporal overlap into provable causation)."
+        ),
+        measure: z.string().optional().describe(
+          "A measure column to sum: on schemaB summed over matched pairs (exists), or on schemaA summed over the unmatched rows (not-exists, e.g. total leaked bytes)."
+        ),
+        aFilter: z.record(z.union([z.string(), z.number()])).optional().describe("Pre-filter schemaA before joining: { mnemonic: value }."),
+        bFilter: z.record(z.union([z.string(), z.number()])).optional().describe("Pre-filter schemaB before joining: { mnemonic: value }."),
+        timeRange: z.object({
+          startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
+          endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
+        }).optional().describe("Restrict both schemas to a time window on each's own primary time column."),
+        topN: z.number().int().min(1).max(100).optional().describe("Max groups to return (default 10)."),
+        listRows: z.boolean().optional().describe("Also return the actual matched (exists) / unmatched (not-exists) schemaA rows, with tableIndex for get_row drill-down."),
+        listLimit: z.number().int().min(1).max(200).optional().describe("Max rows to return when listRows is set (default 20, max 200)."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+      },
+    },
+    async ({ sessionId, schemaA, schemaB, joinCondition, polarity, groupBy, on, matchThread, measure, aFilter, bFilter, timeRange, topN, listRows, listLimit, run }) =>
+      safeToolWithLog(
+        "relate",
+        { sessionId, schemaA, schemaB, joinCondition, polarity, groupBy, on, matchThread, measure, aFilter, bFilter, timeRange, topN, listRows, listLimit, run },
+        async () => {
+          const result = await relate(sessionId, schemaA, schemaB, {
+            run, joinCondition, polarity, groupBy, on, matchThread, measure, aFilter, bFilter, timeRange, topN, listRows, listLimit,
+          });
+          const topKey = result.groups[0]?.key ?? null;
+          const actions = [
+            {
+              tool: "query",
+              args: { sessionId, schema: schemaA, run: result.run, ...(topKey ? { filter: { [groupBy]: topKey } } : {}), limit: 20 },
+              description: topKey ? `Read the individual "${topKey}" ${schemaA} rows.` : `Query ${schemaA} directly.`,
+            },
+          ];
+          return text(toMcpText(envelope(result, actions)));
+        }
+      )
+  );
+
+  // ── timeline ───────────────────────────────────────────────────────────────
+  server.registerTool(
+    "timeline",
+    {
+      title: "Timeline (time-ordered merge across schemas)",
+      description:
+        "Merge rows from 2+ schemas into ONE time-ordered stream, each row tagged with its origin schema — " +
+        "\"what actually happened, in order, across subsystems\", the EXPLORATORY companion to `relate`/`correlate`'s " +
+        "CONFIRMATORY \"did X cause Y\". Use timeline FIRST to see an interleaving and form a hypothesis " +
+        "(e.g. \"an enqueue at 00:03.065 right before a view body eval at 00:03.067 — are these related?\"), then " +
+        "`relate`/`correlate` to confirm/quantify containment over the full population. Each row is a compact " +
+        "{origin, time, dur, label, rowId} projection — NOT full row detail; call get_row(schema: origin, " +
+        "rowIndex: rowId) to drill into any one event. `dur` is populated only when a schema has a genuine " +
+        "nanoseconds-shaped duration column (null for point events like signposts/log lines) — intervals and " +
+        "instants sort together by start time. Requires a bounded `timeRange` (startNs and/or endNs) — this " +
+        "is a lens over an indexed range scan per schema, not a free full-table merge; pick a window (e.g. " +
+        "around a signpost or an event you already found) before calling. `run` defaults to the most recent run. " +
+        "⚠️ Not for confirming causality/containment with a count — use `relate`/`correlate` for that. ⚠️ Not for " +
+        "full row detail — this only returns the common merged fields, use get_row per event.",
+      inputSchema: {
+        sessionId: z.string().describe("The sessionId returned by open_trace."),
+        schemas: z.array(z.string()).min(1).describe(
+          "Schema names to merge (e.g. [\"swiftui-updates\", \"SwiftTaskCreationEvent\", \"core-data-fetch\"]) — like choosing lanes in the Instruments UI. Pick the schemas relevant to your hypothesis rather than merging everything (kdebug/tick-style schemas would flood the stream)."
+        ),
+        timeRange: z.object({
+          startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
+          endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
+        }).describe("Required — bounds the merge to a window. At least one of startNs/endNs must be set."),
+        limit: z.number().int().min(1).max(1000).optional().describe("Max merged rows to return, in time order (default 100, max 1000)."),
+        run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
+      },
+    },
+    async ({ sessionId, schemas, timeRange, limit, run }) =>
+      safeToolWithLog("timeline", { sessionId, schemas, timeRange, limit, run }, async () => {
+        const result = await timeline(sessionId, schemas, { run, timeRange, limit });
+        const first = result.events[0];
+        const actions = first
+          ? [
+              {
+                tool: "get_row",
+                args: { sessionId, schema: first.origin, run: result.run, rowIndex: first.rowId },
+                description: `Fetch full detail for the first event (${first.origin}).`,
+              },
+              {
+                tool: "relate",
+                args: { sessionId, schemaA: first.origin, schemaB: schemas.find((s) => s !== first.origin) ?? schemas[0], joinCondition: "time-range", polarity: "exists", groupBy: "<mnemonic>", run: result.run },
+                description: "Once you've spotted an interleaving here, confirm/quantify it with relate (containment/causality across the full population).",
+              },
+            ]
+          : [
+              {
+                tool: "describe_schema",
+                args: { sessionId, schema: schemas[0], run: result.run },
+                description: "No events in this window — check the schemas' time ranges via describe_schema/list_instruments.",
+              },
+            ];
+        return text(toMcpText(envelope(result, actions)));
+      })
   );
 
   // ── call_tree ─────────────────────────────────────────────────────────────
@@ -763,7 +967,7 @@ export function createServer(): McpServer {
         where: z
           .array(
             z.object({
-              col: z.string().describe("Column mnemonic to test."),
+              col: z.string().describe("Field to test — a column mnemonic or a nested dot-path (e.g. \"thread.process.pid\"; see describe_schema.nestedFields)."),
               op: z
                 .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null"])
                 .describe("Comparison operator."),
@@ -777,10 +981,10 @@ export function createServer(): McpServer {
         columns: z
           .array(z.string())
           .optional()
-          .describe("Column mnemonics to include in results. Omit for all columns."),
+          .describe("Fields to include in results — column mnemonics and/or nested dot-paths. Omit for all columns."),
         sort: z
           .object({
-            by: z.string().describe("Column mnemonic to sort by."),
+            by: z.string().describe("Field to sort by — a column mnemonic or a nested dot-path."),
             dir: z.enum(["asc", "desc"]).optional().describe("Sort direction. Default: asc."),
           })
           .optional()
@@ -1057,6 +1261,42 @@ export function createServer(): McpServer {
           builtInRoots: builtIn,
           userRoots,
           totalRoots: builtIn.length + userRoots.length,
+        }, null, 2));
+      })
+  );
+
+  // ── set_cache_dir ──────────────────────────────────────────────────────────
+  server.registerTool(
+    "set_cache_dir",
+    {
+      title: "Set Fallback Cache Directory",
+      description:
+        "Set (or reset) the fallback directory used to persist a trace's SQLite cache when the " +
+        "trace's own directory isn't writable (a read-only mount, permissions, an Xcode-managed " +
+        "autosave directory) — PMT:ruby-peak. Every trace's cache is normally colocated right next " +
+        "to the .trace file itself (same basename, .db extension); this fallback directory is only " +
+        "used for the traces that can't do that, and serves many traces at once (each keyed by a " +
+        "hash of its absolute path). Omit `path` to reset to the OS-convention default. " +
+        "⚠️ Not for search roots (where .trace files are FOUND) — use add_search_root/remove_search_root for that.",
+      inputSchema: {
+        path: z.string().optional().describe("Absolute or ~ path to use as the fallback cache directory. Omit to reset to the default."),
+      },
+    },
+    async ({ path: rawPath }) =>
+      safeToolWithLog("set_cache_dir", { path: rawPath }, async () => {
+        const { resolve } = await import("node:path");
+        const { homedir } = await import("node:os");
+
+        let absPath: string | null = null;
+        if (rawPath) {
+          const expanded = rawPath.startsWith("~") ? rawPath.replace("~", homedir()) : rawPath;
+          absPath = resolve(expanded);
+        }
+
+        const config = await updateConfig((c) => ({ ...c, fallbackCacheDir: absPath }));
+        return text(JSON.stringify({
+          fallbackCacheDir: config.fallbackCacheDir ?? defaultFallbackCacheDir(),
+          isDefault: config.fallbackCacheDir === null,
         }, null, 2));
       })
   );

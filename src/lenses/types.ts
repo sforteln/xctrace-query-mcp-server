@@ -4,8 +4,11 @@ import type { CellDetail } from "../core/getRow.js";
 
 /**
  * Structured entry-point recommendation returned by a lens's quickStart() hook.
- * Placed in the open_trace response as `suggestedStart` so the agent can make
- * the right second call without any intermediate navigation.
+ * Folded into the open_trace response's `nextActions` as the single entry
+ * flagged `recommended: true` (PMT:spare-goat; `core/response.ts`'s
+ * `withRecommended`) so the agent can make the right second call without any
+ * intermediate navigation, without a separate `suggestedStart` field that
+ * used to duplicate the top of that same list.
  */
 export interface QuickStart {
   /** Schema the agent should focus on. */
@@ -20,7 +23,7 @@ export interface QuickStart {
    * The run number this suggestion targets (same as args.run).
    * Stamped by the registry from the run parameter — lenses omit this field.
    * If the user or agent wants to inspect a different run, discard this
-   * suggestedStart and call list_instruments with the desired run number instead.
+   * recommendation and call list_instruments with the desired run number instead.
    */
   forRun?: number;
 }
@@ -73,8 +76,17 @@ export interface Lens {
   /**
    * Optional: return a cheap entry-point recommendation for open_trace based
    * on schema names alone — no data fetch, no xctrace calls. The registry
-   * calls this for every registered lens and returns the first non-null result
-   * as `suggestedStart` in the open_trace response.
+   * calls this for every registered lens and returns the first non-null
+   * result, folded into open_trace's `nextActions` as the one entry flagged
+   * `recommended: true` (PMT:spare-goat).
+   *
+   * Because this runs from schema names alone, before any row count is known,
+   * prefer a call that's bounded-by-construction regardless of table size
+   * (an aggregate/lens tool) over a raw sorted query with no filter/timeRange
+   * bound — a full-table ORDER BY is a real latency (and, pre-dusk-floe, OOM)
+   * risk on a large table, and this hook has no cheap way to tell big from
+   * small up front. See PMT:spare-goat's completion report for the concrete
+   * schemas this bit swiftUI/coreData/hangs/thermal/leaks live in production.
    *
    * Implement this when the lens can identify its instrument from schema names
    * and knows a single tool call that surfaces the key finding immediately.
