@@ -1587,7 +1587,9 @@ export function createServer(): McpServer {
         "Returns the .trace path — pass it to open_trace to start navigating results. " +
         "Safe to call on a time-limited recording that has already auto-stopped. " +
         "xctrace can exit non-zero during finalize even when it wrote a complete, valid trace — " +
-        "in that case status is still \"done\" but a finalizeWarning field is included; check it " +
+        "in that case status is still \"done\" but a finalizeWarning field is included (alongside " +
+        "exitCode, and finalizeOutput — the tail of xctrace's console output — when it printed any, " +
+        "so you can diagnose the exit rather than reasoning from the warning string alone); check it " +
         "before trusting an empty schema as \"ran and found nothing\" rather than \"write interrupted\". " +
         "⚠️ Not for checking status without stopping — use get_recording_status for non-destructive polling.",
       inputSchema: {

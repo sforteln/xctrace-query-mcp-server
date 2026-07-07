@@ -362,6 +362,22 @@ export interface StopSessionResult {
   template: string;
   instrumentsUsed: string;
   finalizeWarning?: string;
+  /**
+   * Present only when finalize exited non-zero (the finalizeWarning case) —
+   * xctrace's actual exit code (e.g. 54) so the caller isn't reasoning from the
+   * canned warning string alone. The failure PATH already surfaces this in its
+   * error; the finalize-but-usable path used to drop it, leaving a code-54
+   * truncation opaque.
+   */
+  exitCode?: number | null;
+  /**
+   * Present only when finalize exited non-zero AND xctrace actually printed
+   * something — the tail of its console output (stderr preferred, stdout
+   * fallback; both already capped at ~2 KB). The ground-truth diagnostic for a
+   * finalize failure; omitted when xctrace exited non-zero with no output
+   * (a real, observed launch-mode case — its absence is itself informative).
+   */
+  finalizeOutput?: string;
 }
 
 /**
@@ -408,13 +424,23 @@ export async function stopSession(
     );
   }
 
+  // On a finalize warning (xctrace exited non-zero but the trace is usable),
+  // surface the actual exit code + any console output so the caller can
+  // diagnose it — not just the canned warning string. (See StopSessionResult.)
+  const finalizeOutput = rec.finalizeWarning ? (rec.stderr || rec.stdout).slice(-500) : "";
   return {
     recordingId,
     status: rec.status,
     tracePath: rec.tracePath,
     template: rec.template,
     instrumentsUsed: rec.instrumentsUsed,
-    ...(rec.finalizeWarning ? { finalizeWarning: rec.finalizeWarning } : {}),
+    ...(rec.finalizeWarning
+      ? {
+          finalizeWarning: rec.finalizeWarning,
+          exitCode: rec.exitCode,
+          ...(finalizeOutput ? { finalizeOutput } : {}),
+        }
+      : {}),
   };
 }
 
