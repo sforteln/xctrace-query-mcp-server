@@ -60,6 +60,19 @@ describe("PMT:tidy-warbler symbols dedup", () => {
     expect(frames.map((f) => f.binaryPath)).toEqual(["/Bin", "/Bin", "/Bin"]);
   });
 
+  it("dedups identical stacks and stores the fingerprint as a compact hash, not full JSON (PMT:true-glade)", () => {
+    const stack = [frame("a"), frame("b"), frame("c")];
+    const db = ingest([stack, stack]); // same stack written twice
+    // Deduped to one backtrace + its 3 frame rows (both rows share backtrace_id).
+    expect(count(db, "SELECT COUNT(*) n FROM backtraces")).toBe(1);
+    expect(count(db, "SELECT COUNT(*) n FROM frames")).toBe(3);
+    // The dedup key is a 64-char sha256, not the raw-stack JSON that used to
+    // balloon backtrace-heavy dbs.
+    const fp = (db.prepare("SELECT fingerprint FROM backtraces").get() as { fingerprint: string }).fingerprint;
+    expect(fp).toMatch(/^[0-9a-f]{64}$/);
+    expect(fp).not.toContain("["); // not a JSON array
+  });
+
   it("dedups frames with a null binary/binary_path into one symbol (IS, not =)", () => {
     // Same name, both with null binary — SQL `= NULL` never matches, so this
     // must dedup via IS or it would create two symbol rows.

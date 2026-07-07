@@ -303,9 +303,12 @@ export const INTERN_THRESHOLD_BYTES = 256;
  * this in the .db's _meta and treats a mismatch like an mtime-stale cache:
  * wipe + re-ingest (re-export). No in-place migration — see PMT:tidy-warbler.
  * History: 1 = pre-symbols frames(name,binary,binary_path); 2 = frames.symbol_id
- * + the deduped `symbols` table.
+ * + the deduped `symbols` table; 3 = backtraces.fingerprint is a sha256 hash,
+ * not raw-stack JSON (PMT:true-glade — an old .db's JSON fingerprints would
+ * never match the new hash keys, so a re-ingest into it would double-store
+ * every stack; a version bump forces a clean rebuild).
  */
-export const INGEST_SCHEMA_VERSION = "2";
+export const INGEST_SCHEMA_VERSION = "3";
 /**
  * PMT:ruddy-owl flavor-2: for a column pass 1 flagged as low-distinct /
  * high-repeat, values this size or larger are interned (well below the 256B
@@ -370,9 +373,11 @@ export function openSessionDb(dbPath: string, opts: { journalMode?: "wal" | "def
   );
   // Backtraces are stored as QUERYABLE FRAME ROWS, not a JSON blob (PMT:elm-swamp) —
   // the whole point of the SQLite engine is queryable data, and call_tree folds from
-  // frame rows. `backtraces` dedups by fingerprint (a stable serialization of the frame
-  // sequence — the same stack recurs across thousands of rows and schemas, so dedup is
-  // a real win); each distinct backtrace's frames live in `frames`, one row per frame,
+  // frame rows. `backtraces` dedups by fingerprint (a sha256 of the frame sequence —
+  // the same stack recurs across thousands of rows and schemas, so dedup is a real win;
+  // PMT:true-glade hashes it rather than storing the raw-stack JSON, which was a 6+ GB
+  // third copy of the frame content on backtrace-heavy traces — see backtraceIdFor);
+  // each distinct backtrace's frames live in `frames`, one row per frame,
   // leaf-first (frame_index 0 = deepest call, matching the leaf-first XML order both
   // parsers produce; consumers reverse for a root-first tree).
   //
@@ -584,11 +589,22 @@ export class SqliteTableWriter {
   }
 
   private backtraceIdFor(frames: ResolvedFrame[]): number {
-    // Fingerprint = a stable serialization of the frame sequence, used ONLY
-    // for dedup (the UNIQUE key on backtraces) — never read back; the frames
-    // themselves are stored as real rows below. JSON is exact (no hash
-    // collision risk) and matches the pre-normalization dedup key.
-    const fingerprint = JSON.stringify(frames);
+    // Fingerprint = a sha256 of the frame sequence's serialization, used ONLY as
+    // the dedup key (the UNIQUE column on backtraces) — never read back; the
+    // frames themselves are stored as real symbol-backed rows below.
+    //
+    // PMT:true-glade reverses elm-swamp's original choice of storing the raw
+    // JSON here. On a backtrace-heavy trace (a real Allocations trace: 126k
+    // distinct stacks, ~127 frames deep) the raw-JSON fingerprint + its UNIQUE
+    // index was 6.35 GB — a full THIRD copy of the frame content, carried purely
+    // as a dedup key. Hashing collapses it to 64 chars/backtrace (a few MB
+    // total). The trade is the same astronomically-unlikely sha256 collision
+    // assumption interned_values already accepts; and since the key is never
+    // read back, a collision (not silent corruption of displayed data) is the
+    // only possible failure. The hash covers the identical frame identity
+    // (name+binary+binary_path+addr, in order) the JSON did, so the set of
+    // distinct backtraces is unchanged.
+    const fingerprint = createHash("sha256").update(JSON.stringify(frames)).digest("hex");
     const cached = this.frameCacheIds.get(fingerprint);
     if (cached !== undefined) return cached;
 
