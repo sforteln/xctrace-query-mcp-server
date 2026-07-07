@@ -709,7 +709,9 @@ function foldFromSql(
     `FROM ${quoteIdent(tableName)} WHERE ${conds.join(" AND ")} GROUP BY ${btIdCol}`
   );
   const framesStmt = db.prepare(
-    "SELECT name, binary FROM frames WHERE backtrace_id = ? ORDER BY frame_index ASC"
+    // Frame content is deduped into `symbols` — join to read it (PMT:tidy-warbler).
+    "SELECT s.name AS name, s.binary AS binary FROM frames f JOIN symbols s ON f.symbol_id = s.id " +
+      "WHERE f.backtrace_id = ? ORDER BY f.frame_index ASC"
   );
 
   for (const g of aggStmt.iterate(...params) as Iterable<{ btid: number; w: number; cnt: number }>) {

@@ -242,7 +242,9 @@ export function resolveBacktraceDisplayValues(
  */
 export function makeFrameLookup(db: DatabaseSync): (id: number | null) => ResolvedFrame[] {
   const stmt = db.prepare(
-    "SELECT name, binary, binary_path, addr FROM frames WHERE backtrace_id = ? ORDER BY frame_index ASC"
+    // Frame content lives in `symbols` (deduped); join to rebuild it (PMT:tidy-warbler).
+    "SELECT s.name AS name, s.binary AS binary, s.binary_path AS binary_path, f.addr AS addr " +
+      "FROM frames f JOIN symbols s ON f.symbol_id = s.id WHERE f.backtrace_id = ? ORDER BY f.frame_index ASC"
   );
   const cache = new Map<number, ResolvedFrame[]>();
   return (id: number | null): ResolvedFrame[] => {

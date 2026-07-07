@@ -297,6 +297,16 @@ export const ROW_IDX_COLUMN = "_row_idx";
 export const INTERN_SENTINEL = String.fromCharCode(1); // SOH — never present in xctrace text
 export const INTERN_THRESHOLD_BYTES = 256;
 /**
+ * Bumped whenever the persisted on-disk shape changes incompatibly (a table's
+ * columns, a side table's structure) so a PMT:ruby-peak cache written by an
+ * older build isn't silently reused against new-code reads. traceCache stores
+ * this in the .db's _meta and treats a mismatch like an mtime-stale cache:
+ * wipe + re-ingest (re-export). No in-place migration — see PMT:tidy-warbler.
+ * History: 1 = pre-symbols frames(name,binary,binary_path); 2 = frames.symbol_id
+ * + the deduped `symbols` table.
+ */
+export const INGEST_SCHEMA_VERSION = "2";
+/**
  * PMT:ruddy-owl flavor-2: for a column pass 1 flagged as low-distinct /
  * high-repeat, values this size or larger are interned (well below the 256B
  * flavor-1 floor) — a 20-byte category repeated 275k× is pure duplication.
@@ -359,20 +369,32 @@ export function openSessionDb(dbPath: string, opts: { journalMode?: "wal" | "def
     "CREATE TABLE IF NOT EXISTS _ingested_schema (table_name TEXT, mnemonic TEXT, name TEXT, engineering_type TEXT)"
   );
   // Backtraces are stored as QUERYABLE FRAME ROWS, not a JSON blob (PMT:elm-swamp) —
-  // the whole point of the SQLite engine is queryable data, so "which stacks contain
-  // function X" is a real query, and call_tree folds from frame rows. `backtraces`
-  // dedups by fingerprint (a stable serialization of the frame sequence — the same
-  // stack recurs across thousands of rows and schemas, so dedup is a real win); each
-  // distinct backtrace's frames live in `frames`, one row per frame, leaf-first
-  // (frame_index 0 = deepest call, matching the leaf-first XML order both parsers
-  // produce; consumers reverse for a root-first tree). Indexed on backtrace_id (the
-  // per-backtrace read call_tree does) and name (containment queries).
+  // the whole point of the SQLite engine is queryable data, and call_tree folds from
+  // frame rows. `backtraces` dedups by fingerprint (a stable serialization of the frame
+  // sequence — the same stack recurs across thousands of rows and schemas, so dedup is
+  // a real win); each distinct backtrace's frames live in `frames`, one row per frame,
+  // leaf-first (frame_index 0 = deepest call, matching the leaf-first XML order both
+  // parsers produce; consumers reverse for a root-first tree).
+  //
+  // PMT:tidy-warbler: the backtrace fold dedups STACK IDENTITY, but a stack-rich trace
+  // still explodes the frame ROWS — a real 347k-row Allocations trace had 126k distinct
+  // backtraces expand to 16 M frame rows, each storing its full name/binary/binary_path
+  // strings even though only ~23,744 distinct names / 215 binaries underlie them (~2 GB
+  // of ~677x-redundant text). So the frame CONTENT is deduped one level deeper: distinct
+  // (name, binary, binary_path) tuples live once in `symbols`, and each frame row stores
+  // a small `symbol_id` FK + its per-instance `addr`. The old idx_frames_name (a name
+  // index over every frame row) is gone — no query filtered frames by name (both readers
+  // fold by backtrace_id); a name lookup, if ever needed, is on the tiny symbols table.
   db.exec("CREATE TABLE IF NOT EXISTS backtraces (id INTEGER PRIMARY KEY, fingerprint TEXT UNIQUE)");
   db.exec(
-    "CREATE TABLE IF NOT EXISTS frames (backtrace_id INTEGER, frame_index INTEGER, name TEXT, binary TEXT, binary_path TEXT, addr TEXT)"
+    "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, name TEXT, binary TEXT, binary_path TEXT)"
+  );
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_content ON symbols(name, binary, binary_path)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name)");
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS frames (backtrace_id INTEGER, frame_index INTEGER, symbol_id INTEGER, addr TEXT)"
   );
   db.exec("CREATE INDEX IF NOT EXISTS idx_frames_backtrace ON frames(backtrace_id)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_frames_name ON frames(name)");
   // Interned large/repeated cell values (PMT:lime-bluff) — the same dedup
   // discipline `frames` gives backtraces, extended to ordinary large text.
   // xctrace's XML already dedups a repeated big value (a view-hierarchy chain,
@@ -422,6 +444,10 @@ export class SqliteTableWriter {
   private readonly btInsertStmt: StatementSync;
   private readonly frameInsertStmt: StatementSync;
   private readonly frameCacheIds = new Map<string, number>();
+  /** PMT:tidy-warbler: distinct (name,binary,binary_path) frame content -> symbols.id, memoized. */
+  private readonly symbolLookupStmt: StatementSync;
+  private readonly symbolInsertStmt: StatementSync;
+  private readonly symbolCache = new Map<string, number>();
   /** PMT:lime-bluff value interning: content hash -> sentinel token, memoized across rows. */
   private readonly internLookupStmt: StatementSync;
   private readonly internInsertStmt: StatementSync;
@@ -473,8 +499,15 @@ export class SqliteTableWriter {
     this.btLookupStmt = db.prepare("SELECT id FROM backtraces WHERE fingerprint = ?");
     this.btInsertStmt = db.prepare("INSERT INTO backtraces (fingerprint) VALUES (?)");
     this.frameInsertStmt = db.prepare(
-      "INSERT INTO frames (backtrace_id, frame_index, name, binary, binary_path, addr) VALUES (?, ?, ?, ?, ?, ?)"
+      "INSERT INTO frames (backtrace_id, frame_index, symbol_id, addr) VALUES (?, ?, ?, ?)"
     );
+    // IS (not =) so a null binary/binary_path matches an existing null symbol
+    // (SQL `= NULL` is never true) — content dedup must treat two null-binary
+    // frames of the same name as one symbol (PMT:tidy-warbler).
+    this.symbolLookupStmt = db.prepare(
+      "SELECT id FROM symbols WHERE name IS ? AND binary IS ? AND binary_path IS ?"
+    );
+    this.symbolInsertStmt = db.prepare("INSERT INTO symbols (name, binary, binary_path) VALUES (?, ?, ?)");
     this.internLookupStmt = db.prepare("SELECT id FROM interned_values WHERE hash = ?");
     this.internInsertStmt = db.prepare("INSERT INTO interned_values (hash, content) VALUES (?, ?)");
 
@@ -571,11 +604,31 @@ export class SqliteTableWriter {
     const id = Number(this.btInsertStmt.run(fingerprint).lastInsertRowid);
     // One frames row per frame, leaf-first (frame_index 0 = deepest), matching
     // the leaf-first order the parsers produce; consumers reverse for a tree.
+    // The frame's content (name/binary/binary_path) is deduped into `symbols`
+    // and the row stores only its symbol_id + per-instance addr (PMT:tidy-warbler).
     for (let i = 0; i < frames.length; i++) {
       const f = frames[i];
-      this.frameInsertStmt.run(id, i, f.name, f.binaryName, f.binaryPath, f.addr);
+      this.frameInsertStmt.run(id, i, this.symbolIdFor(f.name, f.binaryName, f.binaryPath), f.addr);
     }
     this.frameCacheIds.set(fingerprint, id);
+    return id;
+  }
+
+  /**
+   * PMT:tidy-warbler: intern one frame's content — a (name, binary, binary_path)
+   * tuple — into the shared, DB-wide-deduped `symbols` table and return its id.
+   * Memoized per ingest (symbolCache) and checked against the table (symbolLookupStmt,
+   * IS-based so nulls dedup) so a symbol shared across millions of frame rows and
+   * across a session's schemas is stored ONCE. Same lookup-then-insert-on-miss
+   * discipline as backtraceIdFor / internIfLarge.
+   */
+  private symbolIdFor(name: string, binary: string | null, binaryPath: string | null): number {
+    const key = JSON.stringify([name, binary, binaryPath]);
+    const cached = this.symbolCache.get(key);
+    if (cached !== undefined) return cached;
+    const existing = this.symbolLookupStmt.get(name, binary, binaryPath) as { id: number } | undefined;
+    const id = existing ? existing.id : Number(this.symbolInsertStmt.run(name, binary, binaryPath).lastInsertRowid);
+    this.symbolCache.set(key, id);
     return id;
   }
 

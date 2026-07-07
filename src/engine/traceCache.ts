@@ -41,7 +41,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { stat, unlink, mkdir } from "node:fs/promises";
 import { dirname, basename, join, extname } from "node:path";
 import { createHash } from "node:crypto";
-import { openSessionDb, readMeta, writeMeta } from "./sqliteStore.js";
+import { openSessionDb, readMeta, writeMeta, INGEST_SCHEMA_VERSION } from "./sqliteStore.js";
 import { getConfig, defaultFallbackCacheDir } from "../config.js";
 
 export interface ResolvedTraceDb {
@@ -63,6 +63,7 @@ export interface ResolvedTraceDb {
 
 const META_MTIME_KEY = "source_mtime_ms";
 const META_PATH_KEY = "source_path";
+const META_SCHEMA_VERSION_KEY = "ingest_schema_version";
 
 function colocatedDbPath(tracePath: string): string {
   const ext = extname(tracePath);
@@ -112,26 +113,37 @@ async function tryOpenAt(
   if (!existedBefore) {
     writeMeta(db, META_MTIME_KEY, String(mtimeMs));
     writeMeta(db, META_PATH_KEY, tracePath);
+    writeMeta(db, META_SCHEMA_VERSION_KEY, INGEST_SCHEMA_VERSION);
     return { db, reused: false };
   }
 
   const storedMtime = readMeta(db, META_MTIME_KEY);
   const storedPath = readMeta(db, META_PATH_KEY);
-  const fresh = storedMtime !== null && Number(storedMtime) === mtimeMs && storedPath === tracePath;
+  // A .db written by an older build has a different (or absent) schema version;
+  // reusing it against new-code reads would hit a mismatched frames/symbols
+  // shape (PMT:tidy-warbler). Treat a version mismatch exactly like an mtime
+  // staleness — wipe + re-ingest, no in-place migration.
+  const storedVersion = readMeta(db, META_SCHEMA_VERSION_KEY);
+  const fresh =
+    storedMtime !== null &&
+    Number(storedMtime) === mtimeMs &&
+    storedPath === tracePath &&
+    storedVersion === INGEST_SCHEMA_VERSION;
   if (fresh) {
     return { db, reused: true };
   }
 
-  // Stale — the .trace at this path was re-recorded/replaced since this .db
-  // was written (or, in the fallback directory, storedPath mismatches
-  // entirely, meaning a hash collision — astronomically unlikely with
-  // sha256, but checked for a hard guarantee rather than trusting
-  // probability alone). Never silently serve stale data: wipe and start over.
+  // Stale — the .trace at this path was re-recorded/replaced since this .db was
+  // written, OR the .db was written by an older schema version, OR (in the
+  // fallback directory) storedPath mismatches entirely (a sha256 hash collision
+  // — astronomically unlikely, but checked for a hard guarantee). Never
+  // silently serve stale data: wipe and start over.
   db.close();
   await unlink(dbPath).catch(() => {});
   const freshDb = openSessionDb(dbPath, { journalMode: "default" });
   writeMeta(freshDb, META_MTIME_KEY, String(mtimeMs));
   writeMeta(freshDb, META_PATH_KEY, tracePath);
+  writeMeta(freshDb, META_SCHEMA_VERSION_KEY, INGEST_SCHEMA_VERSION);
   return { db: freshDb, reused: false };
 }
 
