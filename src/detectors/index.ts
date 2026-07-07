@@ -7,8 +7,26 @@
  */
 import type { Detector } from "./types.js";
 import { swiftuiOverInvalidation } from "./swiftuiOverInvalidation.js";
+import { animationHitchesDistribution } from "./animationHitchesDistribution.js";
+import { swiftuiRebuildStorm } from "./swiftuiRebuildStorm.js";
+import { allocationsGrowth } from "./allocationsGrowth.js";
+import { hitchCauseSplit } from "./hitchCauseSplit.js";
+import { leakAllocWithoutFree } from "./leakAllocWithoutFree.js";
+import { runloopContainsBodyEval } from "./runloopContainsBodyEval.js";
+import { fmPromptCachingMiss } from "./fmPromptCachingMiss.js";
+import { fmMainActorSaturation } from "./fmMainActorSaturation.js";
 
-export const DETECTORS: readonly Detector[] = [swiftuiOverInvalidation];
+export const DETECTORS: readonly Detector[] = [
+  swiftuiOverInvalidation,
+  animationHitchesDistribution,
+  swiftuiRebuildStorm,
+  allocationsGrowth,
+  hitchCauseSplit,
+  leakAllocWithoutFree,
+  runloopContainsBodyEval,
+  fmPromptCachingMiss,
+  fmMainActorSaturation,
+];
 
 export * from "./types.js";
 export {
