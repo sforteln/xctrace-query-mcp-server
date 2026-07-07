@@ -24,6 +24,7 @@ import {
   buildDisplaySelect,
   resolveBacktraceDisplayValues,
   resolveInternedDisplayValues,
+  makeInternTargetResolver,
   makeFrameLookup,
   makeInternResolver,
   buildWindowExpr,
@@ -181,7 +182,7 @@ export async function queryTable(
     : undefined;
 
   const conditions = [];
-  if (Object.keys(resolvedFilter).length > 0) conditions.push(buildEqualityFilter(resolvedFilter));
+  if (Object.keys(resolvedFilter).length > 0) conditions.push(buildEqualityFilter(resolvedFilter, makeInternTargetResolver(db)));
   if (timeRange && timeColumn) conditions.push(buildTimeRangeFilter(timeColumn, timeRange));
   const where = combineConditions(conditions);
 

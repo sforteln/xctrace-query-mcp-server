@@ -12,7 +12,8 @@
  */
 import type { DatabaseSync } from "node:sqlite";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
-import { isBacktraceCol, quoteIdent, ROW_IDX_COLUMN, isInternSentinel, internSentinelId, INTERN_THRESHOLD_BYTES } from "./sqliteStore.js";
+import { createHash } from "node:crypto";
+import { isBacktraceCol, quoteIdent, ROW_IDX_COLUMN, isInternSentinel, internSentinelId, INTERN_SENTINEL } from "./sqliteStore.js";
 
 // ─── Regex UDF ────────────────────────────────────────────────────────────────
 
@@ -289,6 +290,30 @@ export function makeInternResolver(db: DatabaseSync): (v: unknown) => unknown {
 export const identityResolver = (v: unknown): unknown => v;
 
 /**
+ * Resolve a filter TARGET to its stored form for equality comparison
+ * (PMT:ruddy-owl). If the value was interned (its content hash is in
+ * interned_values), rows store the sentinel token, not the literal — so eq/ne
+ * must compare against that token. Returns the sentinel token when the value is
+ * interned, else the value unchanged. One indexed hash lookup per distinct
+ * target (memoized), then a plain indexed `col = ?` — far cheaper than a
+ * per-row resolve of the column, and correct for interned values of ANY size
+ * (so this replaces lime-bluff's ≥256B-gated column-side resolve for equality).
+ */
+export function makeInternTargetResolver(db: DatabaseSync): (v: string) => string {
+  const stmt = db.prepare("SELECT id FROM interned_values WHERE hash = ?");
+  const cache = new Map<string, string>();
+  return (v: string): string => {
+    const cached = cache.get(v);
+    if (cached !== undefined) return cached;
+    const hash = createHash("sha256").update(v).digest("hex");
+    const row = stmt.get(hash) as { id: number } | undefined;
+    const form = row ? INTERN_SENTINEL + row.id : v;
+    cache.set(v, form);
+    return form;
+  };
+}
+
+/**
  * Resolve intern sentinels in a page of display rows in place — each row's
  * `__out_<ref>` value, if it's a sentinel, becomes its original content. Only
  * sentinels are touched (small display values pass straight through), so this
@@ -478,7 +503,7 @@ export interface SqlCondition {
  * short-circuits on the cheap SUBSTR check), so on a table with no interned
  * values in that column it's just `col` plus a per-row char test.
  */
-function internResolved(colSql: string): string {
+export function internResolved(colSql: string): string {
   return (
     `(CASE WHEN SUBSTR(${colSql},1,1)=char(1) ` +
     `THEN (SELECT content FROM interned_values WHERE id=CAST(SUBSTR(${colSql},2) AS INTEGER)) ` +
@@ -490,8 +515,16 @@ function internResolved(colSql: string): string {
 // dot-path resolution so a single call both resolves a field and rejects a
 // backtrace column with the same clear "use get_row / call_tree" message.
 
-/** query.ts's simple equality filter: mnemonic -> expected fmt or raw value. */
-export function buildEqualityFilter(filter: Record<string, string | number>): SqlCondition {
+/**
+ * query.ts's simple equality filter: mnemonic -> expected fmt or raw value.
+ * `internTarget` (PMT:ruddy-owl) resolves a string target to its stored form —
+ * the sentinel token when the value was interned, else the literal — so the
+ * comparison stays a plain indexed `col = ?` that matches interned rows too.
+ */
+export function buildEqualityFilter(
+  filter: Record<string, string | number>,
+  internTarget?: (v: string) => string
+): SqlCondition {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   for (const [mnemonic, expected] of Object.entries(filter)) {
@@ -502,16 +535,10 @@ export function buildEqualityFilter(filter: Record<string, string | number>): Sq
       // a text-affinity match on the numeric string form covers the coercion case.
       clauses.push(`(${raw} = ? OR CAST(${raw} AS TEXT) = ?)`);
       params.push(expected, String(expected));
-    } else if (expected.length >= INTERN_THRESHOLD_BYTES) {
-      // A target this large can only equal an INTERNED value (interned values
-      // are ≥ threshold), so resolve the sentinel to compare content. Small
-      // targets (the common case) skip this — they can never equal a big
-      // interned value, so bare comparison is both correct and cheaper.
-      clauses.push(`(${internResolved(fmt)} = ? OR CAST(${internResolved(raw)} AS TEXT) = ?)`);
-      params.push(expected, expected);
     } else {
+      const stored = internTarget ? internTarget(expected) : expected;
       clauses.push(`(${fmt} = ? OR CAST(${raw} AS TEXT) = ?)`);
-      params.push(expected, expected);
+      params.push(stored, stored);
     }
   }
   return { clause: clauses.join(" AND "), params };
@@ -543,8 +570,18 @@ export type ConditionOp =
   | "regex"
   | "is-null" | "not-null";
 
-/** find.ts's richer predicate DSL — mirrors testCondition's raw+fmt dual-check semantics exactly. */
-export function buildCondition(mnemonic: string, op: ConditionOp, val: string | number | undefined): SqlCondition {
+/**
+ * find.ts's richer predicate DSL — mirrors testCondition's raw+fmt dual-check
+ * semantics exactly. `internTarget` (PMT:ruddy-owl) resolves an eq/ne string
+ * target to its stored form so equality matches interned rows; contains/regex
+ * instead resolve the COLUMN per-row (they search within the value).
+ */
+export function buildCondition(
+  mnemonic: string,
+  op: ConditionOp,
+  val: string | number | undefined,
+  internTarget?: (v: string) => string
+): SqlCondition {
   const raw = quoteIdent(rawCol(mnemonic));
   const fmt = quoteIdent(fmtCol(mnemonic));
 
@@ -555,27 +592,23 @@ export function buildCondition(mnemonic: string, op: ConditionOp, val: string | 
   const notNullGuard = `${fmt} IS NOT NULL`;
 
   switch (op) {
-    case "eq":
+    case "eq": {
       if (val === undefined) return { clause: "0", params: [] };
       if (typeof val === "number") {
         return { clause: `${notNullGuard} AND (${raw} = ? OR CAST(${raw} AS REAL) = ?)`, params: [val, val] };
       }
-      // Only a target ≥ threshold can equal an interned value, so resolve the
-      // sentinel just for those (rare); small targets use the cheaper bare cols.
-      if (val.length >= INTERN_THRESHOLD_BYTES) {
-        return { clause: `${notNullGuard} AND (${internResolved(fmt)} = ? OR CAST(${internResolved(raw)} AS TEXT) = ?)`, params: [val, val] };
-      }
-      return { clause: `${notNullGuard} AND (${fmt} = ? OR CAST(${raw} AS TEXT) = ?)`, params: [val, val] };
+      const stored = internTarget ? internTarget(val) : val;
+      return { clause: `${notNullGuard} AND (${fmt} = ? OR CAST(${raw} AS TEXT) = ?)`, params: [stored, stored] };
+    }
 
-    case "ne":
+    case "ne": {
       if (val === undefined) return { clause: "0", params: [] };
       if (typeof val === "number") {
         return { clause: `${notNullGuard} AND ${raw} != ? AND CAST(${raw} AS REAL) != ?`, params: [val, val] };
       }
-      if (val.length >= INTERN_THRESHOLD_BYTES) {
-        return { clause: `${notNullGuard} AND ${internResolved(fmt)} != ? AND CAST(${internResolved(raw)} AS TEXT) != ?`, params: [val, val] };
-      }
-      return { clause: `${notNullGuard} AND ${fmt} != ? AND CAST(${raw} AS TEXT) != ?`, params: [val, val] };
+      const stored = internTarget ? internTarget(val) : val;
+      return { clause: `${notNullGuard} AND ${fmt} != ? AND CAST(${raw} AS TEXT) != ?`, params: [stored, stored] };
+    }
 
     case "gt":
       return val === undefined

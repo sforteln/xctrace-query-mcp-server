@@ -77,6 +77,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
 import { MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
+import { ColumnStatsAccumulator, decideInternColumns } from "./columnStats.js";
 
 /** A defensive backstop against pathological data, not a real design limit — no real schema seen so far nests anywhere close to this deep. */
 const MAX_PROMOTION_DEPTH = 6;
@@ -295,6 +296,22 @@ export const ROW_IDX_COLUMN = "_row_idx";
  */
 export const INTERN_SENTINEL = String.fromCharCode(1); // SOH — never present in xctrace text
 export const INTERN_THRESHOLD_BYTES = 256;
+/**
+ * PMT:ruddy-owl flavor-2: for a column pass 1 flagged as low-distinct /
+ * high-repeat, values this size or larger are interned (well below the 256B
+ * flavor-1 floor) — a 20-byte category repeated 275k× is pure duplication.
+ * Below this even N copies aren't worth a side-table row + hash-index entry.
+ * Interning stays CONSISTENT (every occurrence of a value → the same content-
+ * hash sentinel), so GROUP BY / JOIN / eq are unaffected.
+ */
+export const FLAVOR2_INTERN_FLOOR_BYTES = 16;
+/**
+ * PMT:ruddy-owl single-pass look-ahead: buffer this many rows to decide which
+ * columns are flavor-2 before writing any. Enough to read a column's
+ * repeat/distinct character (a ratio, so a sample suffices) while bounding the
+ * buffered-row memory. Small tables never reach it — they flush at finish().
+ */
+export const FLAVOR2_SAMPLE_ROWS = 20_000;
 
 /** True if a stored column value is an intern sentinel token (not literal content). */
 export function isInternSentinel(v: unknown): v is string {
@@ -419,10 +436,39 @@ export class SqliteTableWriter {
   private rowCount = 0;
   private inTxn = false;
 
-  constructor(db: DatabaseSync, tableName: string, cols: SchemaCol[]) {
+  /**
+   * PMT:ruddy-owl: mnemonics flagged as flavor-2 (low-distinct / high-repeat) —
+   * their values intern at the small FLAVOR2 floor rather than the 256B flavor-1
+   * floor. Decided from a bounded sample of the first `sampleSize` rows (a
+   * single-pass look-ahead, no second export), or injected up front (tests).
+   */
+  private internColumns: Set<string>;
+  private decided: boolean;
+  private readonly sampleSize: number;
+  private sampleStats: ColumnStatsAccumulator | null = null;
+  private sampleBuffer: NormalizedRow[] = [];
+
+  constructor(
+    db: DatabaseSync,
+    tableName: string,
+    cols: SchemaCol[],
+    opts: { internColumns?: Set<string>; sampleSize?: number } = {}
+  ) {
     this.db = db;
     this.tableName = tableName;
     this.cols = cols;
+    this.sampleSize = opts.sampleSize ?? FLAVOR2_SAMPLE_ROWS;
+    if (opts.internColumns) {
+      // Decision injected — write immediately, no sampling (tests / a caller
+      // that already knows the flavor-2 columns).
+      this.internColumns = opts.internColumns;
+      this.decided = true;
+    } else {
+      // Self-sample: buffer the first `sampleSize` rows to decide, then flush.
+      this.internColumns = new Set();
+      this.decided = false;
+      this.sampleStats = new ColumnStatsAccumulator();
+    }
     this.backtraceCols = new Set(cols.filter(isBacktraceCol).map((c) => c.mnemonic));
     this.btLookupStmt = db.prepare("SELECT id FROM backtraces WHERE fingerprint = ?");
     this.btInsertStmt = db.prepare("INSERT INTO backtraces (fingerprint) VALUES (?)");
@@ -478,17 +524,22 @@ export class SqliteTableWriter {
   }
 
   /**
-   * If `v` is a string large enough to be worth interning (PMT:lime-bluff),
-   * store it once in interned_values (deduped by content hash) and return a
-   * tiny sentinel token to store in the row column instead; otherwise return
-   * `v` unchanged. Numbers and small strings pass through, so numeric/label
-   * columns keep their literal values (filter/sort/group untouched). A value
-   * that already begins with the sentinel char (never produced by xctrace, so
-   * effectively impossible) is left inline to keep the discriminator unambiguous.
+   * If `v` is a string worth interning, store it once in interned_values
+   * (deduped by content hash) and return a tiny sentinel token to store in the
+   * row column instead; otherwise return `v` unchanged. The size threshold is
+   * per-column: a mnemonic pass 1 flagged as flavor-2 (low-distinct/high-repeat,
+   * PMT:ruddy-owl) interns at the small FLAVOR2 floor; every other column keeps
+   * lime-bluff's 256B flavor-1 floor. Interning is CONSISTENT — a given value
+   * always maps to the same sentinel — so a column that mixes interned and
+   * inline values across DIFFERENT values still groups/joins/compares correctly
+   * (each distinct value has exactly one stored form). Numbers, sub-floor
+   * strings, and already-sentinel values pass through unchanged.
    */
-  private internIfLarge(v: string | number | null): string | number | null {
-    if (typeof v !== "string" || v.length < INTERN_THRESHOLD_BYTES) return v;
-    if (v.charCodeAt(0) === 1) return v;
+  private internValue(v: string | number | null, mnemonic: string): string | number | null {
+    if (typeof v !== "string") return v;
+    if (v.charCodeAt(0) === 1) return v; // already a sentinel
+    const floor = this.internColumns.has(mnemonic) ? FLAVOR2_INTERN_FLOOR_BYTES : INTERN_THRESHOLD_BYTES;
+    if (v.length < floor) return v;
     const cached = this.internCache.get(v);
     if (cached !== undefined) return cached;
     const hash = createHash("sha256").update(v).digest("hex");
@@ -611,7 +662,35 @@ export class SqliteTableWriter {
     if (extended) this.rebuildInsertStmt();
   }
 
+  /**
+   * PMT:ruddy-owl single-pass look-ahead: until the flavor-2 decision is made,
+   * buffer rows and fold them into the sample stats; the moment the sample is
+   * full, decide and flush. Everything after writes straight through. A table
+   * smaller than the sample flushes at finish(). The buffered rows reference
+   * the parser's shared (RefCache-deduped) Cell objects, so buffering doesn't
+   * copy their blobs.
+   */
   writeRow(row: NormalizedRow): void {
+    if (!this.decided) {
+      this.sampleStats!.observeRow(row);
+      this.sampleBuffer.push(row);
+      if (this.sampleBuffer.length >= this.sampleSize) this.decideAndFlush();
+      return;
+    }
+    this.writeRowNow(row);
+  }
+
+  /** Lock in the flavor-2 decision from the sample, then replay the buffered rows. */
+  private decideAndFlush(): void {
+    this.internColumns = decideInternColumns(this.sampleStats!);
+    this.decided = true;
+    const buffered = this.sampleBuffer;
+    this.sampleBuffer = [];
+    this.sampleStats = null;
+    for (const row of buffered) this.writeRowNow(row);
+  }
+
+  private writeRowNow(row: NormalizedRow): void {
     // Uniform for row 1 and row N — no special-casing "the first row" (see
     // the constructor's comment on why the base table always exists already).
     this.maybeExtendSchema(row);
@@ -634,9 +713,9 @@ export class SqliteTableWriter {
         // blob shared across N rows is stored once, not N times. Small values
         // (numbers, labels, pids) pass through unchanged, so numeric/filter/
         // sort/group columns are unaffected.
-        values.push(this.internIfLarge(cell?.raw ?? null));
-        values.push(this.internIfLarge(cell?.fmt ?? null));
-        values.push(this.internIfLarge(residualChildrenBlob(cell)));
+        values.push(this.internValue(cell?.raw ?? null, col.mnemonic));
+        values.push(this.internValue(cell?.fmt ?? null, col.mnemonic));
+        values.push(this.internValue(residualChildrenBlob(cell), col.mnemonic));
         // A top-level column with no children of its own is itself a scalar
         // filter field — include it as an identity candidate (a shorter path
         // than any nested duplicate, so it wins canonical selection).
@@ -655,10 +734,10 @@ export class SqliteTableWriter {
             continue;
           }
           if (p.kind === "scalar") {
-            values.push(this.internIfLarge(descendant?.raw ?? null));
+            values.push(this.internValue(descendant?.raw ?? null, col.mnemonic));
             if (descendant) scalarCells.push([`${col.mnemonic}__${p.path.join("__")}`, descendant]);
           }
-          values.push(this.internIfLarge(descendant?.fmt ?? null));
+          values.push(this.internValue(descendant?.fmt ?? null, col.mnemonic));
         }
       }
     }
@@ -674,6 +753,9 @@ export class SqliteTableWriter {
 
   /** Commit any partial trailing batch and return the final row count. */
   finish(): number {
+    // A table smaller than the sample never triggered the decision — decide now
+    // (on its true, full row count) and flush the buffer before finalizing.
+    if (!this.decided) this.decideAndFlush();
     if (this.inTxn) {
       this.db.exec("COMMIT");
       this.inTxn = false;

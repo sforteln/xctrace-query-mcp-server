@@ -30,6 +30,7 @@ import {
   resolveInternedDisplayValues,
   makeFrameLookup,
   makeInternResolver,
+  makeInternTargetResolver,
   type ConditionOp,
 } from "../engine/sqlHydrate.js";
 import { buildFieldResolver } from "../engine/fieldRef.js";
@@ -145,8 +146,9 @@ export async function findRows(
       : meta.cols.map((c) => c.mnemonic);
 
   // --- Build WHERE (each condition's col resolved to its physical base) ---
+  const internTarget = makeInternTargetResolver(db);
   const conditions = where.map((c) =>
-    buildCondition(resolver.resolveComparable(c.col, "filter on").base, c.op, c.val)
+    buildCondition(resolver.resolveComparable(c.col, "filter on").base, c.op, c.val, internTarget)
   );
   const sortBase = sort?.by ? resolver.resolveComparable(sort.by, "sort by").base : undefined;
   if (timeRange && timeColumn) conditions.push(buildTimeRangeFilter(timeColumn, timeRange));

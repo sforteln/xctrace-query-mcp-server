@@ -29,6 +29,7 @@ import {
   rawCol,
   percentileFnFor,
   makeInternResolver,
+  makeInternTargetResolver,
 } from "../engine/sqlHydrate.js";
 import { buildFieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent } from "../engine/sqliteStore.js";
@@ -265,7 +266,7 @@ export async function aggregateTable(
     resolvedFilter[resolver.resolveComparable(ref, "filter on").base] = val;
   }
   const preFilterConditions = [];
-  if (Object.keys(resolvedFilter).length > 0) preFilterConditions.push(buildEqualityFilter(resolvedFilter));
+  if (Object.keys(resolvedFilter).length > 0) preFilterConditions.push(buildEqualityFilter(resolvedFilter, makeInternTargetResolver(db)));
   if (timeRange && timeColumn) preFilterConditions.push(buildTimeRangeFilter(timeColumn, timeRange));
   const preFilterWhere = combineConditions(preFilterConditions);
 

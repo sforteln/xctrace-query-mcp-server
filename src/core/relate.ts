@@ -28,7 +28,7 @@ import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../en
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { firstWithRole, preferredThreadColumn } from "../engine/roleInference.js";
 import { formatValue } from "./aggregate.js";
-import { combineConditions, fmtCol, rawCol, resolveInternedDisplayValues, makeInternResolver, type SqlCondition } from "../engine/sqlHydrate.js";
+import { combineConditions, fmtCol, rawCol, resolveInternedDisplayValues, makeInternResolver, makeInternTargetResolver, internResolved, type SqlCondition } from "../engine/sqlHydrate.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import type { WeightUnit, ClassifiedColumn } from "../engine/roleInference.js";
 
@@ -214,8 +214,12 @@ export async function relate(
 
   // A-side WHERE (aFilter + A timeRange on A's own time column).
   const aTimeCol = primaryTime(schemaA, classA);
+  // PMT:ruddy-owl: a joined/filtered column may be flavor-2 interned in one
+  // table but not the other (per-table decision), so equality targets resolve
+  // to their stored sentinel and join keys resolve column content on BOTH sides.
+  const internTarget = makeInternTargetResolver(db);
   const aConds: SqlCondition[] = [{ clause: `A.${quoteIdent(fmtCol(groupBy))} IS NOT NULL`, params: [] }];
-  if (aFilter && Object.keys(aFilter).length > 0) aConds.push(aliasedEqualityFilter("A", aFilter));
+  if (aFilter && Object.keys(aFilter).length > 0) aConds.push(aliasedEqualityFilter("A", aFilter, internTarget));
   if (timeRange && aTimeCol) aConds.push(timeRangeOn("A", aTimeCol, timeRange));
   const aWhere = combineConditions(aConds);
 
@@ -223,7 +227,7 @@ export async function relate(
   // rows — a bFilter/B-timeRange in WHERE would silently turn it into an INNER).
   const bTimeCol = primaryTime(schemaB, classB);
   const bConds: SqlCondition[] = [];
-  if (bFilter && Object.keys(bFilter).length > 0) bConds.push(aliasedEqualityFilter("B", bFilter));
+  if (bFilter && Object.keys(bFilter).length > 0) bConds.push(aliasedEqualityFilter("B", bFilter, internTarget));
   if (timeRange && bTimeCol) bConds.push(timeRangeOn("B", bTimeCol, timeRange));
 
   // Core A↔B match predicate (thread match handled separately as a CASE so we
@@ -244,7 +248,7 @@ export async function relate(
     joinCondition === "time-range"
       ? `B.${quoteIdent(rawCol(bTimestamp!))} BETWEEN A.${quoteIdent(rawCol(aStart!))} ` +
         `AND A.${quoteIdent(rawCol(aStart!))} + A.${quoteIdent(rawCol(aDuration!))}`
-      : equalityPairs!.map((p) => `A.${quoteIdent(fmtCol(p.a))} = B.${quoteIdent(fmtCol(p.b))}`).join(" AND ");
+      : equalityPairs!.map((p) => `${internResolved(`A.${quoteIdent(fmtCol(p.a))}`)} = ${internResolved(`B.${quoteIdent(fmtCol(p.b))}`)}`).join(" AND ");
 
   const onConds = combineConditions([{ clause: coreMatch, params: [] }, ...bConds]);
 
@@ -252,13 +256,13 @@ export async function relate(
   // "matched" is just "has a B row".
   const bHasRow = `B.${quoteIdent(ROW_IDX_COLUMN)} IS NOT NULL`;
   const threadMatch = matchThread
-    ? `(${bHasRow} AND A.${quoteIdent(fmtCol(aThread!))} = B.${quoteIdent(fmtCol(bThread!))})`
+    ? `(${bHasRow} AND ${internResolved(`A.${quoteIdent(fmtCol(aThread!))}`)} = ${internResolved(`B.${quoteIdent(fmtCol(bThread!))}`)})`
     : bHasRow;
 
   const bMeasureExpr = polarity === "exists" && measure ? `CAST(B.${quoteIdent(rawCol(measure))} AS REAL)` : "0";
 
   const aggSql =
-    `SELECT A.${quoteIdent(fmtCol(groupBy))} AS gkey, ` +
+    `SELECT ${internResolved(`A.${quoteIdent(fmtCol(groupBy))}`)} AS gkey, ` +
     `COUNT(DISTINCT A.${quoteIdent(ROW_IDX_COLUMN)}) AS aCount, ` +
     `COUNT(B.${quoteIdent(ROW_IDX_COLUMN)}) AS matchAnyThread, ` +
     `SUM(CASE WHEN ${threadMatch} THEN 1 ELSE 0 END) AS matchCount, ` +
@@ -278,9 +282,9 @@ export async function relate(
   if (polarity === "not-exists" && measure) {
     const notExistsSub =
       `NOT EXISTS (SELECT 1 FROM ${B} B WHERE ${onConds.clause}` +
-      (matchThread ? ` AND A.${quoteIdent(fmtCol(aThread!))} = B.${quoteIdent(fmtCol(bThread!))}` : "") + `)`;
+      (matchThread ? ` AND ${internResolved(`A.${quoteIdent(fmtCol(aThread!))}`)} = ${internResolved(`B.${quoteIdent(fmtCol(bThread!))}`)}` : "") + `)`;
     const antiSql =
-      `SELECT A.${quoteIdent(fmtCol(groupBy))} AS gkey, SUM(CAST(A.${quoteIdent(rawCol(measure))} AS REAL)) AS aMeasureSum ` +
+      `SELECT ${internResolved(`A.${quoteIdent(fmtCol(groupBy))}`)} AS gkey, SUM(CAST(A.${quoteIdent(rawCol(measure))} AS REAL)) AS aMeasureSum ` +
       `FROM ${A} A WHERE ${aWhere.clause} AND ${notExistsSub} GROUP BY gkey`;
     const antiRows = db.prepare(antiSql).all(...aWhere.params, ...onConds.params) as Array<{ gkey: string; aMeasureSum: number }>;
     aMeasureByKey = new Map(antiRows.map((r) => [r.gkey, Number(r.aMeasureSum ?? 0)]));
@@ -328,7 +332,7 @@ export async function relate(
     const selects = uniqueCols.map((m) => `A.${quoteIdent(fmtCol(m))} AS ${quoteIdent(`__out_${m}`)}`);
     const hasMatchSub =
       `EXISTS (SELECT 1 FROM ${B} B WHERE ${onConds.clause}` +
-      (matchThread ? ` AND A.${quoteIdent(fmtCol(aThread!))} = B.${quoteIdent(fmtCol(bThread!))}` : "") + `)`;
+      (matchThread ? ` AND ${internResolved(`A.${quoteIdent(fmtCol(aThread!))}`)} = ${internResolved(`B.${quoteIdent(fmtCol(bThread!))}`)}` : "") + `)`;
     const wantClause = polarity === "exists" ? hasMatchSub : `NOT ${hasMatchSub}`;
     const listSql =
       `SELECT A.${quoteIdent(ROW_IDX_COLUMN)} AS ridx, ${selects.join(", ")} ` +
@@ -374,7 +378,11 @@ export async function relate(
  * exactly (same raw+fmt dual-check + numeric coercion), but emits
  * `A."col" = ?` for a two-table join where a bare `"col"` would be ambiguous.
  */
-function aliasedEqualityFilter(alias: string, filter: Record<string, string | number>): SqlCondition {
+function aliasedEqualityFilter(
+  alias: string,
+  filter: Record<string, string | number>,
+  internTarget?: (v: string) => string
+): SqlCondition {
   const clauses: string[] = [];
   const params: Array<string | number> = [];
   for (const [mnemonic, expected] of Object.entries(filter)) {
@@ -384,8 +392,10 @@ function aliasedEqualityFilter(alias: string, filter: Record<string, string | nu
       clauses.push(`(${raw} = ? OR CAST(${raw} AS TEXT) = ?)`);
       params.push(expected, String(expected));
     } else {
+      // Resolve an interned target to its stored sentinel (PMT:ruddy-owl).
+      const stored = internTarget ? internTarget(expected) : expected;
       clauses.push(`(${fmt} = ? OR CAST(${raw} AS TEXT) = ?)`);
-      params.push(expected, expected);
+      params.push(stored, stored);
     }
   }
   return { clause: clauses.join(" AND "), params };

@@ -25,6 +25,7 @@ import {
   ROW_IDX_COLUMN,
   INTERN_THRESHOLD_BYTES,
 } from "../src/engine/sqliteStore.js";
+import { ColumnStatsAccumulator, decideInternColumns } from "../src/engine/columnStats.js";
 import {
   fmtCol,
   buildCondition,
@@ -32,6 +33,7 @@ import {
   makeInternResolver,
   resolveInternedDisplayValues,
   registerRegexpUdf,
+  makeInternTargetResolver,
 } from "../src/engine/sqlHydrate.js";
 import type { SchemaCol, NormalizedRow, Cell } from "../src/engine/parseTable.js";
 
@@ -115,13 +117,115 @@ describe("PMT:lime-bluff value interning", () => {
 
   it("find eq / regex match an interned value by its full content", () => {
     const db = ingest([BIG_A, BIG_B, SMALL]);
-    expect(selectDetailIdx(db, buildCondition("detail", "eq", BIG_A))).toEqual([0]);
+    // eq resolves the TARGET to its stored sentinel (PMT:ruddy-owl); regex resolves the column per-row.
+    const t = makeInternTargetResolver(db);
+    expect(selectDetailIdx(db, buildCondition("detail", "eq", BIG_A, t))).toEqual([0]);
     expect(selectDetailIdx(db, buildCondition("detail", "regex", "^SidebarRow"))).toEqual([0]);
   });
 
   it("query equality filter matches an interned value by its full content", () => {
     const db = ingest([BIG_A, BIG_B, SMALL]);
-    expect(selectDetailIdx(db, buildEqualityFilter({ detail: BIG_A }))).toEqual([0]);
-    expect(selectDetailIdx(db, buildEqualityFilter({ detail: SMALL }))).toEqual([2]);
+    const t = makeInternTargetResolver(db);
+    expect(selectDetailIdx(db, buildEqualityFilter({ detail: BIG_A }, t))).toEqual([0]);
+    expect(selectDetailIdx(db, buildEqualityFilter({ detail: SMALL }, t))).toEqual([2]);
+  });
+});
+
+// ─── PMT:ruddy-owl flavor-2: small-but-repeated ─────────────────────────────────
+
+// Values ≥ FLAVOR2 floor (16B) but well under the 256B flavor-1 threshold.
+const CAT_A = "SidebarRow.body.view"; // 20B
+const CAT_B = "Button.body.element"; // 19B
+
+function ingestCat(values: string[], internColumns: Set<string>): ReturnType<typeof openSessionDb> {
+  const db = openSessionDb(":memory:", { journalMode: "default" });
+  const cols: SchemaCol[] = [{ mnemonic: "cat", name: "Category", engineeringType: "string" }];
+  const writer = new SqliteTableWriter(db, "tbl", cols, { internColumns });
+  for (const v of values) writer.writeRow({ cat: stringCell(v) });
+  writer.finish();
+  return db;
+}
+
+describe("PMT:ruddy-owl flavor-2 interning", () => {
+  it("interns a flagged small-but-repeated column CONSISTENTLY (one token per value)", () => {
+    const db = ingestCat([CAT_A, CAT_A, CAT_A, CAT_B], new Set(["cat"]));
+
+    // Both distinct values interned once each (not per row), despite being < 256B.
+    const iv = db.prepare("SELECT COUNT(*) AS n FROM interned_values").get() as { n: number };
+    expect(iv.n).toBe(2);
+
+    const stored = db
+      .prepare(`SELECT ${quoteIdent(fmtCol("cat"))} AS fmt FROM tbl ORDER BY ${quoteIdent(ROW_IDX_COLUMN)}`)
+      .all() as Array<{ fmt: string }>;
+    // Every occurrence of CAT_A shares ONE sentinel token — the consistency that
+    // keeps GROUP BY / JOIN correct.
+    expect(isInternSentinel(stored[0].fmt)).toBe(true);
+    expect(stored[0].fmt).toBe(stored[1].fmt);
+    expect(stored[1].fmt).toBe(stored[2].fmt);
+    expect(stored[3].fmt).not.toBe(stored[0].fmt);
+  });
+
+  it("GROUP BY on an interned small column is not split (consistent token → one group per value)", () => {
+    const db = ingestCat([CAT_A, CAT_A, CAT_A, CAT_B, CAT_B], new Set(["cat"]));
+    const unintern = makeInternResolver(db);
+    const groups = db
+      .prepare(`SELECT ${quoteIdent(fmtCol("cat"))} AS k, COUNT(*) AS n FROM tbl GROUP BY ${quoteIdent(fmtCol("cat"))}`)
+      .all() as Array<{ k: string; n: number }>;
+    // Two groups, correct counts — NOT four (which a first-inline/then-sentinel scheme would produce).
+    const byKey = new Map(groups.map((g) => [unintern(g.k) as string, g.n]));
+    expect(byKey.size).toBe(2);
+    expect(byKey.get(CAT_A)).toBe(3);
+    expect(byKey.get(CAT_B)).toBe(2);
+  });
+
+  it("eq on a small interned value matches via target resolution", () => {
+    const db = ingestCat([CAT_A, CAT_B, CAT_A], new Set(["cat"]));
+    const t = makeInternTargetResolver(db);
+    const idx = db
+      .prepare(`SELECT ${quoteIdent(ROW_IDX_COLUMN)} AS idx FROM tbl WHERE ${buildEqualityFilter({ cat: CAT_A }, t).clause} ORDER BY idx`)
+      .all(...buildEqualityFilter({ cat: CAT_A }, t).params) as Array<{ idx: number }>;
+    expect(idx.map((r) => r.idx)).toEqual([0, 2]);
+  });
+
+  it("does NOT intern the same small values when the column is not flagged", () => {
+    const db = ingestCat([CAT_A, CAT_A, CAT_B], new Set()); // no flavor-2 columns
+    const iv = db.prepare("SELECT COUNT(*) AS n FROM interned_values").get() as { n: number };
+    expect(iv.n).toBe(0); // < 256B and not flagged → stays inline
+    const stored = db.prepare(`SELECT ${quoteIdent(fmtCol("cat"))} AS fmt FROM tbl`).all() as Array<{ fmt: string }>;
+    expect(stored.every((r) => !isInternSentinel(r.fmt))).toBe(true);
+  });
+
+  it("self-samples the decision (no injected columns) and interns buffered + later rows consistently", () => {
+    const db = openSessionDb(":memory:", { journalMode: "default" });
+    const cols: SchemaCol[] = [{ mnemonic: "cat", name: "Category", engineeringType: "string" }];
+    // sampleSize 5000 so the decision fires mid-stream; 5001 rows exercises both
+    // the flushed buffer AND a post-decision write.
+    const writer = new SqliteTableWriter(db, "tbl", cols, { sampleSize: 5000 });
+    const vals = ["SidebarRow.body.view", "Button.body.element", "LazyVStack.body.node"];
+    for (let i = 0; i < 5001; i++) writer.writeRow({ cat: stringCell(vals[i % 3]) });
+    writer.finish();
+
+    // The 3 repeated values interned once each — decided from the sample, no injection.
+    const iv = db.prepare("SELECT COUNT(*) AS n FROM interned_values").get() as { n: number };
+    expect(iv.n).toBe(3);
+    // EVERY row (including the 5000 buffered before the decision) carries a sentinel —
+    // the flush applied the decision retroactively, so representation is consistent.
+    const stored = db.prepare(`SELECT ${quoteIdent(fmtCol("cat"))} AS fmt FROM tbl`).all() as Array<{ fmt: string }>;
+    expect(stored.length).toBe(5001);
+    expect(stored.every((r) => isInternSentinel(r.fmt))).toBe(true);
+  });
+
+  it("decideInternColumns picks the high-repeat column and skips the unique one", () => {
+    const acc = new ColumnStatsAccumulator();
+    // `cat` cycles through 3 values over 100k rows (huge duplication); `id` is unique per row.
+    for (let i = 0; i < 100_000; i++) {
+      acc.observeRow({
+        cat: stringCell(["SidebarRow.body.view", "Button.body.element", "LazyVStack.body.node"][i % 3]),
+        id: stringCell(`unique-identifier-value-${i}`),
+      });
+    }
+    const chosen = decideInternColumns(acc);
+    expect(chosen.has("cat")).toBe(true);
+    expect(chosen.has("id")).toBe(false);
   });
 });
