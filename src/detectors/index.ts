@@ -15,6 +15,8 @@ import { leakAllocWithoutFree } from "./leakAllocWithoutFree.js";
 import { runloopContainsBodyEval } from "./runloopContainsBodyEval.js";
 import { fmPromptCachingMiss } from "./fmPromptCachingMiss.js";
 import { fmMainActorSaturation } from "./fmMainActorSaturation.js";
+import { outlierSweep } from "./outlierSweep.js";
+import { nearMissSweep } from "./nearMissSweep.js";
 
 export const DETECTORS: readonly Detector[] = [
   swiftuiOverInvalidation,
@@ -26,6 +28,8 @@ export const DETECTORS: readonly Detector[] = [
   runloopContainsBodyEval,
   fmPromptCachingMiss,
   fmMainActorSaturation,
+  outlierSweep,
+  nearMissSweep,
 ];
 
 export * from "./types.js";
