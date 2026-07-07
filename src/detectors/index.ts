@@ -17,6 +17,7 @@ import { fmPromptCachingMiss } from "./fmPromptCachingMiss.js";
 import { fmMainActorSaturation } from "./fmMainActorSaturation.js";
 import { outlierSweep } from "./outlierSweep.js";
 import { nearMissSweep } from "./nearMissSweep.js";
+import { renderHitchSweep } from "./renderHitchSweep.js";
 
 export const DETECTORS: readonly Detector[] = [
   swiftuiOverInvalidation,
@@ -30,6 +31,7 @@ export const DETECTORS: readonly Detector[] = [
   fmMainActorSaturation,
   outlierSweep,
   nearMissSweep,
+  renderHitchSweep,
 ];
 
 export * from "./types.js";

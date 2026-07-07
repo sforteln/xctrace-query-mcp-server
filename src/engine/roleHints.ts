@@ -384,8 +384,9 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "is-main-display": detail,
     },
   },
-  // display-vsyncs-interval (PMT:still-hail): per-vsync tick log (2,364 rows
-  // in the authoring trace — NOT tiny; a real recording can carry many more).
+  // display-vsyncs-interval (PMT:still-hail, corrected by the render-baseline
+  // follow-up): per-vsync tick log (2,364 rows in the authoring trace — NOT
+  // tiny; a real recording can carry many more).
   // VERIFIED LIVE, surprising: `duration` is NOT the inter-vsync interval in
   // practice — every single row carried the identical value (a 1ns sentinel
   // for the "VSync Request" marker), despite the column's declared
@@ -394,6 +395,15 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
   // consecutive `timestamp` values, not from this column — pinned here as
   // `ns` anyway (matches the declared type/what a future trace might carry),
   // but don't rely on it for cadence without checking for variance first.
+  // CORRECTION (render-baseline follow-up): still-hail's column probe missed
+  // that `color` (a confusing mnemonic reused as a plain UI tag on OTHER
+  // Display schemas — hitches-renders' frame-color, displayed-surfaces-
+  // interval's own color) carries engineering-type "render-buffer-depth"
+  // HERE, on THIS schema specifically — verified live, fmt="2" (constant)
+  // across every one of the 2,364 rows in the authoring trace. This IS the
+  // buffer-count signal still-hail believed didn't exist; frameBudget.ts's
+  // resolveRenderBaselineMs() reads it. Similarly `event` carries engineering-
+  // type "vsync-event" (constant "VSYNC" in this trace) — a plain label.
   "display-vsyncs-interval": {
     instrument: "Displays (vsync ticks)",
     primaryTime: "timestamp",
@@ -403,10 +413,13 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       duration: ns,
       // display-name is a "Display N" string — the SAME form hitches.display carries (direct join key).
       "display-name": label,
-      // color: an event-concept-shaped visualization tag reused across these Display
-      // schemas (NOT a real render-buffer/pipeline-depth count — verified live, see hitches-renders above).
-      color: detail,
+      // color: despite the name, engineering-type is render-buffer-depth on THIS
+      // schema (verified live, fmt="2") — the swap-chain/back-buffer count
+      // frameBudget.ts's resolveRenderBaselineMs() reads. A small count, not a
+      // UI tag, unlike the same-named `color` column elsewhere.
+      color: count,
       "event-label": detail,
+      // event: engineering-type vsync-event (e.g. "VSYNC") — a plain label.
       event: label,
     },
   },

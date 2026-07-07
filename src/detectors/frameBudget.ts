@@ -33,6 +33,18 @@
  *   3. Fallback — DEFAULT_REFRESH_INTERVAL_MS, ONLY when neither schema
  *      yields a number, with `assumed: true` so callers can surface the
  *      caveat in the finding text rather than silently pretending accuracy.
+ *
+ * CORRECTION (render-baseline follow-up to this same PMT): the header above
+ * used to say Apple's render-hitch baseline (aidocs #1's OTHER band —
+ * baseline = ((buffer-count - 1) / 2) x refresh-interval) had to be deferred
+ * because no buffer-count signal was available. It IS available: verified
+ * live against the same authoring trace, display-vsyncs-interval's `color`
+ * mnemonic (a name that reads like a UI tag, and IS just that on OTHER
+ * Display schemas) carries engineering-type "render-buffer-depth" on THIS
+ * schema specifically (fmt="2", constant across all 2,364 rows) — the
+ * earlier column probe missed it. resolveRenderBaselineMs() below reads it,
+ * reusing this file's resolveFrameBudgetMs() for the refresh-interval term
+ * rather than re-deriving it.
  */
 import { quoteIdent } from "../engine/sqliteStore.js";
 import { fmtCol, rawCol } from "../engine/sqlHydrate.js";
@@ -187,4 +199,113 @@ export function resolveFrameBudgetMs(ctx: DetectorContext, display: string | nul
         `(e.g. ProMotion) displays`,
     }
   );
+}
+
+// ─── Render baseline (render-baseline follow-up) ───────────────────────────────
+
+/**
+ * display-vsyncs-interval's mnemonic that carries the swap-chain / back-
+ * buffer count on THIS schema (engineering-type "render-buffer-depth",
+ * verified live — fmt="2" constant across the authoring trace). The name is
+ * misleading (the same mnemonic is a plain UI color tag on other Display
+ * schemas — hitches-renders' frame-color, displayed-surfaces-interval's own
+ * `color`), which is exactly why still-hail's original column probe missed
+ * this signal; see this file's header for the correction.
+ */
+const RENDER_BUFFER_DEPTH_COLUMN = "color";
+
+/** Observed default buffer depth (double-buffering) — verified live against the
+ *  still-hail/render-baseline authoring trace, where this was the ONLY value
+ *  present. Used only when the column is present but every row's value is
+ *  missing/non-numeric (or the schema isn't ingested at all) — never silently
+ *  assumed when a real depth is readable. */
+const DEFAULT_RENDER_BUFFER_DEPTH = 2;
+
+export type RenderBaselineDepthSource = "render-buffer-depth" | "fallback";
+
+export interface RenderBaselineResult {
+  /** Apple's render-hitch baseline (ms): ((bufferDepth - 1) / 2) x the resolved frame budget. */
+  baselineMs: number;
+  /** The buffer depth used to compute it (observed, or the fallback default). */
+  bufferDepth: number;
+  /** Where bufferDepth came from. */
+  depthSource: RenderBaselineDepthSource;
+  /** The underlying frame-budget resolution this baseline was built on (see resolveFrameBudgetMs). */
+  frameBudget: FrameBudgetResult;
+  /** True if EITHER the buffer depth or the underlying frame budget had to be assumed — callers should surface `note`. */
+  assumed: boolean;
+  /** Human-readable caveat; only set when assumed. */
+  note?: string;
+}
+
+/**
+ * Read the per-display render-buffer-depth from display-vsyncs-interval —
+ * the median across that display's rows (a real trace's depth is stable per
+ * display, but median guards against a stray bad value the same way
+ * tryVsyncCadence's cadence median does). Returns null when the schema isn't
+ * ingested, isn't the expected shape, or every row's value is missing —
+ * never throws.
+ */
+function tryRenderBufferDepth(ctx: DetectorContext, display: string | null): number | null {
+  const table = safeTable(ctx, DISPLAY_VSYNCS_SCHEMA);
+  if (!table) return null;
+
+  let rawRows: Array<{ depth: number | null }>;
+  try {
+    const displayFilter = display ? `WHERE ${quoteIdent(fmtCol("display-name"))} = ?` : "";
+    const stmt = ctx.db.prepare(
+      `SELECT CAST(${quoteIdent(rawCol(RENDER_BUFFER_DEPTH_COLUMN))} AS REAL) AS depth ` +
+        `FROM ${quoteIdent(table)} ${displayFilter} LIMIT ${MAX_VSYNC_SAMPLE_ROWS}`
+    );
+    rawRows = (display ? stmt.all(display) : stmt.all()) as Array<{ depth: number | null }>;
+  } catch {
+    return null; // schema present but not the shape we expect — degrade gracefully
+  }
+
+  const depths = rawRows.map((r) => r.depth).filter((d): d is number => typeof d === "number" && d > 0);
+  return median(depths);
+}
+
+/**
+ * Resolve Apple's render-hitch baseline (ms) for a hitch's render passes,
+ * given its `display` label — or null to resolve a trace-wide baseline.
+ * baseline = ((buffer-count - 1) / 2) x the REAL per-display frame budget
+ * (aidocs #1, dim-chalk §1): render-duration at/under this is Low (fine, the
+ * double-buffering pipeline absorbs it), at/over 2x is High (a slow render
+ * likely causing the hitch itself, not just downstream of one) — see
+ * bands.ts's RENDER_BASELINE_LOW_MULTIPLE/RENDER_BASELINE_HIGH_MULTIPLE.
+ *
+ * Reuses resolveFrameBudgetMs() for the refresh-interval term rather than
+ * re-deriving it — the two resolvers must never disagree on what "the frame
+ * budget" is for the same display. Never throws; falls back to
+ * DEFAULT_RENDER_BUFFER_DEPTH (the observed default) when the buffer-depth
+ * column is present-but-empty or the schema isn't ingested at all, with
+ * `assumed: true` (also true when the underlying frame budget itself had to
+ * be assumed) so callers can surface the caveat exactly like
+ * resolveFrameBudgetMs's own fallback.
+ */
+export function resolveRenderBaselineMs(ctx: DetectorContext, display: string | null = null): RenderBaselineResult {
+  const frameBudget = resolveFrameBudgetMs(ctx, display);
+  const observedDepth = tryRenderBufferDepth(ctx, display);
+  const depthAssumed = observedDepth === null;
+  const bufferDepth = observedDepth ?? DEFAULT_RENDER_BUFFER_DEPTH;
+  const baselineMs = ((bufferDepth - 1) / 2) * frameBudget.budgetMs;
+
+  const notes: string[] = [];
+  if (depthAssumed) {
+    notes.push(
+      `assuming render-buffer-depth=${DEFAULT_RENDER_BUFFER_DEPTH} (the observed default) — ${DISPLAY_VSYNCS_SCHEMA}'s ` +
+        `${RENDER_BUFFER_DEPTH_COLUMN} column wasn't ingested or was empty for this display`
+    );
+  }
+  if (frameBudget.assumed && frameBudget.note) notes.push(frameBudget.note);
+
+  return {
+    baselineMs,
+    bufferDepth,
+    depthSource: depthAssumed ? "fallback" : "render-buffer-depth",
+    frameBudget,
+    assumed: depthAssumed || frameBudget.assumed,
+    ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
+  };
 }

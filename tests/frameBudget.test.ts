@@ -13,8 +13,9 @@ import { openSessionDb, SqliteTableWriter } from "../src/engine/sqliteStore.js";
 import type { SchemaCol, NormalizedRow } from "../src/engine/parseTable.js";
 import type { DetectorContext } from "../src/detectors/index.js";
 import { DEFAULT_REFRESH_INTERVAL_MS, HITCH_MODERATE_MULTIPLE } from "../src/detectors/bands.js";
-import { resolveFrameBudgetMs, DEVICE_DISPLAY_INFO_SCHEMA, DISPLAY_VSYNCS_SCHEMA } from "../src/detectors/frameBudget.js";
+import { resolveFrameBudgetMs, resolveRenderBaselineMs, DEVICE_DISPLAY_INFO_SCHEMA, DISPLAY_VSYNCS_SCHEMA } from "../src/detectors/frameBudget.js";
 import { outlierSweep } from "../src/detectors/outlierSweep.js";
+import { renderHitchSweep } from "../src/detectors/renderHitchSweep.js";
 
 type Row = Record<string, { type: string; fmt: string | number; raw: string | number }>;
 
@@ -180,5 +181,134 @@ describe("hitch detectors wired to the real budget (PMT:still-hail integration)"
   it("sanity: HITCH_MODERATE_MULTIPLE x 120Hz budget is under 10ms (the crossing this whole scenario depends on)", () => {
     expect(HITCH_MODERATE_MULTIPLE * (1000 / 120)).toBeLessThan(10);
     expect(HITCH_MODERATE_MULTIPLE * (1000 / 60)).toBeGreaterThan(10);
+  });
+});
+
+// ── render-baseline follow-up: resolveRenderBaselineMs + renderHitchSweep ───────
+
+/** display-vsyncs-interval rows carrying render-buffer-depth (mnemonic "color",
+ *  engineering-type "render-buffer-depth" on THIS schema — verified live). */
+const DEPTH_COLS = colsOf({ timestamp: "start-time", "display-name": "display-name", color: "render-buffer-depth" });
+
+function ingestVsyncDepth(db: ReturnType<typeof openSessionDb>, display: string, depths: number[]): void {
+  ingest(
+    db,
+    DISPLAY_VSYNCS_SCHEMA,
+    DEPTH_COLS,
+    depths.map((d, i) => ({
+      timestamp: cell("start-time", i * 1_000_000),
+      "display-name": cell("display-name", display),
+      color: cell("render-buffer-depth", d),
+    }))
+  );
+}
+
+/** Same schema, same column shape, but every row's depth cell is null — the
+ *  "column present-but-empty" case (as opposed to the schema not being
+ *  ingested at all, which resolveFrameBudgetMs's own tests already cover). */
+function ingestVsyncEmptyDepth(db: ReturnType<typeof openSessionDb>, display: string, count: number): void {
+  ingest(
+    db,
+    DISPLAY_VSYNCS_SCHEMA,
+    DEPTH_COLS,
+    Array.from({ length: count }, (_, i) => ({
+      timestamp: cell("start-time", i * 1_000_000),
+      "display-name": cell("display-name", display),
+      color: null,
+    })) as Row[]
+  );
+}
+
+describe("resolveRenderBaselineMs (render-baseline follow-up)", () => {
+  it("resolves 8.33ms for depth=2 @ 60Hz", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 60, isMain: true }]);
+    ingestVsyncDepth(db, "Display 1", [2, 2, 2]);
+    const result = resolveRenderBaselineMs(ctxFor(db), "Display 1");
+    expect(result.bufferDepth).toBe(2);
+    expect(result.depthSource).toBe("render-buffer-depth");
+    expect(result.assumed).toBe(false);
+    expect(result.baselineMs).toBeCloseTo(8.33, 1);
+  });
+
+  it("resolves ~4.17ms for depth=2 @ 120Hz", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 120, isMain: true }]);
+    ingestVsyncDepth(db, "Display 1", [2, 2, 2]);
+    const result = resolveRenderBaselineMs(ctxFor(db), "Display 1");
+    expect(result.assumed).toBe(false);
+    expect(result.baselineMs).toBeCloseTo(4.17, 1);
+  });
+
+  it("resolves 16.67ms for depth=3 @ 60Hz", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 60, isMain: true }]);
+    ingestVsyncDepth(db, "Display 1", [3, 3, 3]);
+    const result = resolveRenderBaselineMs(ctxFor(db), "Display 1");
+    expect(result.bufferDepth).toBe(3);
+    expect(result.baselineMs).toBeCloseTo(16.67, 1);
+  });
+
+  it("falls back to the observed default depth (2) with assumed:true when the render-buffer-depth column is present but empty", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 60, isMain: true }]); // frame budget still resolves cleanly
+    ingestVsyncEmptyDepth(db, "Display 1", 5);
+    const result = resolveRenderBaselineMs(ctxFor(db), "Display 1");
+    expect(result.depthSource).toBe("fallback");
+    expect(result.bufferDepth).toBe(2);
+    expect(result.assumed).toBe(true);
+    expect(result.note).toMatch(/render-buffer-depth=2/);
+    // Only the depth was assumed — the frame budget itself resolved from device-display-info,
+    // so the baseline math still uses the REAL 16.67ms budget, not the 60Hz fallback constant.
+    expect(result.frameBudget.assumed).toBe(false);
+    expect(result.baselineMs).toBeCloseTo(8.33, 1);
+  });
+
+  it("is also assumed (and notes both caveats) when neither Display schema is ingested at all", () => {
+    const db = newDb();
+    const result = resolveRenderBaselineMs(ctxFor(db));
+    expect(result.assumed).toBe(true);
+    expect(result.depthSource).toBe("fallback");
+    expect(result.frameBudget.assumed).toBe(true);
+    expect(result.note).toMatch(/render-buffer-depth=2/);
+    expect(result.note).toMatch(/device-display-info not ingested/);
+    // Default depth 2 over the fallback 60Hz budget -> same 8.33ms as the explicit 60Hz case above.
+    expect(result.baselineMs).toBeCloseTo(8.33, 1);
+  });
+});
+
+describe("renderHitchSweep (render-baseline follow-up)", () => {
+  const RENDER_COLS = colsOf({ start: "start-time", duration: "duration", display: "display-name" });
+
+  function ingestRenders(db: ReturnType<typeof openSessionDb>, durationsMs: number[]): void {
+    ingest(
+      db,
+      "hitches-renders",
+      RENDER_COLS,
+      durationsMs.map((ms, i) => ({
+        start: cell("start-time", i * 100_000_000),
+        duration: cell("duration", Math.round(ms * 1e6)),
+        display: cell("display-name", "Display 1"),
+      }))
+    );
+  }
+
+  it("fires when render passes are at/over 2x the render baseline", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 60, isMain: true }]); // 16.67ms frame budget
+    ingestVsyncDepth(db, "Display 1", [2, 2, 2]); // baseline = 8.33ms; High cutoff = 16.67ms
+    // 6 render passes at 20ms — over the High cutoff, and MIN_HITCH_SAMPLES/OUTLIER_HIGH_COUNT_THRESHOLD are both cleared.
+    ingestRenders(db, Array(6).fill(20));
+    const finding = renderHitchSweep.run(ctxFor(db));
+    expect(finding).not.toBeNull();
+    expect(finding!.firing.some((f) => f.metric.includes("High"))).toBe(true);
+  });
+
+  it("stays clean when render passes are under the render baseline", () => {
+    const db = newDb();
+    ingestDisplayInfo(db, [{ displayId: 1, rate: 60, isMain: true }]);
+    ingestVsyncDepth(db, "Display 1", [2, 2, 2]); // baseline = 8.33ms
+    ingestRenders(db, Array(6).fill(5)); // 5ms is under the baseline itself
+    expect(renderHitchSweep.run(ctxFor(db))).toBeNull();
   });
 });

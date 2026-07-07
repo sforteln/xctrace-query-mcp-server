@@ -49,12 +49,16 @@ export const HITCH_NEAR_MISS_LOW_MULTIPLE = 0.5;
 /** The near-miss band's upper edge — deliberately equal to HITCH_MODERATE_MULTIPLE (the line it's approaching). */
 export const HITCH_NEAR_MISS_HIGH_MULTIPLE = 1;
 
-/** Don't trust (or fire) a sweep computed off a handful of hitches. */
+/** Don't trust (or fire) a sweep computed off a handful of hitches. Reused as-is by
+ *  renderHitchSweep for hitches-renders' render passes — same reasoning, a different
+ *  table of comparable order of magnitude, not a reason to invent a second constant. */
 export const MIN_HITCH_SAMPLES = 5;
 
-/** shingle-bluff: enough Moderate+ (>1x) hitches to be a real discovery signal, not one stray frame drop. */
+/** shingle-bluff: enough Moderate+ (>1x) hitches to be a real discovery signal, not one stray frame drop.
+ *  Reused by renderHitchSweep for its over-Low (>1x render baseline) count. */
 export const OUTLIER_MODERATE_COUNT_THRESHOLD = 5;
-/** shingle-bluff: a genuine cluster of High (>2x) hitches — more than a single severe one-off. */
+/** shingle-bluff: a genuine cluster of High (>2x) hitches — more than a single severe one-off.
+ *  Reused by renderHitchSweep for its High (>=2x render baseline) count. */
 export const OUTLIER_HIGH_COUNT_THRESHOLD = 1;
 
 /** tidy-shore: enough near-miss (0.5x-1x) hitches to be a real leading-indicator signal, not noise. */
@@ -70,6 +74,18 @@ export const NEAR_MISS_COUNT_THRESHOLD = 5;
  */
 export const HITCH_P95_MULTIPLE = 2;
 export const HITCH_P99_MULTIPLE = 3;
+
+/**
+ * Render-baseline follow-up to still-hail: Apple's OTHER dim-chalk §1 band,
+ * for a render PASS's own duration (hitches-renders) relative to
+ * frameBudget.ts's resolveRenderBaselineMs() — ((buffer-count - 1) / 2) x the
+ * frame budget, the double-buffering pipeline's own time budget. At/under
+ * 1x baseline = Low (fine, absorbed by the buffering depth); at/over 2x =
+ * High (a slow render likely causing the hitch itself). Same multiple-based
+ * discipline as the hitch bands above — never a raw ms cutoff.
+ */
+export const RENDER_BASELINE_LOW_MULTIPLE = 1;
+export const RENDER_BASELINE_HIGH_MULTIPLE = 2;
 
 /** A frame-budget multiple -> its absolute ns cutoff, given the per-trace (or fallback) frame budget in ms. */
 export function hitchBandNs(multiple: number, frameBudgetMs: number = DEFAULT_REFRESH_INTERVAL_MS): number {
