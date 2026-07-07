@@ -135,6 +135,22 @@ export interface StartSessionResult {
 }
 
 /**
+ * True when a `--launch` target is an AppKit application, for which a profiling
+ * launch should pass `-ApplePersistenceIgnoreState YES` (see startSession) to
+ * dodge the liboainject × window-state-restoration crash under Allocations/
+ * Leaks. Matches BOTH forms of an app path:
+ *   - the bundle directory              `…/Foo.app`
+ *   - the executable inside the bundle  `…/Foo.app/Contents/MacOS/Foo`
+ * The second is what profiling a DEBUG BUILD hands you (Xcode build products /
+ * a direct `xctrace --launch <executable>`) and is the common developer case a
+ * bare `.endsWith(".app")` check silently missed. A genuine non-app CLI target
+ * (a tool that parses its own argv) matches neither and correctly gets no flag.
+ */
+export function isAppLaunchPath(launch: string | undefined): boolean {
+  return launch !== undefined && (launch.endsWith(".app") || launch.includes(".app/Contents/MacOS/"));
+}
+
+/**
  * Spawn xctrace in the background and return a recordingId.
  * Call stopSession(recordingId) to finalize.
  *
@@ -213,16 +229,18 @@ export async function startSession(
   const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, resolvedRecordingOptions);
   const recordingId = randomUUID();
 
-  // Verified live: launching a .app under an injecting instrument (e.g.
+  // Verified live: launching an AppKit app under an injecting instrument (e.g.
   // Allocations/Leaks) can crash during AppKit's window-state restoration —
   // liboainject's autorelease-pool interposition trips
   // -[NSView _clearRememberedEditingFirstResponder] mid-teardown, well before
-  // any app code runs. -ApplePersistenceIgnoreState YES skips that
-  // restoration path entirely. There's no real reason a profiling launch
-  // would ever want stale window state restored, so this is unconditional
-  // for .app launches rather than an opt-in flag.
-  const resolvedLaunchArgs =
-    launch !== undefined && launch.endsWith(".app") ? ["-ApplePersistenceIgnoreState", "YES"] : undefined;
+  // any app code runs (so it leaves no app-attributable crash report). This is
+  // NOT app-specific — it hits ANY app profiled with Allocations/Leaks in
+  // launch mode. -ApplePersistenceIgnoreState YES skips that restoration path
+  // entirely, and there's no reason a profiling launch would want stale window
+  // state restored, so it's unconditional for app launches.
+  // See isAppLaunchPath for why BOTH the bundle dir and the executable-inside-
+  // the-bundle forms count as an app launch (the debug-build case).
+  const resolvedLaunchArgs = isAppLaunchPath(launch) ? ["-ApplePersistenceIgnoreState", "YES"] : undefined;
 
   const handle = spawnRecord({
     template: resolvedTemplate,
