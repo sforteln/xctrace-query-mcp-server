@@ -20,8 +20,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { XctraceError } from "../engine/xctrace.js";
 import { getSession, getTable, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
-import { firstWithRole } from "../engine/roleInference.js";
+import { firstWithRole, preferredThreadColumn } from "../engine/roleInference.js";
 import { quoteIdent, isBacktraceCol } from "../engine/sqliteStore.js";
+import { internResolved } from "../engine/sqlHydrate.js";
 import type { SchemaCol } from "../engine/parseTable.js";
 
 // ─── Tree types ───────────────────────────────────────────────────────────────
@@ -688,7 +689,19 @@ function foldFromSql(
   const conds: string[] = [`${btIdCol} IS NOT NULL`];
   const params: Array<string | number> = [];
   if (filters.threadCol && filters.thread) {
-    conds.push(`${quoteIdent(`${filters.threadCol}__fmt`)} LIKE ?`);
+    // Large/low-cardinality columns (a thread column on any real, multi-
+    // thousand-sample trace is exactly this shape — a handful of distinct
+    // thread identities repeated across every sample) get flavor-2 interned
+    // at ingest (PMT:ruddy-owl): the physical __fmt cell holds a sentinel
+    // token, not the display text. find/query already decode through
+    // internResolved() before matching (see sqlHydrate.ts's buildCondition);
+    // a bare LIKE against the raw column here would silently compare against
+    // sentinel tokens and never match ANY substring — indistinguishable from
+    // "no such thread" (verified live: this is why call_tree's thread filter
+    // matched 0 rows for every value tried, including ones find matched
+    // thousands of times). Wrapping in internResolved() decodes transparently
+    // for both interned and inline (non-interned) values.
+    conds.push(`${internResolved(quoteIdent(`${filters.threadCol}__fmt`))} LIKE ?`);
     params.push(`%${filters.thread}%`);
   }
   if (filters.timeCol && filters.timeRange) {
@@ -869,8 +882,18 @@ export async function callTree(
 
   // Thread (substring on fmt) and timeRange (on the primary time column, which
   // for time-profile is the sample-time column) filters push into the SELECT.
+  // threadCol MUST go through the same role classifier (engineering-type +
+  // mnemonic fallback) + preferredThreadColumn tie-break that find/query use
+  // for a bare "thread" field reference — a schema can carry more than one
+  // thread-role column (thread, tid, process, pid all classify as role
+  // "thread"; see roleInference.ts), and a naive "first column whose
+  // engineering-type is literally 'thread'" scan can silently land on the
+  // wrong one, whose __fmt values share no substrings with what an agent
+  // matched via find/query — producing a thread filter that resolves to a
+  // valid column yet matches zero rows for every value tried (verified live:
+  // exactly this symptom on a real time-profile trace).
   const classified = classifyWithHints(schema, handle.cols);
-  const threadCol = handle.cols.find((c) => c.engineeringType === "thread")?.mnemonic ?? null;
+  const threadCol = preferredThreadColumn(classified)?.mnemonic ?? null;
   const timeCol = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
   const db = await getDb(sessionId);
