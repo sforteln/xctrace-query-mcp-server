@@ -39,6 +39,17 @@ tests/fixtures/xcode-27.0/
     swiftui-update-groups.xml     SYNTHETIC — real data was 28 MB; labels use SwiftUI internal layout computer type names
     SwiftUIFilteredUpdates.xml    SYNTHETIC — pre-filtered view of swiftui-updates (same columns); 3 instances in real traces (exclude-both, body-only, representable-only); fixture covers one instance with Layout and Other rows
     SwiftUILayoutUpdates2.xml     SYNTHETIC — swiftui-layout-updates + depth column; 3 rows covering depth 0/1/2
+    device-display-info.xml       SYNTHETIC — real schema (verified live against
+                                   2026-07-07T20-27-57-animation-hitches.trace), but that trace's own export
+                                   had ZERO rows for this schema (a real "not ingested/empty" case — see
+                                   PMT:still-hail); 2 fake rows (a 120Hz main + a 60Hz secondary display) cover
+                                   the frame-budget resolver's two headline cases
+    display-vsyncs-interval.xml   from 2026-07-07T20-27-57-animation-hitches.trace run 1 — real data, first
+                                   10 of 2,364 rows (no private content: just "Display 1" + timestamps).
+                                   Note for anyone re-deriving cadence from this fixture: `duration` is a
+                                   constant 1ns sentinel in the real export, NOT the inter-vsync interval —
+                                   frameBudget.ts's vsync-cadence path derives cadence from consecutive
+                                   `timestamp` gaps instead (see its header comment).
   track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
     VM-Tracker__Regions-Map.xml   SYNTHETIC — real column shape (verified live against allocWithVM2.trace),

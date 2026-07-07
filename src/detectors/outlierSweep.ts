@@ -18,13 +18,18 @@
  * (two COUNT-with-CASE aggregates over the whole table), exactly the
  * "full-table band scan" the core-vs-lens cost rule reserves for a named,
  * on-demand lens rather than a free/cheap verb (aidocs/howLensesWork.md).
+ *
+ * PMT:still-hail: the frame budget is now resolved live (frameBudget.ts)
+ * instead of assuming DEFAULT_REFRESH_INTERVAL_MS's 60Hz, and a fired finding
+ * carries a bounded vsync-cadence "frames held" table (vsyncCadenceTable.ts)
+ * around the worst outlier as enrichment, when the Display schemas that feed
+ * it are ingested.
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { fmtCol, rawCol } from "../engine/sqlHydrate.js";
 import type { Detector, FiringCondition } from "./types.js";
 import {
   APP_HITCH,
-  DEFAULT_REFRESH_INTERVAL_MS,
   HITCH_HIGH_MULTIPLE,
   HITCH_MODERATE_MULTIPLE,
   MIN_HITCH_SAMPLES,
@@ -32,6 +37,8 @@ import {
   OUTLIER_MODERATE_COUNT_THRESHOLD,
   hitchBandNs,
 } from "./bands.js";
+import { resolveFrameBudgetMs } from "./frameBudget.js";
+import { buildVsyncCadenceTable, type VsyncCadenceTable } from "./vsyncCadenceTable.js";
 
 export const outlierSweep: Detector = {
   id: "outlier-sweep",
@@ -43,8 +50,9 @@ export const outlierSweep: Detector = {
     const isSystemFmt = quoteIdent(fmtCol("is-system"));
     const durRaw = quoteIdent(rawCol("duration"));
 
-    const moderateNs = hitchBandNs(HITCH_MODERATE_MULTIPLE);
-    const highNs = hitchBandNs(HITCH_HIGH_MULTIPLE);
+    const budget = resolveFrameBudgetMs(ctx);
+    const moderateNs = hitchBandNs(HITCH_MODERATE_MULTIPLE, budget.budgetMs);
+    const highNs = hitchBandNs(HITCH_HIGH_MULTIPLE, budget.budgetMs);
 
     const row = ctx.db
       .prepare(
@@ -82,11 +90,31 @@ export const outlierSweep: Detector = {
       )
       .get(APP_HITCH) as { idx: number } | undefined;
 
+    // Best-effort enrichment: the vsync-cadence "frames held" table around the
+    // worst outlier — never lets a missing column/schema (e.g. a synthetic
+    // test fixture without `display`) break the primary finding above.
+    let vsyncCadenceTable: VsyncCadenceTable | null = null;
+    try {
+      const worstDetail = ctx.db
+        .prepare(
+          `SELECT CAST(${durRaw} AS REAL) AS duration, CAST(${quoteIdent(rawCol("start"))} AS REAL) AS start, ` +
+            `${quoteIdent(fmtCol("display"))} AS display FROM ${table} WHERE ${isSystemFmt} = ? ` +
+            `ORDER BY CAST(${durRaw} AS REAL) DESC LIMIT 1`
+        )
+        .get(APP_HITCH) as { duration: number; start: number; display: string | null } | undefined;
+      if (worstDetail) {
+        vsyncCadenceTable = buildVsyncCadenceTable(ctx, worstDetail.display, worstDetail.start, worstDetail.duration, budget.budgetMs);
+      }
+    } catch {
+      vsyncCadenceTable = null;
+    }
+
     return {
       summary:
         `${row.moderateCount.toLocaleString("en-US")} of ${row.n.toLocaleString("en-US")} app-caused hitches crossed Apple's ` +
-        `dropped-frame band (> ${HITCH_MODERATE_MULTIPLE}x the ~${DEFAULT_REFRESH_INTERVAL_MS}ms frame budget), ` +
-        `${row.highCount.toLocaleString("en-US")} of those at ${HITCH_HIGH_MULTIPLE}x+ (High) — an outlier sweep, not a targeted hypothesis`,
+        `dropped-frame band (> ${HITCH_MODERATE_MULTIPLE}x the ~${budget.budgetMs.toFixed(2)}ms frame budget), ` +
+        `${row.highCount.toLocaleString("en-US")} of those at ${HITCH_HIGH_MULTIPLE}x+ (High) — an outlier sweep, not a targeted hypothesis` +
+        (budget.assumed ? ` (${budget.note})` : ""),
       firing,
       callSpec: {
         verb: "find",
@@ -103,6 +131,7 @@ export const outlierSweep: Detector = {
       handles: worst
         ? [{ kind: "row", schema: "hitches", rowIndex: worst.idx, label: "worst outlier hitch (over Apple's dropped-frame band)" }]
         : [],
+      ...(vsyncCadenceTable ? { enrichment: { vsyncCadenceTable } } : {}),
     };
   },
 };

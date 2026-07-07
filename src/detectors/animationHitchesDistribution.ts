@@ -17,15 +17,18 @@
  * (~/Library/Application Support/far-swan/recordings/…-swiftui.trace): 248
  * app-caused hitches, p95 ≈ 50.0ms, p99 ≈ 66.7ms — comfortably over both
  * bands, a real finding, not just a synthetic one.
+ *
+ * PMT:still-hail: the p95/p99 bands used to be fixed 33ms/50ms literals — an
+ * UNCREDITED 60Hz-multiple encoding (33 ≈ 2x, 50 ≈ 3x @16.67ms) that could
+ * silently drift from bands.ts's own multiples. Both are now expressed as
+ * HITCH_P95_MULTIPLE/HITCH_P99_MULTIPLE against the REAL resolved frame
+ * budget (frameBudget.ts) — device-accurate on ProMotion, unchanged at 60Hz.
  */
 import { quoteIdent } from "../engine/sqliteStore.js";
 import { fmtCol, rawCol } from "../engine/sqlHydrate.js";
 import type { Detector } from "./types.js";
-
-const APP_HITCH = "No"; // is-system=No — app-caused, not system-owned
-const MIN_SAMPLES = 5; // don't trust a percentile computed from a handful of hitches
-const P95_THRESHOLD_MS = 33; // ~1 dropped frame at 30fps
-const P99_THRESHOLD_MS = 50;
+import { APP_HITCH, HITCH_P95_MULTIPLE, HITCH_P99_MULTIPLE, MIN_HITCH_SAMPLES } from "./bands.js";
+import { resolveFrameBudgetMs } from "./frameBudget.js";
 
 export const animationHitchesDistribution: Detector = {
   id: "animation-hitches-distribution",
@@ -43,14 +46,18 @@ export const animationHitchesDistribution: Detector = {
           `FROM ${table} WHERE ${isSystemFmt} = ?`
       )
       .get(APP_HITCH) as { n: number; p95: number | null; p99: number | null } | undefined;
-    if (!row || row.n < MIN_SAMPLES || row.p95 === null || row.p99 === null) return null;
+    if (!row || row.n < MIN_HITCH_SAMPLES || row.p95 === null || row.p99 === null) return null;
+
+    const budget = resolveFrameBudgetMs(ctx);
+    const p95ThresholdMs = HITCH_P95_MULTIPLE * budget.budgetMs;
+    const p99ThresholdMs = HITCH_P99_MULTIPLE * budget.budgetMs;
 
     const p95Ms = row.p95 / 1e6; // duration raw is ns
     const p99Ms = row.p99 / 1e6;
 
     const firing: Array<{ metric: string; value: number; threshold: number; direction: "over" }> = [];
-    if (p95Ms > P95_THRESHOLD_MS) firing.push({ metric: "p95 duration ms", value: Math.round(p95Ms * 10) / 10, threshold: P95_THRESHOLD_MS, direction: "over" });
-    if (p99Ms > P99_THRESHOLD_MS) firing.push({ metric: "p99 duration ms", value: Math.round(p99Ms * 10) / 10, threshold: P99_THRESHOLD_MS, direction: "over" });
+    if (p95Ms > p95ThresholdMs) firing.push({ metric: "p95 duration ms", value: Math.round(p95Ms * 10) / 10, threshold: Math.round(p95ThresholdMs * 10) / 10, direction: "over" });
+    if (p99Ms > p99ThresholdMs) firing.push({ metric: "p99 duration ms", value: Math.round(p99Ms * 10) / 10, threshold: Math.round(p99ThresholdMs * 10) / 10, direction: "over" });
     if (firing.length === 0) return null;
 
     const heavy = ctx.db
@@ -62,7 +69,8 @@ export const animationHitchesDistribution: Detector = {
     return {
       summary:
         `App-caused animation hitches (${row.n.toLocaleString("en-US")} over the trace) have a p95 of ${p95Ms.toFixed(1)}ms ` +
-        `and p99 of ${p99Ms.toFixed(1)}ms — a real stutter tail, not just a rare outlier`,
+        `and p99 of ${p99Ms.toFixed(1)}ms — a real stutter tail, not just a rare outlier` +
+        (budget.assumed ? ` (${budget.note})` : ""),
       firing,
       callSpec: {
         verb: "aggregate",

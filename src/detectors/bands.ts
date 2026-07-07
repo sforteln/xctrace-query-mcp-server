@@ -18,17 +18,20 @@
  * inventing an untested name. Add its band here, beside a real ingestion
  * path, when that lands — never start a second, driftable band map.
  *
- * Frame-budget caveat (documented, not silent): the hitches table itself
- * carries only start/duration/process/is-system/swap-id/label/display/
+ * Frame-budget caveat, UPDATED by PMT:still-hail: the hitches table itself
+ * still carries only start/duration/process/is-system/swap-id/label/display/
  * narrative-description (tests/fixtures/xcode-27.0/schema-table/hitches.xml)
- * — no refresh-interval or buffer-count column ships with the row, so there
- * is no per-trace value to read live today. DEFAULT_REFRESH_INTERVAL_MS is a
- * tunable FALLBACK (60Hz's ~16.67ms, the common case), not a read-from-trace
- * value. Every band below is still expressed as a MULTIPLE of it though,
- * never a raw ms cutoff — exactly the "relative, not absolute" discipline
- * the harvest calls out as the durable lesson — so the moment a per-trace
- * refresh-interval source becomes readable, this is a one-constant swap, not
- * a rewrite of either lens.
+ * — no refresh-interval or buffer-count column ships with the row. But the
+ * Animation Hitches template's SIBLING Display-instrument schemas do carry it
+ * (device-display-info's max-refresh-rate, display-vsyncs-interval's tick
+ * cadence) — src/detectors/frameBudget.ts's resolveFrameBudgetMs() reads
+ * those live per-trace and returns the REAL per-display budget, falling back
+ * to DEFAULT_REFRESH_INTERVAL_MS (60Hz's ~16.67ms) only when neither is
+ * ingested. DEFAULT_REFRESH_INTERVAL_MS remains the tunable fallback constant,
+ * and every band below is still expressed as a MULTIPLE of a frame budget,
+ * never a raw ms cutoff — exactly the "relative, not absolute" discipline the
+ * harvest calls out as the durable lesson — the multiple is unchanged by
+ * still-hail; only which budget it's multiplied against became dynamic.
  */
 
 /** Tunable fallback frame budget (60Hz). Swap for a per-trace value if one ever becomes readable from the trace itself. */
@@ -56,6 +59,17 @@ export const OUTLIER_HIGH_COUNT_THRESHOLD = 1;
 
 /** tidy-shore: enough near-miss (0.5x-1x) hitches to be a real leading-indicator signal, not noise. */
 export const NEAR_MISS_COUNT_THRESHOLD = 5;
+
+/**
+ * flint-larch's animation-hitches-distribution p95/p99 bands, expressed as
+ * frame-budget multiples (still-hail) instead of the fixed 33ms/50ms this
+ * detector used to hardcode — those absolute numbers were themselves an
+ * uncredited 60Hz-multiple encoding (33ms ≈ 2x, 50ms ≈ 3x @16.67ms) that
+ * could silently drift from the shingle-bluff/tidy-shore bands above; now
+ * all three share the same resolved budget via frameBudget.ts.
+ */
+export const HITCH_P95_MULTIPLE = 2;
+export const HITCH_P99_MULTIPLE = 3;
 
 /** A frame-budget multiple -> its absolute ns cutoff, given the per-trace (or fallback) frame budget in ms. */
 export function hitchBandNs(multiple: number, frameBudgetMs: number = DEFAULT_REFRESH_INTERVAL_MS): number {

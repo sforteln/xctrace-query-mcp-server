@@ -18,13 +18,16 @@
  * cost: EXPENSIVE — same full unindexed band scan as outlierSweep, just a
  * different slice of the same table; the core-vs-lens cost rule reserves any
  * full-table band scan for a named, on-demand lens (aidocs/howLensesWork.md).
+ *
+ * PMT:still-hail: the frame budget is resolved live (frameBudget.ts) instead
+ * of assuming DEFAULT_REFRESH_INTERVAL_MS's 60Hz — same resolver outlierSweep
+ * uses, so the two lenses never disagree on which budget is "the line."
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { fmtCol, rawCol } from "../engine/sqlHydrate.js";
 import type { Detector, FiringCondition } from "./types.js";
 import {
   APP_HITCH,
-  DEFAULT_REFRESH_INTERVAL_MS,
   HITCH_MODERATE_MULTIPLE,
   HITCH_NEAR_MISS_HIGH_MULTIPLE,
   HITCH_NEAR_MISS_LOW_MULTIPLE,
@@ -32,6 +35,7 @@ import {
   NEAR_MISS_COUNT_THRESHOLD,
   hitchBandNs,
 } from "./bands.js";
+import { resolveFrameBudgetMs } from "./frameBudget.js";
 
 export const nearMissSweep: Detector = {
   id: "near-miss-sweep",
@@ -43,9 +47,10 @@ export const nearMissSweep: Detector = {
     const isSystemFmt = quoteIdent(fmtCol("is-system"));
     const durRaw = quoteIdent(rawCol("duration"));
 
-    const lowNs = hitchBandNs(HITCH_NEAR_MISS_LOW_MULTIPLE);
+    const budget = resolveFrameBudgetMs(ctx);
+    const lowNs = hitchBandNs(HITCH_NEAR_MISS_LOW_MULTIPLE, budget.budgetMs);
     // Upper edge == the Moderate over-cutoff (1x) — the line this population is approaching but hasn't crossed.
-    const highNs = hitchBandNs(HITCH_NEAR_MISS_HIGH_MULTIPLE);
+    const highNs = hitchBandNs(HITCH_NEAR_MISS_HIGH_MULTIPLE, budget.budgetMs);
 
     const row = ctx.db
       .prepare(
@@ -61,7 +66,7 @@ export const nearMissSweep: Detector = {
     if (row.nearMissCount <= NEAR_MISS_COUNT_THRESHOLD || row.worstNearMissNs === null) return null;
 
     const worstMs = row.worstNearMissNs / 1e6;
-    const frameBudgetMs = DEFAULT_REFRESH_INTERVAL_MS * HITCH_MODERATE_MULTIPLE; // the Apple cutoff being approached
+    const frameBudgetMs = budget.budgetMs * HITCH_MODERATE_MULTIPLE; // the Apple cutoff being approached
 
     const firing: FiringCondition[] = [
       {
@@ -90,8 +95,9 @@ export const nearMissSweep: Detector = {
       summary:
         `${row.nearMissCount.toLocaleString("en-US")} of ${row.n.toLocaleString("en-US")} app-caused hitches sit in the ` +
         `${HITCH_NEAR_MISS_LOW_MULTIPLE}x-${HITCH_NEAR_MISS_HIGH_MULTIPLE}x frame-budget band — UNDER Apple's dropped-frame cutoff ` +
-        `(${HITCH_MODERATE_MULTIPLE}x the ~${DEFAULT_REFRESH_INTERVAL_MS}ms frame budget) but trending toward it; the closest is ${worstMs.toFixed(1)}ms — ` +
-        `a leading indicator, not yet an actual dropped frame`,
+        `(${HITCH_MODERATE_MULTIPLE}x the ~${budget.budgetMs.toFixed(2)}ms frame budget) but trending toward it; the closest is ${worstMs.toFixed(1)}ms — ` +
+        `a leading indicator, not yet an actual dropped frame` +
+        (budget.assumed ? ` (${budget.note})` : ""),
       firing,
       callSpec: {
         verb: "find",

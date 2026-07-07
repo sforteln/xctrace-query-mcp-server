@@ -323,10 +323,123 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "swap-id": detail,
       // label holds an address — heuristics would call it label due to the name.
       label: detail,
-      // display is the display/screen identifier.
+      // display is the display/screen identifier ("Display 1") — the SAME
+      // string form display-vsyncs-interval/displayed-surfaces-interval's own
+      // display-name columns carry (a direct join key across those three;
+      // device-display-info's display-id is numeric and needs frameBudget.ts's
+      // heuristic join instead — see PMT:still-hail).
       display: label,
       // narrative-description explains the hitch cause.
       "narrative-description": detail,
+    },
+  },
+  // hitches-renders: per-render-pass detail behind a hitch (containment-level
+  // lets a render nest inside another — offscreen passes, etc). Verified live
+  // (2026-07-07T20-27-57-animation-hitches.trace, 1,560 rows): frame-color is
+  // an event-concept VISUALIZATION tag ("Brown"/"Purple"/"Green" — Instruments'
+  // own timeline color-coding), NOT a diagnostic signal — don't mistake it for
+  // one. containment-level/offscreen-passes were both 0 for every top-level
+  // (non-nested) render sampled; no buffer/pipeline-depth signal was found on
+  // this schema (see frameBudget.ts's header + PMT:still-hail's completion
+  // report for why the render baseline stayed a documented follow-up).
+  "hitches-renders": {
+    instrument: "Hitches (render detail)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      display: label,
+      "offscreen-passes": detail,
+      "swap-id": detail,
+      "surface-id": detail,
+      // frame-color: a UI color tag (event-concept), not a severity/category signal.
+      "frame-color": detail,
+      "containment-level": detail,
+      label: detail,
+    },
+  },
+  // device-display-info (PMT:still-hail): per-connected-display metadata, one
+  // row per display (tiny). max-refresh-rate is THE frame-budget source
+  // frameBudget.ts reads (budget = 1000/rate ms) — verified live: 0 rows in
+  // the still-hail authoring trace (a real, not hypothetical, "not ingested /
+  // empty" case the resolver must degrade through to display-vsyncs-interval
+  // or the fallback constant).
+  "device-display-info": {
+    instrument: "Displays",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      "accelerator-id": detail,
+      // display-id is a groupable join key (numeric), like hitches' own "display" — label, not detail.
+      "display-id": label,
+      // device-name is a metal-object-label (GPU/display product name), not a "Display N" string —
+      // don't assume it matches hitches.display; frameBudget.ts's heuristic join uses display-id instead.
+      "device-name": label,
+      "framebuffer-index": detail,
+      resolution: detail,
+      "built-in": detail,
+      // max-refresh-rate: THE frame-budget source (Hz) — see frameBudget.ts.
+      "max-refresh-rate": detail,
+      "is-main-display": detail,
+    },
+  },
+  // display-vsyncs-interval (PMT:still-hail): per-vsync tick log (2,364 rows
+  // in the authoring trace — NOT tiny; a real recording can carry many more).
+  // VERIFIED LIVE, surprising: `duration` is NOT the inter-vsync interval in
+  // practice — every single row carried the identical value (a 1ns sentinel
+  // for the "VSync Request" marker), despite the column's declared
+  // engineering-type ("duration") implying otherwise. frameBudget.ts's
+  // vsync-cadence fallback therefore derives cadence from the GAP between
+  // consecutive `timestamp` values, not from this column — pinned here as
+  // `ns` anyway (matches the declared type/what a future trace might carry),
+  // but don't rely on it for cadence without checking for variance first.
+  "display-vsyncs-interval": {
+    instrument: "Displays (vsync ticks)",
+    primaryTime: "timestamp",
+    primaryWeight: "duration",
+    columns: {
+      timestamp: t,
+      duration: ns,
+      // display-name is a "Display N" string — the SAME form hitches.display carries (direct join key).
+      "display-name": label,
+      // color: an event-concept-shaped visualization tag reused across these Display
+      // schemas (NOT a real render-buffer/pipeline-depth count — verified live, see hitches-renders above).
+      color: detail,
+      "event-label": detail,
+      event: label,
+    },
+  },
+  // displayed-surfaces-interval (PMT:still-hail): one row per surface
+  // presentation (1,629 rows in the authoring trace). This is the "on-screen
+  // duration" side of the vsync-cadence table (vsyncCadenceTable.ts) — a
+  // surface's `duration` spanning multiple vsync cadences IS the dropped-frame
+  // hold the hitch made visible.
+  "displayed-surfaces-interval": {
+    instrument: "Displays (surface presentation)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      "cpu-to-display-latency": ns,
+      "display-name": label,
+      "connection-UUID": detail,
+      "surface-id": detail,
+      "pixel-format": detail,
+      // color: same UI visualization tag as display-vsyncs-interval.color — not a buffer-depth signal.
+      color: detail,
+      "event-priority": detail,
+      "event-label": detail,
+      category: label,
+      // event-depth: Metal render-pass NESTING level (onscreen vs. offscreen
+      // passes) — verified live, constant 0 for every top-level surface
+      // sampled. NOT the swap-chain/back-buffer count; don't use this for the
+      // render baseline's buffer-count term (see hitches-renders' note above).
+      "event-depth": detail,
+      "direct-to-display": detail,
+      "detachment-reason": detail,
+      "detachment-suggestion": detail,
     },
   },
   "hang-risks": {

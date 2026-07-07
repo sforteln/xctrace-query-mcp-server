@@ -62,6 +62,16 @@ export interface Finding {
   handles: Handle[];
   /** Optional severity override; omit to let the framework compute it. */
   severity?: "high" | "medium" | "low";
+  /**
+   * Optional structured extras beyond firing/handles — for a detector whose
+   * most useful output isn't just "did it fire" but a small derived artifact
+   * (e.g. still-hail's vsyncCadenceTable: a bounded vsync-tick x
+   * surface-present table around the worst hitch). Deliberately a loose bag
+   * rather than one field per possible enrichment — keeps Finding's core
+   * shape stable as detectors accrete richer, detector-specific payloads.
+   * Still never raw SQL/rows — always typed, purpose-built structures.
+   */
+  enrichment?: Record<string, unknown>;
 }
 
 /** What a detector's run() receives — access to the ingested tables, never
