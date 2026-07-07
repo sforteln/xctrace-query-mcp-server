@@ -14,6 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
 import { createHash } from "node:crypto";
 import { isBacktraceCol, quoteIdent, ROW_IDX_COLUMN, isInternSentinel, internSentinelId, INTERN_SENTINEL } from "./sqliteStore.js";
+import { isNodeEncoded, decodeNodeSequence } from "./hierarchyEncode.js";
 
 // ─── Regex UDF ────────────────────────────────────────────────────────────────
 
@@ -273,19 +274,50 @@ export function makeFrameLookup(db: DatabaseSync): (id: number | null) => Resolv
  * Content is cached by id across a batch of reads (a big blob resolves once).
  */
 export function makeInternResolver(db: DatabaseSync): (v: unknown) => unknown {
+  const resolve = makeInternedContentResolver(db);
+  return (v: unknown): unknown => (isInternSentinel(v) ? resolve(internSentinelId(v)) : v);
+}
+
+/**
+ * Resolve an interned_values id to its ORIGINAL content, decoding a PMT:dry-glen
+ * node-encoded chain value (a sequence of hierarchy_nodes ids) back to its exact
+ * string. Memoized by id; the hierarchy_nodes map is loaded once, lazily (only
+ * if some value is actually node-encoded), so a trace with no chains pays
+ * nothing. Shared by makeInternResolver (display) and the mcp_unintern UDF
+ * (content predicates).
+ */
+export function makeInternedContentResolver(db: DatabaseSync): (id: number) => string {
   const stmt = db.prepare("SELECT content FROM interned_values WHERE id = ?");
   const cache = new Map<number, string>();
-  return (v: unknown): unknown => {
-    if (!isInternSentinel(v)) return v;
-    const id = internSentinelId(v);
-    let content = cache.get(id);
-    if (content === undefined) {
-      const row = stmt.get(id) as { content: string } | undefined;
-      content = row?.content ?? "";
-      cache.set(id, content);
+  let nodes: Map<number, string> | null = null;
+  return (id: number): string => {
+    const cached = cache.get(id);
+    if (cached !== undefined) return cached;
+    const row = stmt.get(id) as { content: string } | undefined;
+    let content = row?.content ?? "";
+    if (isNodeEncoded(content)) {
+      if (nodes === null) {
+        nodes = new Map();
+        for (const r of db.prepare("SELECT id, name FROM hierarchy_nodes").all() as Array<{ id: number; name: string }>) {
+          nodes.set(r.id, r.name);
+        }
+      }
+      content = decodeNodeSequence(content, (nid) => nodes!.get(nid) ?? "");
     }
+    cache.set(id, content);
     return content;
   };
+}
+
+/**
+ * Registers mcp_unintern(id) — the SQL entry point to the same interned-content
+ * resolver, so internResolved()'s CASE can reconstruct a node-encoded value for
+ * content predicates (contains/regex). One per DB connection (session.ts's
+ * getSessionDb), alongside registerRegexpUdf.
+ */
+export function registerInternDecodeUdf(db: DatabaseSync): void {
+  const resolve = makeInternedContentResolver(db);
+  db.function("mcp_unintern", (id: unknown) => resolve(Number(id)));
 }
 
 /** No-op resolver — for callers that know a table has no interned values, or to keep a signature satisfied. */
@@ -501,14 +533,18 @@ export interface SqlCondition {
  * SQL that yields a column's ORIGINAL content whether it's stored inline or as
  * an intern sentinel (PMT:lime-bluff) — so content predicates (contains/regex,
  * and equality against a large value) match interned rows too, not just inline
- * ones. The correlated subquery only fires for sentinel rows (the CASE
- * short-circuits on the cheap SUBSTR check), so on a table with no interned
- * values in that column it's just `col` plus a per-row char test.
+ * ones. Resolution goes through the mcp_unintern UDF (not a raw subquery on
+ * interned_values.content) because a PMT:dry-glen value is stored node-encoded
+ * and must be DECODED to its original text before a substring/regex match; the
+ * UDF also memoizes, so a repeated sentinel resolves once. The CASE
+ * short-circuits on the cheap SUBSTR check, so a column with no interned values
+ * is just `col` plus a per-row char test. Requires registerInternDecodeUdf on
+ * the connection.
  */
 export function internResolved(colSql: string): string {
   return (
     `(CASE WHEN SUBSTR(${colSql},1,1)=char(1) ` +
-    `THEN (SELECT content FROM interned_values WHERE id=CAST(SUBSTR(${colSql},2) AS INTEGER)) ` +
+    `THEN mcp_unintern(CAST(SUBSTR(${colSql},2) AS INTEGER)) ` +
     `ELSE ${colSql} END)`
   );
 }

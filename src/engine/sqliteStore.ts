@@ -78,6 +78,7 @@ import { createHash } from "node:crypto";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
 import { MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
 import { ColumnStatsAccumulator, decideInternColumns } from "./columnStats.js";
+import { encodeNodeSequence } from "./hierarchyEncode.js";
 
 /** A defensive backstop against pathological data, not a real design limit — no real schema seen so far nests anywhere close to this deep. */
 const MAX_PROMOTION_DEPTH = 6;
@@ -307,8 +308,11 @@ export const INTERN_THRESHOLD_BYTES = 256;
  * not raw-stack JSON (PMT:true-glade — an old .db's JSON fingerprints would
  * never match the new hash keys, so a re-ingest into it would double-store
  * every stack; a version bump forces a clean rebuild).
+ * 4 = large interned chain values are node-encoded into `hierarchy_nodes`
+ * (PMT:dry-glen) — reads decode per-value, so a mixed old/new .db would work,
+ * but a bump keeps every .db in one clean shape.
  */
-export const INGEST_SCHEMA_VERSION = "3";
+export const INGEST_SCHEMA_VERSION = "4";
 /**
  * PMT:ruddy-owl flavor-2: for a column pass 1 flagged as low-distinct /
  * high-repeat, values this size or larger are interned (well below the 256B
@@ -413,6 +417,11 @@ export function openSessionDb(dbPath: string, opts: { journalMode?: "wal" | "def
   // size; collision would merge distinct values, so it must be a strong hash
   // (sha256) where that is not a realistic risk.
   db.exec("CREATE TABLE IF NOT EXISTS interned_values (id INTEGER PRIMARY KEY, hash TEXT UNIQUE, content TEXT)");
+  // PMT:dry-glen: distinct view-hierarchy / cause NODES (the ~5-20k shared view
+  // types like LazyVStack). A large interned value that is a delimited chain has
+  // its content stored node-encoded (a sequence of these ids), collapsing the
+  // ~2.4 GB of distinct-but-node-redundant text; reads decode via this table.
+  db.exec("CREATE TABLE IF NOT EXISTS hierarchy_nodes (id INTEGER PRIMARY KEY, name TEXT UNIQUE)");
   // PMT:bare-shoal metadata, one row-set per ingested (run,schema) table:
   //   promoted_column — every DSL-usable nested SCALAR path promoted by
   //     PMT:tall-bench, mapping its dot-path (thread.process.pid) to the
@@ -453,6 +462,10 @@ export class SqliteTableWriter {
   private readonly symbolLookupStmt: StatementSync;
   private readonly symbolInsertStmt: StatementSync;
   private readonly symbolCache = new Map<string, number>();
+  /** PMT:dry-glen: distinct view-hierarchy/cause node name -> hierarchy_nodes.id, memoized. */
+  private readonly nodeLookupStmt: StatementSync;
+  private readonly nodeInsertStmt: StatementSync;
+  private readonly nodeCache = new Map<string, number>();
   /** PMT:lime-bluff value interning: content hash -> sentinel token, memoized across rows. */
   private readonly internLookupStmt: StatementSync;
   private readonly internInsertStmt: StatementSync;
@@ -513,6 +526,8 @@ export class SqliteTableWriter {
       "SELECT id FROM symbols WHERE name IS ? AND binary IS ? AND binary_path IS ?"
     );
     this.symbolInsertStmt = db.prepare("INSERT INTO symbols (name, binary, binary_path) VALUES (?, ?, ?)");
+    this.nodeLookupStmt = db.prepare("SELECT id FROM hierarchy_nodes WHERE name = ?");
+    this.nodeInsertStmt = db.prepare("INSERT INTO hierarchy_nodes (name) VALUES (?)");
     this.internLookupStmt = db.prepare("SELECT id FROM interned_values WHERE hash = ?");
     this.internInsertStmt = db.prepare("INSERT INTO interned_values (hash, content) VALUES (?, ?)");
 
@@ -582,10 +597,35 @@ export class SqliteTableWriter {
     if (cached !== undefined) return cached;
     const hash = createHash("sha256").update(v).digest("hex");
     const existing = this.internLookupStmt.get(hash) as { id: number } | undefined;
-    const id = existing ? existing.id : Number(this.internInsertStmt.run(hash, v).lastInsertRowid);
+    let id: number;
+    if (existing) {
+      id = existing.id;
+    } else {
+      // PMT:dry-glen: node-encode a delimited chain (view-hierarchy / cause list)
+      // before storing — its content becomes a sequence of hierarchy_nodes ids,
+      // collapsing the shared-node redundancy. Non-chain values store raw (encode
+      // returns null). Dedup is still keyed on the ORIGINAL content hash, so the
+      // set of interned values is unchanged; reads decode transparently.
+      const stored = encodeNodeSequence(v, (name) => this.nodeIdFor(name)) ?? v;
+      id = Number(this.internInsertStmt.run(hash, stored).lastInsertRowid);
+    }
     const token = INTERN_SENTINEL + id;
     this.internCache.set(v, token);
     return token;
+  }
+
+  /**
+   * PMT:dry-glen: intern one view-hierarchy/cause NODE name into the shared,
+   * DB-wide-deduped hierarchy_nodes table, returning its id. Memoized per ingest;
+   * same lookup-then-insert-on-miss discipline as symbolIdFor / interning.
+   */
+  private nodeIdFor(name: string): number {
+    const cached = this.nodeCache.get(name);
+    if (cached !== undefined) return cached;
+    const existing = this.nodeLookupStmt.get(name) as { id: number } | undefined;
+    const id = existing ? existing.id : Number(this.nodeInsertStmt.run(name).lastInsertRowid);
+    this.nodeCache.set(name, id);
+    return id;
   }
 
   private backtraceIdFor(frames: ResolvedFrame[]): number {

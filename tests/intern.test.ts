@@ -26,6 +26,7 @@ import {
   INTERN_THRESHOLD_BYTES,
 } from "../src/engine/sqliteStore.js";
 import { ColumnStatsAccumulator, decideInternColumns } from "../src/engine/columnStats.js";
+import { isNodeEncoded } from "../src/engine/hierarchyEncode.js";
 import {
   fmtCol,
   buildCondition,
@@ -34,6 +35,7 @@ import {
   resolveInternedDisplayValues,
   registerRegexpUdf,
   makeInternTargetResolver,
+  registerInternDecodeUdf,
 } from "../src/engine/sqlHydrate.js";
 import type { SchemaCol, NormalizedRow, Cell } from "../src/engine/parseTable.js";
 
@@ -48,7 +50,8 @@ function stringCell(v: string): Cell {
 /** Ingest a "detail" string column with the given per-row values into a fresh in-memory db. */
 function ingest(values: string[]): ReturnType<typeof openSessionDb> {
   const db = openSessionDb(":memory:", { journalMode: "default" });
-  registerRegexpUdf(db); // session.ts registers this per connection; find/query regex needs it
+  registerRegexpUdf(db); // session.ts registers these per connection; find/query regex + internResolved need them
+  registerInternDecodeUdf(db);
   const cols: SchemaCol[] = [{ mnemonic: "detail", name: "Detail", engineeringType: "string" }];
   const writer = new SqliteTableWriter(db, "tbl", cols);
   for (const v of values) {
@@ -213,6 +216,39 @@ describe("PMT:ruddy-owl flavor-2 interning", () => {
     const stored = db.prepare(`SELECT ${quoteIdent(fmtCol("cat"))} AS fmt FROM tbl`).all() as Array<{ fmt: string }>;
     expect(stored.length).toBe(5001);
     expect(stored.every((r) => isInternSentinel(r.fmt))).toBe(true);
+  });
+
+  // ── PMT:dry-glen node-encoded chains ──────────────────────────────────────
+  const NODES_A = Array.from({ length: 20 }, (_, i) => `ViewNode${String(i).padStart(2, "0")}`); // ViewNode00..19
+  const CHAIN_A = NODES_A.join(" ← "); // ~360B, ≥256 floor
+  const CHAIN_B = ["OtherLeaf", ...NODES_A.slice(1)].join(" ← "); // shares ViewNode01..19
+
+  it("node-encodes large chain values, dedups nodes, and round-trips exactly", () => {
+    const db = ingest([CHAIN_A, CHAIN_B, CHAIN_A]); // CHAIN_A twice → one interned value
+
+    // 2 distinct interned chains; nodes deduped to 21 (ViewNode00..19 + OtherLeaf).
+    expect((db.prepare("SELECT COUNT(*) AS n FROM interned_values").get() as { n: number }).n).toBe(2);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM hierarchy_nodes").get() as { n: number }).n).toBe(21);
+
+    // Stored content is node-encoded (marker), and smaller than the raw chain.
+    const stored = db.prepare("SELECT content FROM interned_values").all() as Array<{ content: string }>;
+    expect(stored.every((r) => isNodeEncoded(r.content))).toBe(true);
+    expect(stored.every((r) => r.content.length < CHAIN_A.length)).toBe(true);
+
+    // The resolver rebuilds the exact original chains.
+    const un = makeInternResolver(db);
+    const fmts = db.prepare(`SELECT ${quoteIdent(fmtCol("detail"))} AS f FROM tbl ORDER BY ${quoteIdent(ROW_IDX_COLUMN)}`).all() as Array<{ f: string }>;
+    expect(un(fmts[0].f)).toBe(CHAIN_A);
+    expect(un(fmts[1].f)).toBe(CHAIN_B);
+    expect(un(fmts[2].f)).toBe(CHAIN_A);
+  });
+
+  it("find contains matches a node inside a node-encoded chain (via mcp_unintern)", () => {
+    const db = ingest([CHAIN_A, CHAIN_B]);
+    // ViewNode05 is in both chains; ViewNode00 only in A; OtherLeaf only in B.
+    expect(selectDetailIdx(db, buildCondition("detail", "contains", "ViewNode05"))).toEqual([0, 1]);
+    expect(selectDetailIdx(db, buildCondition("detail", "contains", "ViewNode00"))).toEqual([0]);
+    expect(selectDetailIdx(db, buildCondition("detail", "contains", "OtherLeaf"))).toEqual([1]);
   });
 
   it("decideInternColumns picks the high-repeat column and skips the unique one", () => {

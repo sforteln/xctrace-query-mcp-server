@@ -18,7 +18,7 @@ import { parseTableStreamMeta, parseTableStreamToSqlite, SchemaCol, SchemaMeta }
 import { parseTrackDetailStreamMeta, parseTrackDetailStreamToSqlite } from "./parseTrackDetail.js";
 import { quoteIdent, loadIngestedSchemaCols } from "./sqliteStore.js";
 import { resolveAndOpenTraceDb } from "./traceCache.js";
-import { registerRegexpUdf, registerPercentileUdfs } from "./sqlHydrate.js";
+import { registerRegexpUdf, registerPercentileUdfs, registerInternDecodeUdf } from "./sqlHydrate.js";
 import { classifyWithHints } from "./roleHints.js";
 import { buildSchemaModel, updateSchemaCols, assertUnambiguousSchema, SchemaModel, trackDetailSchemaName } from "./schemaModel.js";
 import { detectXcodeVersion } from "./xcodeVersion.js";
@@ -232,6 +232,7 @@ async function getSessionDb(session: TraceSession): Promise<DatabaseSync> {
   // aggregates (see PMT:dusk-floe / PMT:round-rime / sqlHydrate.ts's headers).
   registerRegexpUdf(session.db);
   registerPercentileUdfs(session.db);
+  registerInternDecodeUdf(session.db);
   return session.db;
 }
 
