@@ -44,6 +44,7 @@ const KNOWN_SCHEMAS = new Set([...VERIFIED_PAIRS].map((p) => p.split(":")[1]));
 const SCHEMA_REF_EXEMPTIONS = new Set([
   "time-profile", // used by call_tree; real schema name but no fixture yet (backtrace track-detail)
   "cpu-profile",  // CPU Profiler's tagged-backtrace schema; verified live this session, no fixture yet
+  "ane-hw-intervals", // Neural Engine instrument's interval schema; verified live (PMT:amber-ibis), no fixture yet
   "Prompt",       // Instruments UI phase-label in list_fm_requests description — not a schema name
   "Resolve",      // Instruments UI phase-label in list_fm_requests description — not a schema name
 ]);

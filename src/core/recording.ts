@@ -425,7 +425,13 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note:
       "Records all on-device Foundation Models inference calls: prompts, responses, " +
-      "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable.",
+      "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable. " +
+      "To confirm inference actually ran on the Neural Engine (rather than falling back to CPU/GPU) " +
+      "and measure real hardware utilization, compose instruments: [\"Neural Engine\"] into this " +
+      "recording — verified live: it adds the 'ane-hw-intervals' schema (start/duration per ANE-busy " +
+      "interval, no thread/backtrace column), which correlate can pair against ModelInferenceTable's " +
+      "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
+      "this inference' — a provable hardware fact, not an assumption.",
     privacyNotice:
       "This recording captures ALL Foundation Models prompts and responses in unencrypted form, " +
       "including any sensitive or personally identifying information such as emails, messages, " +

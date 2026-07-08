@@ -663,6 +663,11 @@ export function createServer(): McpServer {
         "schemas (os-signpost, OSSignpostIntervals, PointsOfInterestEvents) pair especially " +
         "well here if the app calls os_signpost around its own operations — correlate them " +
         "against whatever's being investigated to see which named app operation was active. " +
+        "For Foundation Models inference, 'ane-hw-intervals' (added by composing instruments: " +
+        "[\"Neural Engine\"] into the recording) has no thread column of its own, so pair it as " +
+        "intervalsSchema against ModelInferenceTable's request timestamps as eventsSchema with " +
+        "matchThread:false to confirm the ANE was genuinely busy during a specific inference call, " +
+        "not just assumed. " +
         "Pass timeRange to narrow both schemas to a window BEFORE fetching — real streaming " +
         "narrowing (discarded during the parse, not after), the difference between a fast call " +
         "and a full materialization on a huge intervals schema like swiftui-updates. " +
