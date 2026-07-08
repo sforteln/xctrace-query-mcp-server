@@ -16,6 +16,7 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { XctraceError } from "../engine/xctrace.js";
 
 const pExecFile = promisify(execFile);
 
@@ -129,15 +130,60 @@ export async function isSimulatorTarget(device: string): Promise<boolean> {
   if (!device) return false;
   try {
     const { devices } = await listDevices();
-    const needle = device.trim().toLowerCase();
-    return devices.some(
-      (d) =>
-        d.kind === "simulator" &&
-        (d.udid.toLowerCase() === needle || d.name.toLowerCase().includes(needle))
-    );
+    return resolveDeviceMatches(devices.filter((d) => d.kind === "simulator"), device).length > 0;
   } catch {
     return false;
   }
+}
+
+/**
+ * Pure matching logic shared by isSimulatorTarget and assertUnambiguousDevice
+ * — mirrors xctrace's own device resolution: a UDID exact match wins
+ * outright (never ambiguous even if some OTHER device's NAME happens to also
+ * contain that string, since a UDID is the caller's unambiguous
+ * disambiguation signal by construction); otherwise every device whose name
+ * case-insensitively CONTAINS the needle matches. Exported for direct unit
+ * testing against a parsed device list (no live `xctrace`/`simctl` needed).
+ */
+export function resolveDeviceMatches(devices: DeviceInfo[], device: string): DeviceInfo[] {
+  const needle = device.trim().toLowerCase();
+  const matches = devices.filter(
+    (d) => d.udid.toLowerCase() === needle || d.name.toLowerCase().includes(needle)
+  );
+  const exactUdid = matches.find((d) => d.udid.toLowerCase() === needle);
+  return exactUdid ? [exactUdid] : matches;
+}
+
+/**
+ * Fail BEFORE spawning xctrace when `device` name-substring-matches more
+ * than one real target. Verified live (PMT:loam-merlin): device:"Simon"
+ * matched three targets at once (an iPhone, "Simon's MacBook Air", "Simon's
+ * Apple Watch") — start_recording optimistically returned
+ * status:"recording" while xctrace was already dead with "Provided device
+ * parameter 'Simon' is ambiguous" (exit 28), and the caller only found out
+ * 30s later at stop_recording, after driving the app for nothing.
+ *
+ * Best-effort: a listDevices() failure here must not block a recording that
+ * might still succeed — this is a pre-flight convenience check, not the
+ * source of truth (xctrace itself remains the backstop for a genuinely
+ * malformed device value this check doesn't catch).
+ */
+export async function assertUnambiguousDevice(device: string | undefined): Promise<void> {
+  if (!device) return;
+  let devices: DeviceInfo[];
+  try {
+    ({ devices } = await listDevices());
+  } catch {
+    return;
+  }
+  const effective = resolveDeviceMatches(devices, device);
+  if (effective.length <= 1) return;
+  throw new XctraceError(
+    "ambiguous-device",
+    `device "${device}" matches ${effective.length} targets (${effective.map((d) => d.name).join(", ")}) — ` +
+      "use the UDID instead of a name substring to disambiguate (see list_devices).",
+    { deviceMatches: effective.map((d) => ({ name: d.name, udid: d.udid, kind: d.kind })) }
+  );
 }
 
 export async function listDevices(): Promise<ListDevicesResult> {

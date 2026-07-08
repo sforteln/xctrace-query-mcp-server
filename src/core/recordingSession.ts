@@ -20,7 +20,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { spawnRecord } from "../engine/record.js";
 import { resolveAttachTarget } from "./resolveAttachTarget.js";
-import { isSimulatorTarget } from "./listDevices.js";
+import { isSimulatorTarget, assertUnambiguousDevice } from "./listDevices.js";
 import {
   defaultOutputPath,
   writeRecordingOptionsFile,
@@ -197,6 +197,12 @@ export async function startSession(
       {}
     );
   }
+
+  // PMT:loam-merlin: fail BEFORE spawning xctrace when `device` name-
+  // substring-matches more than one target — verified live, xctrace itself
+  // only reports this at finalize (stop_recording), after a 30s drive was
+  // already wasted on a session that was dead from the start.
+  await assertUnambiguousDevice(device);
 
   // `template` overrides intent.template (a raw passthrough for custom/
   // uncurated templates). Two DISTINCT composition params, deliberately not

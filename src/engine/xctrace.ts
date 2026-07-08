@@ -31,6 +31,7 @@ export type XctraceErrorKind =
   | "template-only-name" // a `templates` composition entry names a template that xctrace does NOT also expose as a bare --instrument (composing it this way fails outright — see recording.ts's TEMPLATE_ONLY_NAMES)
   | "permission-denied"  // Instruments/DTServiceHub authorization not granted
   | "ambiguous-schema"   // schema appears multiple times in this run — needs a position
+  | "ambiguous-device"   // `device` name-substring matched more than one target — needs the UDID
   | "table-too-large";   // aborted mid-parse — approaching the process's heap limit
 
 export interface XctraceErrorDetails {
@@ -62,6 +63,11 @@ export interface XctraceErrorDetails {
     category: string | null;
     codes: string | null;
   }>;
+  /**
+   * Present for "ambiguous-device" errors — every device the substring
+   * matched, so the caller can pick one and retry with its UDID.
+   */
+  deviceMatches?: Array<{ name: string; udid: string; kind: string }>;
   /** Present for "table-too-large" — how far the parse got before aborting. */
   rowsParsedBeforeAbort?: number;
   /** Present for "table-too-large" — heap usage at abort time, for diagnosis. */
