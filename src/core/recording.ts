@@ -11,11 +11,12 @@
  * auto-generated in the server-owned recordings directory.
  */
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { XctraceError } from "../engine/xctrace.js";
 import { getConfig, defaultRecordingsDir } from "../config.js";
 import { openTrace } from "../engine/session.js";
 import type { RunSummary, InstrumentSummary, TimeRange } from "../engine/session.js";
+import { resolveAssetPath } from "./assetPaths.js";
 
 // ─── Intent model ─────────────────────────────────────────────────────────────
 
@@ -500,6 +501,26 @@ export const RECORDING_INTENTS = {
     launchRequired: false,
     note: "The Allocations template already bundles Points of Interest for free.",
   },
+  "memory-vm": {
+    label: "Allocations + VM Tracker (Automatic Snapshotting)",
+    // A custom, offline-validated .tracetemplate (PMT:gold-haven) shipped with
+    // this package — NOT a stock xctrace template name. start_recording's
+    // `template` param already accepts a raw path with no code changes
+    // (passed straight through to `xctrace --template <value>`); resolving it
+    // here means the caller never has to know that.
+    template: resolveAssetPath("AllocVMTrackerAuto3s.tracetemplate"),
+    launchRequired: false,
+    note:
+      "Custom template built via Instruments.app's GUI, not a stock xctrace template — VM Tracker's " +
+      "\"Automatic Snapshotting\" (3s interval) is baked in because it's template-only configuration " +
+      "xctrace's own --recording-options can't reach (verified live: --show-recording-options returns " +
+      "{} for VM Tracker — it has no exposed configurable options at all, not \"nothing to configure\"). " +
+      "Without this, VM Tracker's 'Regions Map' schema comes back EMPTY under both attach and launch. " +
+      "Bundles VM Tracker's Regions Map for free alongside standard Allocations tracking — Points of " +
+      "Interest is NOT bundled (this template only composes Allocations + VM Tracker), so it's added " +
+      "automatically like any other POI-less template. Use type: \"memory\" instead for plain " +
+      "Allocations without the VM Tracker regions breakdown.",
+  },
   network: {
     label: "Network",
     template: "Network",
@@ -740,6 +761,20 @@ export function collectPrivacyNotices(names: (string | undefined)[]): string[] {
 // ─── Output path ──────────────────────────────────────────────────────────────
 
 /**
+ * Filesystem-safe slug for an output filename. A shipped custom
+ * .tracetemplate (PMT:gold-haven, e.g. "memory-vm") passes its resolved
+ * absolute FILE PATH here instead of a short template name — slug from the
+ * basename (extension stripped), not the whole path, or the filename
+ * balloons into a slugified copy of the entire directory tree (verified
+ * live before this guard existed: "…-users-simonfortelny-git-instruments-
+ * mcp-server-assets-allocvmtrackerauto3s-tracetemplate.trace").
+ */
+export function slugFromTemplate(template: string): string {
+  const nameSource = /[\\/]/.test(template) ? basename(template).replace(/\.[^.]+$/, "") : template;
+  return nameSource.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+/**
  * Generate a timestamped output path in the recordings directory — the
  * user-configured one (set_recordings_dir, PMT:serene-wind) if set, else the
  * OS-convention default (~/Library/Application Support/far-swan/recordings/
@@ -754,8 +789,7 @@ export async function defaultOutputPath(template: string): Promise<string> {
     .toISOString()
     .replace(/[:.]/g, "-")
     .slice(0, 19);
-  const slug = template.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-  return join(dir, `${ts}-${slug}.trace`);
+  return join(dir, `${ts}-${slugFromTemplate(template)}.trace`);
 }
 
 /**
