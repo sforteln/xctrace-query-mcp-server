@@ -40,9 +40,9 @@ import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
 import osLogLens from "./lenses/osLog/index.js";
-import { getConfig, updateConfig, configPath, defaultFallbackCacheDir } from "./config.js";
+import { getConfig, updateConfig, configPath, defaultFallbackCacheDir, defaultRecordingsDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
-import { listTraces, findTrace } from "./core/discovery.js";
+import { listTraces, findTrace, builtInRootPaths } from "./core/discovery.js";
 import {
   RECORDING_INTENTS,
   tryOpenTrace,
@@ -1307,23 +1307,17 @@ export function createServer(): McpServer {
       title: "List Search Roots",
       description:
         "List all configured search root directories and whether they currently exist on disk. " +
-        "Also shows the built-in roots that are always scanned (Xcode autosave, DerivedData). " +
+        "Also shows the built-in roots that are always scanned (Xcode autosave, DerivedData, and " +
+        "the active recordings directory — set_recordings_dir). " +
         "Use add_search_root to add a directory.",
       inputSchema: {},
     },
     async () =>
       safeToolWithLog("list_search_roots", {}, async () => {
-        const { homedir } = await import("node:os");
         const { stat } = await import("node:fs/promises");
-        const { join } = await import("node:path");
-
-        const home = homedir();
-        const builtInRoots = [
-          join(home, "Library", "Developer", "Xcode", "Instruments"),
-          join(home, "Library", "Caches", "com.apple.dt.instruments"),
-        ];
 
         const config = await getConfig();
+        const builtInRoots = builtInRootPaths(config.recordingsDir ?? defaultRecordingsDir());
 
         async function checkExists(p: string): Promise<boolean> {
           try { await stat(p); return true; } catch { return false; }
@@ -1341,6 +1335,42 @@ export function createServer(): McpServer {
           builtInRoots: builtIn,
           userRoots,
           totalRoots: builtIn.length + userRoots.length,
+        }, null, 2));
+      })
+  );
+
+  // ── set_recordings_dir ────────────────────────────────────────────────────
+  server.registerTool(
+    "set_recordings_dir",
+    {
+      title: "Set Recordings Directory",
+      description:
+        "Set (or reset) the directory new recordings are saved to (PMT:serene-wind) — e.g. a " +
+        "project-specific folder or an external drive, instead of the default " +
+        "~/Library/Application Support/far-swan/recordings. The active directory (default or " +
+        "configured) is always scanned by list_traces/find_trace as a built-in root, so a " +
+        "recording made in one session stays discoverable by name in a later one. Omit `path` to " +
+        "reset to the OS-convention default. " +
+        "⚠️ Not for directories to SEARCH for existing traces — use add_search_root for that.",
+      inputSchema: {
+        path: z.string().optional().describe("Absolute or ~ path to save new recordings to. Omit to reset to the default."),
+      },
+    },
+    async ({ path: rawPath }) =>
+      safeToolWithLog("set_recordings_dir", { path: rawPath }, async () => {
+        const { resolve } = await import("node:path");
+        const { homedir } = await import("node:os");
+
+        let absPath: string | null = null;
+        if (rawPath) {
+          const expanded = rawPath.startsWith("~") ? rawPath.replace("~", homedir()) : rawPath;
+          absPath = resolve(expanded);
+        }
+
+        const config = await updateConfig((c) => ({ ...c, recordingsDir: absPath }));
+        return text(JSON.stringify({
+          recordingsDir: config.recordingsDir ?? defaultRecordingsDir(),
+          isDefault: config.recordingsDir === null,
         }, null, 2));
       })
   );

@@ -12,8 +12,8 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { XctraceError } from "../engine/xctrace.js";
+import { getConfig, defaultRecordingsDir } from "../config.js";
 import { openTrace } from "../engine/session.js";
 import type { RunSummary, InstrumentSummary, TimeRange } from "../engine/session.js";
 
@@ -611,18 +611,14 @@ export function collectPrivacyNotices(names: (string | undefined)[]): string[] {
 // ─── Output path ──────────────────────────────────────────────────────────────
 
 /**
- * Generate a timestamped output path in the server-owned recordings directory
- * (~Library/Application Support/far-swan/recordings/<ts>-<slug>.trace).
- * Creates the directory if it doesn't exist.
+ * Generate a timestamped output path in the recordings directory — the
+ * user-configured one (set_recordings_dir, PMT:serene-wind) if set, else the
+ * OS-convention default (~/Library/Application Support/far-swan/recordings/
+ * <ts>-<slug>.trace). Creates the directory if it doesn't exist.
  */
 export async function defaultOutputPath(template: string): Promise<string> {
-  const dir = join(
-    homedir(),
-    "Library",
-    "Application Support",
-    "far-swan",
-    "recordings"
-  );
+  const config = await getConfig();
+  const dir = config.recordingsDir ?? defaultRecordingsDir();
   await mkdir(dir, { recursive: true });
 
   const ts = new Date()

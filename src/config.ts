@@ -27,11 +27,22 @@ export interface ServerConfig {
    * set_cache_dir, mirroring the searchRoots pattern above.
    */
   fallbackCacheDir: string | null;
+  /**
+   * Directory new recordings are saved to (PMT:serene-wind). null = use the
+   * OS-convention default (`defaultRecordingsDir()`); user-configurable via
+   * set_recordings_dir, mirroring fallbackCacheDir's pattern exactly. Whichever
+   * directory is active (default or configured) is always scanned by
+   * listTraces/findTrace as a built-in root (discovery.ts) — a recording made
+   * in one session must stay discoverable by name in a later one without a
+   * separate add_search_root call for the server's own output directory.
+   */
+  recordingsDir: string | null;
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
   searchRoots: [],
   fallbackCacheDir: null,
+  recordingsDir: null,
 };
 
 // ─── Path ─────────────────────────────────────────────────────────────────────
@@ -43,6 +54,11 @@ export function configPath(): string {
 /** OS-convention default for the fallback trace-cache directory (PMT:ruby-peak) — sibling to config.json. */
 export function defaultFallbackCacheDir(): string {
   return join(homedir(), "Library", "Application Support", "far-swan", "trace-cache");
+}
+
+/** OS-convention default for where new recordings are saved (PMT:serene-wind) — sibling to config.json. */
+export function defaultRecordingsDir(): string {
+  return join(homedir(), "Library", "Application Support", "far-swan", "recordings");
 }
 
 // ─── Load ─────────────────────────────────────────────────────────────────────
@@ -60,6 +76,7 @@ export async function loadConfig(): Promise<ServerConfig> {
     return {
       searchRoots: Array.isArray(parsed.searchRoots) ? parsed.searchRoots : [],
       fallbackCacheDir: typeof parsed.fallbackCacheDir === "string" ? parsed.fallbackCacheDir : null,
+      recordingsDir: typeof parsed.recordingsDir === "string" ? parsed.recordingsDir : null,
     };
   } catch (err: unknown) {
     // ENOENT (missing) and SyntaxError (malformed) both get defaults.

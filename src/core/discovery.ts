@@ -11,7 +11,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
-import { getConfig } from "../config.js";
+import { getConfig, defaultRecordingsDir } from "../config.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -47,11 +47,21 @@ export interface FindTraceResult {
 
 // ─── Built-in roots ───────────────────────────────────────────────────────────
 
-function builtInRootPaths(): string[] {
+/**
+ * PMT:serene-wind: `recordingsDir` is whichever directory new recordings are
+ * ACTUALLY saved to right now — the user-configured one if set, else
+ * defaultRecordingsDir(). Always included as a built-in root (not part of the
+ * user-facing searchRoots list) so a trace made in one session stays
+ * discoverable by name in a later one without a separate add_search_root call
+ * for the server's own output directory — and immediately reflects a
+ * set_recordings_dir change with no extra step.
+ */
+export function builtInRootPaths(recordingsDir: string): string[] {
   const home = homedir();
   return [
     join(home, "Library", "Developer", "Xcode", "Instruments"),
     join(home, "Library", "Caches", "com.apple.dt.instruments"),
+    recordingsDir,
   ];
 }
 
@@ -145,7 +155,7 @@ async function scanRoot(
 
 async function allTraces(): Promise<{ traces: TraceInfo[]; roots: RootStatus[] }> {
   const config = await getConfig();
-  const builtIns = builtInRootPaths();
+  const builtIns = builtInRootPaths(config.recordingsDir ?? defaultRecordingsDir());
 
   const roots: RootStatus[] = [];
   const traceGroups: TraceInfo[][] = [];
