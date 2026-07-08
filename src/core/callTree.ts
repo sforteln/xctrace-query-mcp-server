@@ -58,8 +58,14 @@ export interface CallTreeNode {
  * the "hot" frame while idle) — extend as new ones turn up in real traces.
  * Time Profiler shows THAT a thread is blocked here, never WHAT it's blocked
  * on — that requires System Trace or thread-state instrumentation instead.
+ *
+ * Exported so the off-CPU classifier (PMT:lean-pass, offCpuClassifier.ts) —
+ * which works the OTHER direction, from System-Trace/syscall backtraces where
+ * WHAT it's blocked on IS visible — reuses this same wait-primitive vocabulary
+ * rather than duplicating a drifting copy. That classifier folds in a few more
+ * leaf primitives (e.g. kevent_id) that only surface in syscall backtraces.
  */
-const WAIT_FRAME_NAMES = new Set([
+export const WAIT_FRAME_NAMES = new Set([
   "_DPSBlockUntilNextEventMatchingListInMode",
   "CFRunLoopRun",
   "CFRunLoopRunSpecific",
@@ -772,8 +778,11 @@ function zeroSamplesNote(
     if (schemaWide > 0) {
       return (
         `0 samples in this time window, though the schema has ${schemaWide.toLocaleString("en-US")} sample(s) ` +
-        "elsewhere — likely genuinely off-CPU/idle in this specific window, not a data problem. Widen timeRange " +
-        "or pick a different window."
+        "elsewhere — the thread was genuinely off-CPU/idle in this specific window (Time Profiler samples only " +
+        "ON-CPU threads), not a data problem. This is exactly the case call_tree can't explain: to find out WHY " +
+        "it was off-CPU — idle held-frame vs a real block vs a scheduling delay — call explain_off_cpu_interval " +
+        "with this window's startNs/endNs (it reads the syscall backtrace, which IS captured during the wait). " +
+        "Or widen timeRange / pick a different window."
       );
     }
   }

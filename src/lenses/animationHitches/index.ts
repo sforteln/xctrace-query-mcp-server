@@ -11,6 +11,7 @@ const DISPLAYED_SURFACES_SCHEMA = "displayed-surfaces-interval";
 const DISPLAY_SURFACE_SWAP_SCHEMA = "display-surface-swap";
 const DEVICE_DISPLAY_INFO_SCHEMA = "device-display-info";
 const TIME_PROFILE_SCHEMAS = ["time-sample", "time-profile"];
+const OFF_CPU_SCHEMAS = ["syscall", "thread-state"];
 
 const HITCHES_DISPLAY_SCHEMAS = [
   HITCHES_SCHEMA,
@@ -53,9 +54,29 @@ function swapIdGotchaAction(sessionId: string, run: number): NextAction {
  * main-thread samples in its window is likely an IDLE held-frame, not a
  * compute problem — classify (on-CPU real / off-CPU idle / off-CPU blocked)
  * before concluding. Duration alone is an entry point, not a verdict
- * (scratchpad 059). Mirrors hangsLens's timeProfileCorrelationHint exactly.
+ * (scratchpad 059).
+ *
+ * Three tiers by what the trace carries: (1) if it has the off-CPU-side
+ * schemas (syscall/thread-state), point straight at the DIG —
+ * explain_off_cpu_interval NAMES the class by backtrace (PMT:lean-pass), the
+ * strongest answer; (2) else if it has Time Profiler, correlate to at least
+ * split on-CPU vs off-CPU (but that can't say idle-vs-blocked); (3) else
+ * re-record. Mirrors hangsLens's timeProfileCorrelationHint's escalation.
  */
 function offCpuClassificationAction(sessionId: string, run: number, allSchemas: string[]): NextAction {
+  const hasOffCpu = OFF_CPU_SCHEMAS.some((s) => allSchemas.includes(s));
+  if (hasOffCpu) {
+    return {
+      tool: "explain_off_cpu_interval",
+      args: { sessionId, run, startNs: 0, endNs: 0, thread: "Main Thread" },
+      description:
+        "Before treating a hitch's duration as a compute problem, classify the stall: pass the hitch's " +
+        "[start, start+duration] window here to explain_off_cpu_interval — it reads the syscall backtrace " +
+        "and names whether the main thread was idle (a benign held-frame, e.g. parked at _DPSNextEvent), " +
+        "genuinely BLOCKED (e.g. a synchronous dispatch wait on the render server), or scheduling-delayed. " +
+        "Duration alone is an entry point, not a verdict; the class is in the stack, not the syscall name.",
+    };
+  }
   const hasTimeProfile = TIME_PROFILE_SCHEMAS.some((s) => allSchemas.includes(s));
   if (hasTimeProfile) {
     return {
@@ -65,7 +86,8 @@ function offCpuClassificationAction(sessionId: string, run: number, allSchemas: 
         "Before treating a hitch's duration as a compute problem, classify it: correlate against Time " +
         "Profiler samples to see whether the main thread was actually ON-CPU during the hitch window " +
         "(a real compute cost) or had NO samples there (an off-CPU idle held-frame or a blocked wait) — " +
-        "duration alone is an entry point, not a verdict.",
+        "duration alone is an entry point, not a verdict. For the deeper idle-vs-blocked split, compose a " +
+        "System Trace recording so syscall/thread-state are present and explain_off_cpu_interval can dig.",
     };
   }
   return {

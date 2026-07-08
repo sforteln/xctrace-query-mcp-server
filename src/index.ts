@@ -41,6 +41,7 @@ import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
 import osLogLens from "./lenses/osLog/index.js";
 import animationHitchesLens from "./lenses/animationHitches/index.js";
+import offCpuLens from "./lenses/offCpu/index.js";
 import {
   summarizeQuery, summarizeFind, summarizeAggregate, summarizeCorrelate,
   summarizeRelate, summarizeCallTree, summarizeTimeline,
@@ -154,6 +155,10 @@ const LENSES: Lens[] = [
   // (always composed bare — a caller's own choice or the Hangs-fidelity
   // mitigation above) — same tier as runLoops/thermal.
   osLogLens,
+  // Off-CPU classifier (syscall/thread-state) — the "dig" layer, only ever
+  // composed onto another recording (System Trace) for a specific stall
+  // investigation, never a recording's own headline; last tier, no quickStart.
+  offCpuLens,
 ];
 
 /**
