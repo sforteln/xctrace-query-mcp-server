@@ -40,6 +40,7 @@ import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
 import osLogLens from "./lenses/osLog/index.js";
+import animationHitchesLens from "./lenses/animationHitches/index.js";
 import { getConfig, updateConfig, configPath, defaultFallbackCacheDir, defaultRecordingsDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace, builtInRootPaths } from "./core/discovery.js";
@@ -131,6 +132,12 @@ const LENSES: Lens[] = [
   swiftUILens,
   coreDataLens,
   allocationsLens,
+  // Animation Hitches' own template bundles Hangs + Time Profiler + Points of
+  // Interest for free (TEMPLATE_BUNDLES) — same "specific intent beats
+  // auto-bundled auxiliary" reasoning as hangsLens/timeProfilerLens below, so
+  // this sits BEFORE them: a recording made specifically to chase hitches
+  // should win hitches' own quickStart, not a generic Hangs/Time Profiler one.
+  animationHitchesLens,
   hangsLens,
   timeProfilerLens,
   thermalLens,
