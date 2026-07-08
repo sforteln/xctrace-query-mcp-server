@@ -47,8 +47,8 @@ Concrete case validated live: a user asking "find why the app is hanging on scro
 **Instrument/template/schema:** Allocations, Leaks (any instrument using liboainject)
 **Bug-type/category:** launch-mode, macOS code signing
 **Date:** 2026-06-30
-**Status:** candidate
-**Promoted to:**
+**Status:** promoted-to-response (PMT:clear-crow, 2026-07-08) — the SIGKILL/code-signature-invalid signature turned out to BE detectable, resolving the entry's own open question
+**Promoted to:** `src/engine/record.ts`'s `classifyRecordFailure` (new `injection-attach-failed` XctraceError kind). Verified live against a real hardened binary (TextEdit.app): xctrace's own stderr says "Failed to attach to target: Failed to attach to target process." at exit code 2 — distinct from a genuinely-missing PID's "Cannot find process for provided pid" at exit code 21 (also verified live). This message alone doesn't PROVE code-signing is the cause, so the response offers it as the most-likely explanation for launch-mode, not a certainty.
 
 Launch-mode instrument injection (Allocations/Leaks/anything using liboainject) only works against apps built with debugging entitlements (dev/ad-hoc-signed Debug builds). Launching a hardened production/system app (e.g. TextEdit.app) under an injecting instrument gets it SIGKILLed for code-signature/library-validation reasons — the OS kills the process the instant the injection dylib tries to attach, before any app code runs. Distinguishable from a real app crash by the all-zero thread state and "Code Signature Invalid" termination reason in the crash report (verified live). This is correct OS enforcement, not a bug to work around — the fix is profiling a locally-built Debug target instead.
 
@@ -56,8 +56,8 @@ Launch-mode instrument injection (Allocations/Leaks/anything using liboainject) 
 **Instrument/template/schema:** Allocations (any instrument using liboainject for backtrace capture)
 **Bug-type/category:** launch-mode, attach-mode, data-fidelity
 **Date:** 2026-07-06
-**Status:** candidate
-**Promoted to:**
+**Status:** promoted-to-response (PMT:clear-crow, 2026-07-08) — auto-derivable from an already-computed structure, no separate scan needed, so destination 3 not destination 4
+**Promoted to:** `src/core/callTree.ts`'s `degenerateBacktraceNote` — fires across all three views (tree/hot/spine) when the ENTIRE sampled population (≥10 samples) collapses to one distinct root/function whose name matches "call stack limit reached", naming the attach-vs-launch cause and steering to launch mode.
 
 Recording Allocations via `xctrace record --attach <pid>` against an already-running, otherwise-healthy process (no crash, no SIGKILL, a completely normal-looking recording) produced 275,314 rows where EVERY backtrace resolved to a single degenerate frame — `<Call stack limit reached>` — with 1 unique backtrace across the whole table. This is a distinct, quieter failure mode from the SIGKILL case in `launch-mode-injection` above: nothing errors, nothing warns, the recording completes normally and looks superficially fine (right schema, right row count, right column shapes) — only the backtrace CONTENT is silently useless. Root cause (verified live via a controlled comparison against a `--launch`-mode recording of the same target immediately after): `--launch` injects `liboainject` via `DYLD_INSERT_LIBRARIES` before any code runs, so its allocation interposer can walk the stack reliably for the process's entire lifetime — a `--launch` recording of the identical app produced 145,033 rows with genuinely rich, multi-frame, fully-symbolicated backtraces (correct function names and binary/module attribution), with only 390 rows (0.27%, the earliest pre-runtime-init allocations before dyld/objc is even set up) showing the same degenerate stub — which is expected and correct for that narrow window, not a bug. Attach-mode's late-injection path apparently cannot reliably unwind existing call stacks. Practical rule: any test, spike, or dogfooding session that needs real Allocations backtrace data MUST use launch mode, not attach — attach-mode backtrace data can look completely normal (right shape, right row count) while being silently worthless, with no signal in the response to suggest checking.
 
@@ -65,8 +65,8 @@ Recording Allocations via `xctrace record --attach <pid>` against an already-run
 **Instrument/template/schema:** Thermal State, Points of Interest, general
 **Bug-type/category:** recording-composition
 **Date:** 2026-06-30
-**Status:** candidate
-**Promoted to:** partially — see PMT:sage-weasel (complete) and the "want to test relative health" README section
+**Status:** promoted-to-response (PMT:sage-weasel complete, verified 2026-07-08)
+**Promoted to:** `src/lenses/thermal/index.ts` (table-wide + per-row nextActions hint) + README's "want to test relative health" section. GCD Performance was INVALIDATED during sage-weasel's live verification (it carries its own backtrace, doesn't need a companion) — see roleHints.ts + PMT:azure-forge; only Thermal State ended up needing this fix.
 
 Some instruments carry almost no standalone signal — opening a trace with e.g. just Thermal State and nothing else gives you "the device got hot" with no way to attribute WHY, since there's no CPU/backtrace data to correlate against. The general pattern: Apple's own built-in templates bundle these low-signal-alone instruments together with a signal-carrying one (Time Profiler bundles Thermal State + Points of Interest + Hangs) — that bundling pattern itself is a signal about which instruments are "supporting" vs. "primary." Verified exception that proves the rule: GCD Performance was assumed to be in this same low-signal-alone bucket (no standalone template, similar absence pattern to Thermal State) — checked live, it actually carries its own resolved backtrace column and needs no companion at all. Always verify a specific instrument's real column shape before asserting it's signal-less; don't extend this pattern to a new instrument by analogy alone.
 

@@ -111,7 +111,7 @@ export function extractRunIssues(output: string): string[] {
   return issues;
 }
 
-function classifyRecordFailure(
+export function classifyRecordFailure(
   stderr: string,
   exitCode: number | null,
   command: string[]
@@ -131,6 +131,34 @@ function classifyRecordFailure(
         `attach-by-NAME frequently fails even when the process IS running — attach by PID instead ` +
         `(get it from \`xcrun devicectl device info processes --device <udid>\` for a device, or the ` +
         `PID printed by \`xcrun simctl launch <udid> <bundle-id>\` for a Simulator).`,
+      { command, stderr: stderr.trim() }
+    );
+  }
+
+  // Distinct from "target-not-found" above: the process/app WAS found (a
+  // --launch actually started it, or an --attach PID exists), but the
+  // injecting instrument's own attach step failed — a different message
+  // ("failed to attach to target") and exit code (2, vs. 21 for a genuinely
+  // missing PID — verified live). The #1 confirmed cause for --launch against
+  // a hardened/system binary: macOS's code-signing/library-validation
+  // enforcement SIGKILLs the process the instant liboainject tries to attach,
+  // before any app code runs (aidocs/adviceCaptureLog.md's
+  // "launch-mode-injection" entry) — but this message alone doesn't prove
+  // that specific cause, so the wording below offers it as the most likely
+  // explanation, not a certainty.
+  if (s.includes("failed to attach to target")) {
+    const isLaunch = command.includes("--launch");
+    return new XctraceError(
+      "injection-attach-failed",
+      `The target was ${isLaunch ? "launched" : "found"}, but the instrument's own attach step failed: ${stderr.trim()}. ` +
+        (isLaunch
+          ? "The most common cause: launch-mode instrument injection (Allocations/Leaks/anything using liboainject) " +
+            "only works against apps built with debugging entitlements (dev/ad-hoc-signed Debug builds) — launching " +
+            "a hardened production/system app under an injecting instrument gets it SIGKILLed for code-signature/" +
+            "library-validation reasons, before any app code runs. This is correct OS enforcement, not a bug — " +
+            "profile a locally-built Debug target instead."
+          : "This can happen for injection-based instruments (Allocations/Leaks) against certain hardened targets; " +
+            "try launch mode against a locally-built Debug target instead."),
       { command, stderr: stderr.trim() }
     );
   }

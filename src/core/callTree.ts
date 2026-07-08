@@ -389,6 +389,50 @@ const WINDOW_CAPTURE_THRESHOLD_PCT = 50;
  * the same mistake formatWeight()'s weightKind split already guards
  * against elsewhere in this file.
  */
+/** Minimum sample count before flagging degenerate backtraces — avoids noise on a near-empty table. */
+const DEGENERATE_BACKTRACE_MIN_SAMPLES = 10;
+
+/**
+ * Verified live (PMT:clear-crow, triaging the "attach-mode-degenerate-
+ * backtraces" candidate in aidocs/adviceCaptureLog.md): recording Allocations
+ * via `--attach` against an already-running process produced 275,314 rows
+ * where EVERY backtrace resolved to the SAME single degenerate frame
+ * ("<Call stack limit reached>") — 1 unique backtrace across the whole table.
+ * Nothing errors, nothing warns; the recording looks completely normal (right
+ * schema, right row count, right column shapes) — only the backtrace CONTENT
+ * is silently useless. Root cause: `--attach`'s late-injection path can't
+ * reliably unwind a stack for a thread that was already running before the
+ * instrument attached; `--launch` injects before any code runs and doesn't
+ * have this problem. This is population-level and auto-derivable — no
+ * separate scan needed — so it's exactly the "destination 3, not destination
+ * 4" case the triage pipeline favors: a computed fact tied to the actual
+ * outcome, not static prose that can drift.
+ *
+ * foldFromSql only builds ONE of `roots`/`hot` per call (whichever the
+ * requested view actually consumes — building both would waste memory on
+ * every call), so this checks whichever is non-empty rather than assuming
+ * `hot` specifically; both TreeNode and HotAccum carry the same `name`/
+ * `totalSamples` shape this check needs.
+ */
+function degenerateBacktraceNote(
+  roots: Map<string, TreeNode>,
+  hot: Map<string, HotAccum>,
+  totalSamples: number
+): string | null {
+  if (totalSamples < DEGENERATE_BACKTRACE_MIN_SAMPLES) return null;
+  const population = roots.size > 0 ? roots : hot;
+  if (population.size !== 1) return null;
+  const [only] = population.values();
+  if (!/call stack limit reached/i.test(only.name)) return null;
+  return (
+    `Every one of ${totalSamples} samples resolved to the SAME single degenerate frame ` +
+    `("${only.name}") — 0 real stack diversity across the whole table. This is a known attach-mode ` +
+    "fidelity issue for injection-based instruments (Allocations/Leaks): --attach's late injection " +
+    "can't reliably unwind stacks for threads already running before it attached. If you need real " +
+    "backtrace data, re-record with launch mode (start_recording's launch param) instead of attach."
+  );
+}
+
 function windowCaptureNote(
   totalWeight: number,
   weightKind: WeightKind,
@@ -524,6 +568,8 @@ function buildViewResult(
     }
     const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
     if (captureNote) notes.push(captureNote);
+    const degenerateNote = degenerateBacktraceNote(roots, hot, totalSamples);
+    if (degenerateNote) notes.push(degenerateNote);
     return {
       schema,
       run,
@@ -568,6 +614,8 @@ function buildViewResult(
     }
     const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
     if (captureNote) notes.push(captureNote);
+    const degenerateNote = degenerateBacktraceNote(roots, hot, totalSamples);
+    if (degenerateNote) notes.push(degenerateNote);
     return {
       schema,
       run,
@@ -611,6 +659,8 @@ function buildViewResult(
   }
   const captureNote = windowCaptureNote(totalWeight, weightKind, timeRange);
   if (captureNote) notes.push(captureNote);
+  const degenerateNote = degenerateBacktraceNote(roots, hot, totalSamples);
+  if (degenerateNote) notes.push(degenerateNote);
 
   return {
     schema,
