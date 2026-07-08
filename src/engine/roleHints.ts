@@ -173,6 +173,43 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "emit-location": detail,
     },
   },
+  // Bare os_log (passive system/framework logging) — distinct from os-signpost
+  // (developer-emitted). Column shape verified live (2026-07-08, Xcode 27/
+  // xctrace 16.0) against a real Animation Hitches recording: time, thread,
+  // process, message-type, format-string, backtrace, subsystem, category,
+  // message, emit-location — near-identical to os-signpost's shape. The
+  // generic engineering-type heuristics in roleInference.ts ALREADY classify
+  // every one of these columns correctly (subsystem/category → label,
+  // message/format-string/emit-location → detail, backtrace → backtrace, all
+  // at high confidence) — verified by running classifyWithHints against the
+  // real columns with no entry present. So this pin's job is NOT fixing a
+  // misclassification; it's closing the gap where curation is REQUIRED, not
+  // just nice-to-have: hasPinnedBacktraceColumn() (listInstruments.ts) checks
+  // ONLY this curated table, never the heuristic layer, specifically so
+  // list_instruments' hasCallstack flag is cheap (no data fetch). Without an
+  // entry here, os-log would report hasCallstack:false despite genuinely
+  // carrying a resolvable text-backtrace — an AI scanning list_instruments
+  // would never realize it can call_tree/get_row a real stack out of it. This
+  // is what surfaces com.apple.runtime-issues (Hang Risk/Severe Hang Risk;
+  // dim-chalk's aidocs/appleModelerHarvest.md §3) as reachable via a plain
+  // find()/query on subsystem+category, per the pure-hail core-vs-lens cost
+  // rule — no bespoke lens verb (PMT:full-trace).
+  "os-log": {
+    instrument: "os_log",
+    primaryTime: "time",
+    columns: {
+      time: t,
+      thread: thread,
+      process: thread,
+      "message-type": label,
+      "format-string": detail,
+      backtrace: bt,
+      subsystem: label,
+      category: label,
+      message: detail,
+      "emit-location": detail,
+    },
+  },
   OSSignpostIntervals: {
     instrument: "Points of Interest (intervals)",
     primaryTime: "start",
