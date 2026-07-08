@@ -39,6 +39,14 @@ export interface XctraceErrorDetails {
   command?: string[];
   /** Process exit code, when the failure was a non-zero exit. */
   exitCode?: number | null;
+  /**
+   * Present when the process was terminated by a signal instead of exiting
+   * normally (exitCode is null in that case) — e.g. "SIGTRAP" for a crash.
+   * Verified live: xctrace can crash silently (no stderr) exporting a
+   * specific table; this is the only signal that it crashed rather than
+   * just failing cleanly.
+   */
+  signal?: string;
   /** Captured stderr, trimmed — surfaced as a field, never dumped raw to the agent. */
   stderr?: string;
   /**
@@ -324,18 +332,24 @@ export async function exportXPathStream(
       );
     });
 
-    child.on("close", (code: number | null) => {
+    child.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       if (code === 0) {
         resolve();
         return;
       }
+      // A crash (as opposed to a normal non-zero exit) reports code:null and
+      // the terminating signal instead — verified live (PMT:loam-merlin):
+      // xctrace crashed silently exporting core-data-fetch (SIGTRAP, no
+      // stderr at all), which a code-only message would render as just
+      // "exited with an error" with no hint that it actually crashed.
       reject(
         new XctraceError(
           "export-failed",
-          `xctrace export exited with an error${code !== null ? ` (code ${code})` : ""}.`,
+          `xctrace export exited with an error${code !== null ? ` (code ${code})` : signal ? ` (crashed: ${signal})` : ""}.`,
           {
             command: [XCRUN, ...args],
             exitCode: code,
+            ...(signal ? { signal } : {}),
             stderr: stderrChunks.join("").trim(),
             tracePath,
           }
@@ -350,6 +364,33 @@ export async function exportXPathStream(
   done.catch(() => {});
 
   return { stdout: child.stdout!, done };
+}
+
+/**
+ * Await a streaming parse against exportXPathStream's `done` signal, giving
+ * PRIORITY to a non-zero xctrace exit over a parse failure — verified live
+ * (PMT:loam-merlin, Data Persistence session): xctrace crashed (silently,
+ * exit 133, no stderr) partway through exporting core-data-fetch, truncating
+ * its stdout mid-stream; the streaming XML parser correctly noticed the
+ * truncation and threw "Unclosed root tag", and a naive `Promise.all([parse,
+ * done])` surfaced THAT generic parse error to the caller instead of the far
+ * more diagnostic exit-code one — Promise.all rejects with whichever promise
+ * settles first, and the parser reliably notices EOF-mid-document before the
+ * separate process "close" event fires. `done`'s own doc comment already
+ * says the exit error "should win" for exactly this reason; this function is
+ * what actually makes that true, since plain Promise.all does not.
+ *
+ * A caller that gets THIS error instead of a parse error learns immediately
+ * "xctrace itself failed to export this table" (with exitCode/stderr, if
+ * any) rather than being misled into thinking the trace or the parser is at
+ * fault — the parse failure is a downstream SYMPTOM of the crash, not an
+ * independent bug.
+ */
+export async function raceParseAgainstExport<T>(parse: Promise<T>, done: Promise<void>): Promise<T> {
+  const [parseResult, doneResult] = await Promise.allSettled([parse, done]);
+  if (doneResult.status === "rejected") throw doneResult.reason;
+  if (parseResult.status === "rejected") throw parseResult.reason;
+  return parseResult.value;
 }
 
 /**

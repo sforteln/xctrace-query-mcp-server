@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { resolve, join } from "node:path";
 import { stat } from "node:fs/promises";
 import type { DatabaseSync } from "node:sqlite";
-import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, XctraceError } from "./xctrace.js";
+import { exportToc, exportXPathStream, buildTableXPath, buildTableXPathAtPosition, buildTrackDetailXPath, raceParseAgainstExport, XctraceError } from "./xctrace.js";
 import { parseTableStreamMeta, parseTableStreamToSqlite, SchemaCol, SchemaMeta } from "./parseTable.js";
 import { parseTrackDetailStreamMeta, parseTrackDetailStreamToSqlite } from "./parseTrackDetail.js";
 import { quoteIdent, loadIngestedSchemaCols } from "./sqliteStore.js";
@@ -345,7 +345,7 @@ export async function getTableAtPosition(
   } else {
     const xpath = buildTableXPathAtPosition(run, schema, position);
     const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-    const [ingested] = await Promise.all([parseTableStreamToSqlite(stdout, db, cacheKey), done]);
+    const ingested = await raceParseAgainstExport(parseTableStreamToSqlite(stdout, db, cacheKey), done);
     cols = ingested.cols;
     rowCount = ingested.rowCount;
   }
@@ -454,21 +454,21 @@ export async function getTable(
         // parseTrackDetailStreamToSqlite's own doc comment for why this is two
         // xctrace exports instead of one.
         const discoverExport = await exportXPathStream(session.tracePath, xpath);
-        const [meta] = await Promise.all([
+        const meta = await raceParseAgainstExport(
           parseTrackDetailStreamMeta(discoverExport.stdout, schema),
-          discoverExport.done,
-        ]);
+          discoverExport.done
+        );
         cols = meta.cols;
         const ingestExport = await exportXPathStream(session.tracePath, xpath);
-        const [ingested] = await Promise.all([
+        const ingested = await raceParseAgainstExport(
           parseTrackDetailStreamToSqlite(ingestExport.stdout, cols, db, cacheKey),
-          ingestExport.done,
-        ]);
+          ingestExport.done
+        );
         rowCount = ingested.rowCount;
       } else {
         const xpath = buildTableXPath(run, schema);
         const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-        const [ingested] = await Promise.all([parseTableStreamToSqlite(stdout, db, cacheKey), done]);
+        const ingested = await raceParseAgainstExport(parseTableStreamToSqlite(stdout, db, cacheKey), done);
         cols = ingested.cols;
         rowCount = ingested.rowCount;
       }
@@ -582,7 +582,7 @@ export async function getSchemaMeta(
     // known case (mirrors getTableAtPosition, which never checks track-detail).
     const xpath = buildTableXPathAtPosition(run, schema, position);
     const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-    [meta] = await Promise.all([parseTableStreamMeta(stdout), done]);
+    meta = await raceParseAgainstExport(parseTableStreamMeta(stdout), done);
 
     const matchingEntries = session.instruments.filter((i) => i.run === run && i.schema === schema);
     const entry = matchingEntries[position - 1];
@@ -595,11 +595,11 @@ export async function getSchemaMeta(
       const { trackName, detailName } = modelEntry.trackDetail;
       const xpath = buildTrackDetailXPath(run, trackName, detailName);
       const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-      [meta] = await Promise.all([parseTrackDetailStreamMeta(stdout, schema), done]);
+      meta = await raceParseAgainstExport(parseTrackDetailStreamMeta(stdout, schema), done);
     } else {
       const xpath = buildTableXPath(run, schema);
       const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-      [meta] = await Promise.all([parseTableStreamMeta(stdout), done]);
+      meta = await raceParseAgainstExport(parseTableStreamMeta(stdout), done);
     }
 
     const entry = session.instruments.find((i) => i.run === run && i.schema === schema);
