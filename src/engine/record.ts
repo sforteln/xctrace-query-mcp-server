@@ -277,14 +277,14 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
                   isSim
                     ? new XctraceError(
                         "simulator-capture-failed",
-                        `Recording against the iOS Simulator "${device}" captured no data ` +
-                          `(xctrace exited ${exitCode ?? "non-zero"}). Simulator profiling via xctrace is ` +
-                          `unreliable — attach AND launch both fail here (verified: attach exit 21, launch exit 1, ` +
-                          `both empty). Record on a physical device instead, using the normal dev flow: start the app ` +
-                          `from Xcode (fresh build), then attach by PID (attach-by-NAME does not resolve on ` +
-                          `devices/simulators — get the PID from \`xcrun devicectl device info processes --device <udid>\`). ` +
-                          `Note: injection instruments (Allocations/Leaks) log malloc backtraces only at launch time, ` +
-                          `so attach yields the process but not allocation stacks.`,
+                        `Recording the iOS Simulator "${device}" via xctrace produced no data ` +
+                          `(exit ${exitCode ?? "non-zero"}${(stderr ?? "").trim() ? "" : ", no error message"}). ` +
+                          `Simulator profiling through the xctrace CLI is unreliable and instrument-specific: attach and ` +
+                          `all-processes both fail here even though the app runs as a live host process, Animation Hitches is ` +
+                          `unsupported on a Simulator (no real display), and Allocations/VM Tracker reject its target types. ` +
+                          `The Instruments GUI profiles Simulators reliably where the CLI doesn't — so for far-swan recording, ` +
+                          `use a physical device (start the app from Xcode, then attach by PID; attach-by-NAME doesn't resolve ` +
+                          `on device/sim), or profile the Simulator from Instruments.app directly.`,
                         { command: [XCRUN, ...args], exitCode: exitCode ?? null, stderr: (stderr ?? "").trim() }
                       )
                     : failure
