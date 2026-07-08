@@ -64,7 +64,7 @@ import {
   withRecommended,
 } from "./core/response.js";
 import type { NextAction } from "./core/response.js";
-import { detectorNextActions } from "./detectors/surface.js";
+import { eagerSweep } from "./detectors/surface.js";
 
 const SERVER_NAME = "instruments-mcp-server";
 const SERVER_VERSION = "0.1.0";
@@ -241,8 +241,13 @@ export function createServer(): McpServer {
         "The trace is loaded once and cached — all later tools reuse this session. " +
         "Returns runs with `recordedAt` timestamps so the agent can identify 'the run I just created'; " +
         "instruments (schemas); and, in `nextActions`, one entry flagged `recommended: true` when a " +
-        "lens recognises the trace type — follow it to reach first real data in 2 calls total; the " +
-        "rest of `nextActions` are unranked alternatives. " +
+        "lens recognises the trace type, or a detector fired over a small eager-ingested set of bounded " +
+        "schemas (so even a cold trace surfaces a real finding, not just navigational defaults) — follow " +
+        "it to reach first real data in 2 calls total; the rest of `nextActions` are unranked " +
+        "alternatives. Also returns `schemaInventory`, one line per schema present (warm/estimated size, " +
+        "kind, detector result, correlate hint) so the agent can reason over the full trace without " +
+        "opening every schema, plus `sweepNote` summarizing what the eager sweep checked (present even " +
+        "when nothing fired — a clean sweep is direction, not silence). " +
         "Always call this first. Call close_trace on this sessionId once you're done analyzing — " +
         "sessions are never evicted automatically, so nothing else will free it. " +
         "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
@@ -265,21 +270,23 @@ export function createServer(): McpServer {
         const quickStartAction: NextAction | null = quickStart
           ? { tool: quickStart.tool, args: quickStart.args, description: quickStart.hint }
           : null;
-        // PMT:pure-hail: a FIRED cheap detector (over anything already ingested,
-        // e.g. a re-opened trace whose tables the .db still holds) becomes the
-        // single `recommended` pick, demoting the navigational quickStart to a
-        // plain alternative. On a fresh trace nothing's ingested → no findings →
-        // quickStart stays recommended (unchanged).
-        const detectorActions = await detectorNextActions(result.sessionId);
-        const recommended: NextAction | null =
-          detectorActions.length > 0 ? detectorActions[0] : quickStartAction;
-        const alternatives: NextAction[] =
-          detectorActions.length > 0
-            ? [...detectorActions.slice(1), ...(quickStartAction ? [quickStartAction] : []), ...actionsAfterOpen(result.sessionId)]
-            : actionsAfterOpen(result.sessionId);
+        // PMT:ruddy-elk: eager-ingest a curated bounded-schema allowlist (so a
+        // cold trace has something to fire on, not just a re-opened one whose
+        // tables the .db already held) and sweep EVERY detector — cheap AND
+        // expensive — whose schemas are now ingested. A FIRED finding becomes
+        // the single `recommended` pick, demoting the navigational quickStart
+        // to a plain alternative; nothing fired (or nothing eager-ingestible
+        // was present) → quickStart stays recommended (unchanged).
+        const sweep = await eagerSweep(result.sessionId);
+        const recommended: NextAction | null = sweep.recommended ?? quickStartAction;
+        const alternatives: NextAction[] = sweep.recommended
+          ? [...sweep.alternatives, ...(quickStartAction ? [quickStartAction] : []), ...actionsAfterOpen(result.sessionId)]
+          : actionsAfterOpen(result.sessionId);
         const payload = {
           ...result,
           ...(versionWarning && { versionWarning }),
+          schemaInventory: sweep.inventory,
+          ...(sweep.sweepNote ? { sweepNote: sweep.sweepNote } : {}),
         };
         const response = envelope(payload, withRecommended(recommended, alternatives));
         return text(toMcpText(response));
@@ -1633,6 +1640,10 @@ export function createServer(): McpServer {
         "exitCode, and finalizeOutput — the tail of xctrace's console output — when it printed any, " +
         "so you can diagnose the exit rather than reasoning from the warning string alone); check it " +
         "before trusting an empty schema as \"ran and found nothing\" rather than \"write interrupted\". " +
+        "Also eager-ingests a small set of bounded schemas and sweeps every detector over them, so the " +
+        "response can include `recommended` (a fired finding, if any), `schemaInventory` (one line per " +
+        "present schema), and `sweepNote` (what was checked, even when the sweep came back clean) right " +
+        "after the recording finishes — not just after a separate open_trace/list_instruments round trip. " +
         "⚠️ Not for checking status without stopping — use get_recording_status for non-destructive polling.",
       inputSchema: {
         recordingId: z
@@ -1645,11 +1656,30 @@ export function createServer(): McpServer {
         const result = await stopSession(recordingId);
         const opened = await tryOpenTrace(result.tracePath);
         const sessionId = "session" in opened ? opened.session.sessionId : undefined;
+        // PMT:ruddy-elk: run the eager bounded-schema sweep right here — this
+        // is the exact moment (nothing ingested yet) the old detector sweep
+        // always returned empty for. Best-effort: the sweep itself must never
+        // stop stop_recording from returning the .trace path it just finalized.
+        let sweep: Awaited<ReturnType<typeof eagerSweep>> | null = null;
+        if (sessionId) {
+          try {
+            sweep = await eagerSweep(sessionId);
+          } catch {
+            sweep = null;
+          }
+        }
         return text(
           JSON.stringify(
             {
               ...result,
               ...opened,
+              ...(sweep
+                ? {
+                    schemaInventory: sweep.inventory,
+                    ...(sweep.sweepNote ? { sweepNote: sweep.sweepNote } : {}),
+                    ...(sweep.recommended ? { recommended: sweep.recommended } : {}),
+                  }
+                : {}),
               nextAction: sessionId ? "list_instruments" : "open_trace",
               nextArgs: sessionId ? { sessionId } : { path: result.tracePath },
             },

@@ -57,6 +57,30 @@ export function rankFinding(detector: Detector, finding: Finding): RankedFinding
   };
 }
 
+/** Shared run loop: filter by `include`, then by schema-availability, then run
+ *  + rank. A detector that throws is skipped (a broken detector must never
+ *  break the response). */
+function runGated(
+  detectors: readonly Detector[],
+  ctx: DetectorContext,
+  availableSchemas: ReadonlySet<string>,
+  include: (d: Detector) => boolean
+): RankedFinding[] {
+  const ranked: RankedFinding[] = [];
+  for (const d of detectors) {
+    if (!include(d)) continue;
+    if (!d.requiredSchemas.every((s) => availableSchemas.has(s))) continue;
+    let finding: Finding | null;
+    try {
+      finding = d.run(ctx);
+    } catch {
+      continue; // a detector error is never the caller's problem
+    }
+    if (finding) ranked.push(rankFinding(d, finding));
+  }
+  return ranked.sort((a, b) => b.score - a.score);
+}
+
 /**
  * Run every CHEAP detector whose required schemas are all ingested, ranked most-
  * alarming first. A detector that throws is skipped (a broken detector must
@@ -68,19 +92,26 @@ export function runCheapDetectors(
   ctx: DetectorContext,
   availableSchemas: ReadonlySet<string>
 ): RankedFinding[] {
-  const ranked: RankedFinding[] = [];
-  for (const d of detectors) {
-    if (d.cost !== "cheap") continue;
-    if (!d.requiredSchemas.every((s) => availableSchemas.has(s))) continue;
-    let finding: Finding | null;
-    try {
-      finding = d.run(ctx);
-    } catch {
-      continue; // a detector error is never the caller's problem
-    }
-    if (finding) ranked.push(rankFinding(d, finding));
-  }
-  return ranked.sort((a, b) => b.score - a.score);
+  return runGated(detectors, ctx, availableSchemas, (d) => d.cost === "cheap");
+}
+
+/**
+ * Run EVERY detector (cheap AND expensive) whose required schemas are all
+ * ingested — mirrors runCheapDetectors but WITHOUT the `cost !== "cheap"`
+ * guard (PMT:ruddy-elk). A detector's `expensive` flag exists to keep an
+ * unbounded scan off a firehose schema, not to keep it off a schema that's
+ * bounded BY NAME (see eagerSchemas.ts) and has already been eager-ingested
+ * — an "expensive" p95/p99 band scan over a bounded ~800-row diagnosed-event
+ * table runs in milliseconds. Callers must only pass `ingestedSchemas` that
+ * were actually gated on boundedness (the eager sweep), never on the
+ * detector's own cost flag, or this defeats the reason `expensive` exists.
+ */
+export function runDetectorsOverIngested(
+  detectors: readonly Detector[],
+  ctx: DetectorContext,
+  ingestedSchemas: ReadonlySet<string>
+): RankedFinding[] {
+  return runGated(detectors, ctx, ingestedSchemas, () => true);
 }
 
 /** The expensive detectors whose schemas are present — offered by name, not run. */

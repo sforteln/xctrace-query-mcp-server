@@ -41,5 +41,7 @@ export {
   criterionText,
   rankFinding,
   runCheapDetectors,
+  runDetectorsOverIngested,
   availableExpensiveDetectors,
 } from "./framework.js";
+export * from "./eagerSchemas.js";

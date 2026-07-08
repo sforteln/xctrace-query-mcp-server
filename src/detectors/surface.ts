@@ -1,19 +1,29 @@
 /**
  * PMT:pure-hail surfacing — turn fired cheap detectors into ranked nextActions.
- *
- * Runs the cheap, schema-gated detectors over whatever this session has already
- * ingested (from the .db's _ingested_schema), and returns their findings as
- * nextActions, most-alarming first. The caller (open_trace, and later the
- * query/aggregate responses) merges the top one as `recommended: true`,
- * demoting the navigational default to a plain alternative. Empty when nothing
- * is ingested yet (a fresh trace — findings appear once tables are queried) or
- * no detector fired — never a fabricated ranking.
+ * PMT:ruddy-elk extends this with the EAGER bounded-schema sweep: at
+ * stop_recording (nothing ingested yet) and open_trace on a cold trace, the
+ * old detectorNextActions() below always returned [] — its own doc comment
+ * admitted it ("Empty when nothing is ingested yet"). eagerSweep() fixes the
+ * exact moment the user most wants "here's what I found": it eager-ingests a
+ * small CURATED allowlist of schemas that are bounded BY NAME (never probed —
+ * see eagerSchemas.ts's header for why no cheap size probe exists), then runs
+ * EVERY detector (cheap AND expensive) whose requiredSchemas are now ingested
+ * — an "expensive" p95/p99 scan over a bounded ~800-row table runs in ms; the
+ * `expensive` flag exists to keep a scan off a firehose, not off a bounded
+ * table. It also returns an annotated inventory of every present schema so
+ * the AI can reason over what else is there, and a clean-sweep note so "swept
+ * and found nothing alarming" is always distinguishable from silence.
  */
+import type { DatabaseSync } from "node:sqlite";
 import type { NextAction } from "../core/response.js";
-import { getDb, lastRun } from "../engine/session.js";
+import { getDb, getSession, getTable, lastRun } from "../engine/session.js";
+import { hintFor } from "../engine/roleHints.js";
+import { quoteIdent } from "../engine/sqliteStore.js";
 import { DETECTORS } from "./index.js";
-import { runCheapDetectors } from "./framework.js";
-import type { DetectorContext, RankedFinding } from "./types.js";
+import { runCheapDetectors, runDetectorsOverIngested } from "./framework.js";
+import { resolveFrameBudgetMs } from "./frameBudget.js";
+import { EAGER_ALLOWLIST, EAGER_SCHEMA_MAX, kindDescriptor, schemaKind, selectEagerSchemas, type SchemaKind } from "./eagerSchemas.js";
+import type { Detector, DetectorContext, RankedFinding } from "./types.js";
 
 /** Verbs whose tool takes a single `schema` arg (vs relate/timeline's own schema params). */
 const SINGLE_SCHEMA_VERBS = new Set(["query", "aggregate", "find", "call_tree"]);
@@ -60,3 +70,224 @@ export async function detectorNextActions(sessionId: string): Promise<NextAction
   const ranked = runCheapDetectors(DETECTORS, ctx, new Set(schemaToTable.keys()));
   return ranked.map((f) => findingToNextAction(f, sessionId));
 }
+
+// ─── PMT:ruddy-elk: annotated schema inventory ─────────────────────────────────
+
+/** One compact line per present schema — the annotated inventory returned by
+ *  open_trace and stop_recording. Bounded by schema COUNT (dozens at most),
+ *  never row count; no column lists or full finding detail (those stay
+ *  behind describe_schema / the nextStep drill-down). */
+export interface SchemaInventoryEntry {
+  name: string;
+  /** Ingested this session (a fresh fetch, or a zero-cost reuse of a
+   *  ruby-peak-cached table) — the CHEAPEST correlate/relate anchor. */
+  warm: boolean;
+  /** Exact row count when warm; null otherwise (never a live-but-uncounted number). */
+  count: number | null;
+  /** Human-readable size: the exact count when warm, else a "~estimate (kind)" tier. */
+  countLabel: string;
+  kind: SchemaKind;
+  /** "fired N" / "clean" — present only when this schema was actually swept
+   *  (i.e. ingested AND covered by at least one detector that ran). */
+  detectorResult?: string;
+  correlateHint: "carries-own-backtrace" | "needs-join/correlate";
+  /** No-silent-cap note for anything not warm — so "no finding" here never
+   *  silently reads as "no problem" for a schema that was simply skipped. */
+  scanNote?: string;
+}
+
+/** correlateHint = the buildable-today subset (PMT:azure-forge's richer
+ *  version is a follow-up, not built here): a schema carries its own
+ *  backtrace if its pinned role-hint map (roleHints.ts) declares a
+ *  role==="backtrace" column; otherwise it needs a join/correlate to reach one. */
+function correlateHintFor(schema: string): SchemaInventoryEntry["correlateHint"] {
+  const hint = hintFor(schema);
+  const carriesBacktrace = hint ? Object.values(hint.columns).some((c) => c.role === "backtrace") : false;
+  return carriesBacktrace ? "carries-own-backtrace" : "needs-join/correlate";
+}
+
+/** For every detector whose requiredSchemas are fully ingested, tally how
+ *  many touched each schema and how many of those fired — the basis for each
+ *  inventory line's `detectorResult`. */
+function schemaDetectorOutcomes(
+  detectors: readonly Detector[],
+  ingestedSchemas: ReadonlySet<string>,
+  ranked: readonly RankedFinding[]
+): Map<string, { ran: number; fired: number }> {
+  const firedIds = new Set(ranked.map((f) => f.detectorId));
+  const outcomes = new Map<string, { ran: number; fired: number }>();
+  for (const d of detectors) {
+    if (!d.requiredSchemas.every((s) => ingestedSchemas.has(s))) continue;
+    for (const s of d.requiredSchemas) {
+      const cur = outcomes.get(s) ?? { ran: 0, fired: 0 };
+      cur.ran += 1;
+      if (firedIds.has(d.id)) cur.fired += 1;
+      outcomes.set(s, cur);
+    }
+  }
+  return outcomes;
+}
+
+/**
+ * Build the annotated inventory for every distinct schema present in
+ * `instruments`. Decoupled from TraceSession (only the {schema, rowCount}
+ * shape it needs) so it's directly unit-testable without a live session.
+ */
+export function buildSchemaInventory(
+  instruments: ReadonlyArray<{ schema: string; rowCount: number | null }>,
+  ingestedSchemas: ReadonlySet<string>,
+  ranked: readonly RankedFinding[]
+): SchemaInventoryEntry[] {
+  const outcomes = schemaDetectorOutcomes(DETECTORS, ingestedSchemas, ranked);
+  const seen = new Set<string>();
+  const entries: SchemaInventoryEntry[] = [];
+
+  for (const inst of instruments) {
+    if (seen.has(inst.schema)) continue; // one line per schema even if it appears multiple times (ambiguous positions)
+    seen.add(inst.schema);
+
+    const kind = schemaKind(inst.schema);
+    const warm = inst.rowCount !== null;
+    const outcome = outcomes.get(inst.schema);
+
+    entries.push({
+      name: inst.schema,
+      warm,
+      count: warm ? inst.rowCount : null,
+      countLabel: warm ? String(inst.rowCount) : `~estimate (${kindDescriptor(kind)})`,
+      kind,
+      ...(outcome ? { detectorResult: outcome.fired > 0 ? `fired ${outcome.fired}` : "clean" } : {}),
+      correlateHint: correlateHintFor(inst.schema),
+      ...(warm ? {} : { scanNote: `present, not auto-scanned (${kindDescriptor(kind)}); open to run its detector.` }),
+    });
+  }
+  return entries;
+}
+
+/**
+ * The clean-sweep-reports-negatives note: even when nothing fires, say what
+ * was swept and that it came back clean — a clean sweep is DIRECTION (look
+ * elsewhere), never silence. Best-effort narrative only (never throws) — a
+ * missing detail just shortens the note, it never breaks the sweep.
+ */
+export function buildSweepNote(
+  ctx: DetectorContext,
+  sweptSchemas: readonly string[],
+  ranked: readonly RankedFinding[]
+): string {
+  const schemaList = sweptSchemas.join(", ");
+  if (ranked.length > 0) {
+    const names = ranked.map((f) => f.detectorId).join(", ");
+    return `Swept ${schemaList} — ${ranked.length} finding${ranked.length === 1 ? "" : "s"} fired (${names}); see the recommended nextStep.`;
+  }
+
+  let detail = "";
+  if (sweptSchemas.includes("hitches")) {
+    try {
+      const table = ctx.tableName("hitches");
+      const count = (ctx.db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(table)}`).get() as { n: number }).n;
+      const budget = resolveFrameBudgetMs(ctx);
+      const accuracy =
+        budget.source === "device-display-info" ? ` (device-accurate @${Math.round(1000 / budget.budgetMs)}Hz)` : "";
+      detail = ` — ${count} hitch${count === 1 ? "" : "es"}${accuracy}, none over 2× budget; no severe frame drops`;
+    } catch {
+      // best-effort narrative only — the note is directional, not load-bearing
+    }
+  }
+  return `Swept ${schemaList}${detail}; clean — no findings crossed a threshold.`;
+}
+
+// ─── PMT:ruddy-elk: the eager sweep itself ─────────────────────────────────────
+
+export interface EagerSweepResult {
+  /** The single top-ranked fired finding, as a re-runnable NextAction — or
+   *  null when nothing fired (never fabricate a ranking). */
+  recommended: NextAction | null;
+  /** Remaining fired findings, unranked-relative-to-recommended but still in
+   *  score order, for the caller to fold into its own alternatives list. */
+  alternatives: NextAction[];
+  /** Every present schema, one compact line each — unranked reference. */
+  inventory: SchemaInventoryEntry[];
+  /** Clean-sweep-reports-negatives note; null only when nothing was actually
+   *  eager-ingested this pass (e.g. none of the allowlisted schemas are
+   *  present in this trace at all). */
+  sweepNote: string | null;
+  /** Every schema this session currently has ingested (the eager set just
+   *  ingested, union anything already warm from a prior fetch/ruby-peak reuse). */
+  ingestedSchemas: string[];
+}
+
+/**
+ * Eager-ingest the curated bounded allowlist (EAGER_ALLOWLIST, capped at
+ * EAGER_SCHEMA_MAX) for the session's last run, then run EVERY detector
+ * (cheap and expensive) whose schemas are now ingested, and build the
+ * annotated inventory + clean-sweep note. Called from both open_trace (cold
+ * OR warm) and stop_recording (always cold) — a warm re-open of a
+ * ruby-peak-cached trace pays zero extra ingest cost for schemas already on
+ * disk (getTable's own reuse path), so this stays fast there too.
+ */
+export async function eagerSweep(sessionId: string): Promise<EagerSweepResult> {
+  const session = getSession(sessionId);
+  const run = lastRun(sessionId);
+  const presentSchemas = session.instruments.filter((i) => i.run === run).map((i) => i.schema);
+
+  // Step 1 — eager-ingest the bounded allowlist so the sweep has something to
+  // bootstrap from even on a stone-cold trace. A schema present in the TOC
+  // but not actually fetchable this time (ambiguous position, a transient
+  // export hiccup) must never break the sweep — it just won't end up warm.
+  const eagerCandidates = selectEagerSchemas(presentSchemas);
+  for (const schema of eagerCandidates) {
+    try {
+      await getTable(sessionId, run, schema);
+    } catch {
+      // see above — degrade to "not warm", never throw
+    }
+  }
+
+  // Step 2 — ingestedSchemas = the eager set just ingested UNION anything
+  // already ingested this session (a re-open of a ruby-peak-cached trace, or
+  // prior tool calls earlier in this session).
+  let db: DatabaseSync | undefined;
+  const schemaToTable = new Map<string, string>();
+  try {
+    db = await getDb(sessionId);
+    const rows = db.prepare("SELECT DISTINCT table_name FROM _ingested_schema").all() as Array<{ table_name: string }>;
+    for (const r of rows) {
+      const schema = r.table_name.replace(/^\d+:/, "");
+      if (!schemaToTable.has(schema)) schemaToTable.set(schema, r.table_name);
+    }
+  } catch {
+    db = undefined;
+  }
+  const ingestedSchemas = new Set(schemaToTable.keys());
+
+  // Step 3 — run EVERY detector (cheap AND expensive) whose requiredSchemas
+  // are now ingested; the schema-boundedness gate, not the detector's own
+  // cost flag, is what made this set eager-ingestible in the first place.
+  let ranked: RankedFinding[] = [];
+  let ctx: DetectorContext | null = null;
+  if (db) {
+    ctx = { db, sessionId, run, tableName: (schema) => schemaToTable.get(schema) ?? schema };
+    ranked = runDetectorsOverIngested(DETECTORS, ctx, ingestedSchemas);
+  }
+
+  const actions = ranked.map((f) => findingToNextAction(f, sessionId));
+  const recommended = actions.length > 0 ? actions[0] : null;
+  const alternatives = actions.slice(1);
+
+  const inventory = buildSchemaInventory(
+    session.instruments.filter((i) => i.run === run),
+    ingestedSchemas,
+    ranked
+  );
+
+  const sweptThisPass = eagerCandidates.filter((s) => ingestedSchemas.has(s));
+  const sweepNote = sweptThisPass.length > 0 && ctx ? buildSweepNote(ctx, sweptThisPass, ranked) : null;
+
+  return { recommended, alternatives, inventory, sweepNote, ingestedSchemas: [...ingestedSchemas] };
+}
+
+// Re-exported for callers that just need the allowlist/cap without importing
+// eagerSchemas.js directly (kept minimal — most callers should import from
+// eagerSchemas.js itself).
+export { EAGER_ALLOWLIST, EAGER_SCHEMA_MAX };
