@@ -41,6 +41,10 @@ import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
 import osLogLens from "./lenses/osLog/index.js";
 import animationHitchesLens from "./lenses/animationHitches/index.js";
+import {
+  summarizeQuery, summarizeFind, summarizeAggregate, summarizeCorrelate,
+  summarizeRelate, summarizeCallTree, summarizeTimeline,
+} from "./core/callSummary.js";
 import { getConfig, updateConfig, configPath, defaultFallbackCacheDir, defaultRecordingsDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace, builtInRootPaths } from "./core/discovery.js";
@@ -194,6 +198,15 @@ const SERVER_INSTRUCTIONS =
   "have your answer.\n\n" +
   "2. Analyze an existing trace: open_trace → analyze (same verbs) → close_trace once you " +
   "have your answer.\n\n" +
+  "SHOW YOUR WORK. The developer is watching the investigation, not just the conclusion — so " +
+  "narrate it. Before each investigative call (query/find/aggregate/correlate/relate/call_tree/" +
+  "timeline), say in ONE tight line what you're about to query (the actual filter / join / " +
+  "predicate / window) and what you're looking for or expect; after it returns, say in one line " +
+  "what you found — or, on an empty result, what that RULES OUT. Lead with the verifiable \"what\" " +
+  "(the query + the number — each response carries a `summary` line grounded in what actually ran; " +
+  "build your narration on THAT, not a paraphrase), then your inference. Keep it a line each, not a " +
+  "paragraph — the point is a followable trail the developer can interrupt, question, or redirect " +
+  "mid-investigation, not a verbose log.\n\n" +
   "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
   "If a question is exploratory (\"what actually happened, in order, across subsystems, around " +
   "this event\"), use timeline() to merge 2+ schemas into one time-ordered stream before forming a " +
@@ -555,7 +568,8 @@ export function createServer(): McpServer {
           [
             ...actionsAfterQuery(sessionId, schema, result.run, result.hasMore, result.hasBacktrace),
             ...registry.nextActions(sessionId, schema, result.run),
-          ]
+          ],
+          { summary: summarizeQuery(schema, { filter, timeRange }, result) }
         );
         return text(toMcpText(response));
       })
@@ -658,7 +672,8 @@ export function createServer(): McpServer {
           [
             ...actionsAfterAggregate(sessionId, schema, result.run, groupBy, topKey, hasBacktrace),
             ...registry.nextActions(sessionId, schema, result.run),
-          ]
+          ],
+          { summary: summarizeAggregate(schema, { groupBy: result.groupBy, measure: result.measure, op: result.op }, result) }
         );
         return text(toMcpText(response));
       })
@@ -762,7 +777,7 @@ export function createServer(): McpServer {
               description: "Read the individual events to see specific rows.",
             },
           ];
-          return text(toMcpText(envelope(result, actions)));
+          return text(toMcpText(envelope(result, actions, { summary: summarizeCorrelate(result) })));
         }
       )
   );
@@ -834,7 +849,7 @@ export function createServer(): McpServer {
               description: topKey ? `Read the individual "${topKey}" ${schemaA} rows.` : `Query ${schemaA} directly.`,
             },
           ];
-          return text(toMcpText(envelope(result, actions)));
+          return text(toMcpText(envelope(result, actions, { summary: summarizeRelate(result) })));
         }
       )
   );
@@ -895,7 +910,7 @@ export function createServer(): McpServer {
                 description: "No events in this window — check the schemas' time ranges via describe_schema/list_instruments.",
               },
             ];
-        return text(toMcpText(envelope(result, actions)));
+        return text(toMcpText(envelope(result, actions, { summary: summarizeTimeline(result) })));
       })
   );
 
@@ -1014,7 +1029,7 @@ export function createServer(): McpServer {
             description: "See sample count by thread to pick the busiest thread to filter on.",
           },
           ...registry.nextActions(sessionId, schema, result.run),
-        ]);
+        ], { summary: summarizeCallTree(result, timeRange) });
         return text(toMcpText(response));
       })
   );
@@ -1113,7 +1128,8 @@ export function createServer(): McpServer {
           [
             ...actionsAfterFind(sessionId, schema, result.run, result.matchCount, result.hasMore, firstTableIndex),
             ...registry.nextActions(sessionId, schema, result.run),
-          ]
+          ],
+          { summary: summarizeFind(schema, { where, timeRange }, result) }
         );
         return text(toMcpText(response));
       })

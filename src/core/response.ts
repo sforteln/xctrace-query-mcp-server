@@ -49,6 +49,14 @@ export function withRecommended(recommended: NextAction | null, alternatives: Ne
 
 /** The shared envelope every tool returns. */
 export interface ToolResponse<T = unknown> {
+  /**
+   * One-line, honest echo of what an investigative call effectively did + its
+   * headline result (PMT:thick-haze) — the grounded "what ran → what came
+   * back" the AI's "show your work" narration builds on (see
+   * SERVER_INSTRUCTIONS). Present on the investigative verbs; absent on the
+   * lifecycle/metadata tools.
+   */
+  summary?: string;
   /** The actual result payload. */
   data: T;
   /** Valid follow-up calls the agent can make from this point. */
@@ -344,16 +352,17 @@ export function actionsAfterFind(
 
 // ─── Envelope helper ──────────────────────────────────────────────────────────
 
-/** Wrap a tool result in the standard envelope. */
+/** Wrap a tool result in the standard envelope. `summary` is the grounded one-line narration echo (PMT:thick-haze). */
 export function envelope<T>(
   data: T,
   nextActions: NextAction[],
-  truncation?: { truncated: true; hint: string }
+  opts?: { truncation?: { truncated: true; hint: string }; summary?: string }
 ): ToolResponse<T> {
   return {
+    ...(opts?.summary ? { summary: opts.summary } : {}),
     data,
     nextActions,
-    ...(truncation ?? {}),
+    ...(opts?.truncation ?? {}),
   };
 }
 
