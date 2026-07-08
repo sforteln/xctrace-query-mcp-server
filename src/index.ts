@@ -428,6 +428,12 @@ export function createServer(): McpServer {
         "`nestedFields` lists queryable nested scalar values as dot-paths (e.g. " +
         "\"thread.process.pid\" to filter/group by process) — usable anywhere a " +
         "mnemonic is; it populates once the schema has been queried at least once. " +
+        "`queryHints` is the orientation payload — read it BEFORE querying: what a " +
+        "row IS (grain — a sample vs an interval vs a START/END point event), how to " +
+        "JOIN this schema to others present in the trace (including negative \"don't " +
+        "join X\" edges that would silently return 0 rows), whether it carries its own " +
+        "backtrace or points at the work elsewhere, and the gotchas that make a naive " +
+        "query silently lie. " +
         "⚠️ Not for reading row data — call query or find after this to access actual rows.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),

@@ -18,6 +18,8 @@ import {
   WeightUnit,
   firstWithRole,
 } from "../engine/roleInference.js";
+import { buildQueryHints, type QueryHints } from "./queryHints.js";
+import type { SchemaCol } from "../engine/parseTable.js";
 
 export interface DescribedColumn {
   mnemonic: string;
@@ -56,6 +58,15 @@ export interface SchemaDescription {
    * returns an error listing the valid ones.
    */
   nestedFields?: string[];
+  /**
+   * Four-part orientation (PMT:faint-trout): gross form / edges / correlation
+   * / gotchas — what this schema IS, how it joins to siblings present in the
+   * trace, whether it carries its own backtrace, and the traps that make a
+   * naive query silently lie. Auto-derived from shape + the schemaEdges
+   * registry, with a small curated-static gotcha layer. Metadata-only — no
+   * row fetch, no per-sibling xctrace call.
+   */
+  queryHints: QueryHints;
 }
 
 /**
@@ -128,6 +139,27 @@ export async function describeSchema(
     if (nested.length > 0) nestedFields = nested;
   }
 
+  // Four-part orientation (PMT:faint-trout). Metadata-only: the present-schema
+  // list comes from the run's TOC (getSchemaModel), and edge derivation reuses
+  // each sibling's roleHints pin (free) or its already-inspected columns —
+  // never a per-sibling xctrace call, so describe_schema stays cheap.
+  const presentSchemas: string[] = [];
+  const knownCols = new Map<string, SchemaCol[]>();
+  for (const entry of model) {
+    if (entry.run !== resolvedRun || entry.source !== "schema-table") continue;
+    if (!presentSchemas.includes(entry.toc.schema)) presentSchemas.push(entry.toc.schema);
+    if (entry.cols && !knownCols.has(entry.toc.schema)) knownCols.set(entry.toc.schema, entry.cols);
+  }
+  const queryHints = buildQueryHints({
+    schema,
+    cols: meta.cols,
+    rowCount: meta.rowCount,
+    primaryTime,
+    primaryWeight,
+    presentSchemas,
+    knownCols,
+  });
+
   return {
     schema,
     run: resolvedRun,
@@ -140,5 +172,6 @@ export async function describeSchema(
     columns,
     rolesSummary,
     ...(nestedFields ? { nestedFields } : {}),
+    queryHints,
   };
 }

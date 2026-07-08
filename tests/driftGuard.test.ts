@@ -33,6 +33,7 @@ import {
   edgeTimeColumn,
   type SchemaEdge,
 } from "../src/engine/schemaEdges.js";
+import { CURATED_GOTCHAS } from "../src/core/queryHints.js";
 
 // ── Extract tool metadata from the live server ────────────────────────────────
 
@@ -356,4 +357,21 @@ describe("schemaEdges: edgeTimeColumn agrees with relate.primaryTime for every f
     }
     expect(disagreements).toEqual([]);
   });
+});
+
+// CURATED queryHints gotchas (PMT:faint-trout) — referentially guarded, same
+// discipline as the schemaEdges curated layer: every schema key must be
+// fixtured, every named column must exist in that fixture (a rename goes red).
+describe("queryHints: curated gotchas are referentially valid against committed fixtures", () => {
+  for (const [schema, gotchas] of Object.entries(CURATED_GOTCHAS)) {
+    it(`${schema}: fixtured, and every named column exists`, () => {
+      const cols = FIXTURE_COLS.get(schema);
+      expect(cols, `no committed fixture for "${schema}" — a curated gotcha may only name a fixtured schema`).toBeDefined();
+      for (const g of gotchas) {
+        if (g.column) {
+          expect(cols!.some((c) => c.mnemonic === g.column), `${schema}.${g.column} not in the committed fixture`).toBe(true);
+        }
+      }
+    });
+  }
 });
