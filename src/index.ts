@@ -991,36 +991,57 @@ export function createServer(): McpServer {
   );
 
   // ── find ──────────────────────────────────────────────────────────────────
+  const findConditionSchema = z.object({
+    col: z.string().describe("Field to test — a column mnemonic or a nested dot-path (e.g. \"thread.process.pid\"; see describe_schema.nestedFields)."),
+    op: z
+      .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null"])
+      .describe("Comparison operator."),
+    val: z
+      .union([z.string(), z.number()])
+      .optional()
+      .describe("Value to compare against. Not needed for is-null / not-null. Mutually exclusive with compareCol."),
+    compareCol: z
+      .string()
+      .optional()
+      .describe(
+        "Compare `col` against this other column on the same row instead of `val` (see the tool " +
+        "description for an example). Only valid with eq/ne/gt/gte/lt/lte. Mutually exclusive with val."
+      ),
+  });
+  const findConditionGroupSchema: z.ZodType<any> = z.lazy(() =>
+    z.union([
+      findConditionSchema,
+      z.object({ allOf: z.array(findConditionGroupSchema).describe("Every nested condition/group must match (AND).") }),
+      z.object({ anyOf: z.array(findConditionGroupSchema).describe("At least one nested condition/group must match (OR).") }),
+    ])
+  );
   server.registerTool(
     "find",
     {
       title: "Find Rows",
       description:
-        "Filter rows in any instrument table by a compound predicate (AND of per-column conditions). " +
-        "Supports richer operators than query's equality filter: eq, ne, gt, gte, lt, lte, " +
-        "contains, not-contains, regex, is-null, not-null. All conditions are AND'd — a row must " +
-        "match every condition to be included. Returns summary rows (fmt values) with tableIndex for " +
-        "follow-up get_row calls. Lens-specific finders like find_fm_requests are preset predicates " +
-        "built on top of this tool. `run` defaults to the most recent run. " +
-        "⚠️ Not for counting or grouping — use aggregate for that.",
+        "Filter rows in any instrument table by a compound predicate. Supports richer operators than " +
+        "query's equality filter: eq, ne, gt, gte, lt, lte, contains, not-contains, regex, is-null, not-null. " +
+        "The top-level `where` array is AND'd, same as always. Nest {allOf: [...]} / {anyOf: [...]} groups to " +
+        "mix in OR logic — e.g. find rows matching any of several patterns: " +
+        "{anyOf: [{col:\"name\",op:\"contains\",val:\"foo\"},{col:\"name\",op:\"contains\",val:\"bar\"}]}. " +
+        "A condition's `compareCol` compares two columns on the same row instead of a literal — e.g. " +
+        "{col:\"downstream-cost\",op:\"gt\",compareCol:\"direct-cost\"} finds rows where downstream-cost exceeds " +
+        "direct-cost. Returns summary rows (fmt values) with tableIndex for follow-up get_row calls. " +
+        "Lens-specific finders like find_fm_requests are preset predicates built on top of this tool. " +
+        "`run` defaults to the most recent run. " +
+        "⚠️ Not for counting or grouping — use aggregate for that. Not a general expression evaluator — " +
+        "no arbitrary functions or code run against row data, only this structured, parameterized condition set.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace."),
         schema: z.string().describe("Schema/table name (e.g. 'time-sample', 'ModelInferenceTable')."),
         run: z.number().int().optional().describe("Run number. Optional — defaults to the most recent run."),
         where: z
-          .array(
-            z.object({
-              col: z.string().describe("Field to test — a column mnemonic or a nested dot-path (e.g. \"thread.process.pid\"; see describe_schema.nestedFields)."),
-              op: z
-                .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null"])
-                .describe("Comparison operator."),
-              val: z
-                .union([z.string(), z.number()])
-                .optional()
-                .describe("Value to compare against. Not needed for is-null / not-null."),
-            })
-          )
-          .describe("AND'd conditions. All must pass for a row to match."),
+          .array(findConditionGroupSchema)
+          .describe(
+            "Conditions, AND'd by default. Each entry is a condition or a nested {allOf:[...]} / {anyOf:[...]} " +
+            "group — see the tool description for OR-logic and cross-column examples."
+          ),
         columns: z
           .array(z.string())
           .optional()

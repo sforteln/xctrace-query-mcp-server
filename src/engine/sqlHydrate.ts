@@ -613,13 +613,25 @@ export type ConditionOp =
  * semantics exactly. `internTarget` (PMT:ruddy-owl) resolves an eq/ne string
  * target to its stored form so equality matches interned rows; contains/regex
  * instead resolve the COLUMN per-row (they search within the value).
+ *
+ * PMT:narrow-ochre: pass `compareMnemonic` to compare against another column
+ * on the same row instead of the literal `val` (val is ignored when
+ * present) — see buildCrossColumnCondition below. Only eq/ne/gt/gte/lt/lte
+ * support this; contains/not-contains/regex/is-null/not-null stay
+ * literal/unary-only, since "column A's value inside column B" isn't one of
+ * the two gaps this prompt closes.
  */
 export function buildCondition(
   mnemonic: string,
   op: ConditionOp,
   val: string | number | undefined,
-  internTarget?: (v: string) => string
+  internTarget?: (v: string) => string,
+  compareMnemonic?: string
 ): SqlCondition {
+  if (compareMnemonic !== undefined) {
+    return buildCrossColumnCondition(mnemonic, op, compareMnemonic);
+  }
+
   const raw = quoteIdent(rawCol(mnemonic));
   const fmt = quoteIdent(fmtCol(mnemonic));
 
@@ -693,11 +705,62 @@ export function buildCondition(
   }
 }
 
+/**
+ * PMT:narrow-ochre's cross-column comparison: A op B instead of A op <literal>.
+ * gt/gte/lt/lte compare CAST(...AS REAL) on both sides (mirrors the literal
+ * case's numeric cast — these ops are inherently numeric). eq/ne mirror the
+ * literal case's raw+fmt dual-check, but two-sided: fmt is resolved through
+ * internResolved on both sides (two equal-content cells intern to the SAME
+ * sentinel via content-hash, but only if both columns interned it — using
+ * internResolved rather than raw sentinel comparison also covers a column
+ * pair where only one side crossed the intern threshold) OR'd with a raw
+ * text-cast comparison (covers plain numeric/short values without invoking
+ * the intern UDF at all).
+ */
+function buildCrossColumnCondition(mnemonic: string, op: ConditionOp, compareMnemonic: string): SqlCondition {
+  const rawA = quoteIdent(rawCol(mnemonic));
+  const fmtA = quoteIdent(fmtCol(mnemonic));
+  const rawB = quoteIdent(rawCol(compareMnemonic));
+  const fmtB = quoteIdent(fmtCol(compareMnemonic));
+  const bothNotNull = `${fmtA} IS NOT NULL AND ${fmtB} IS NOT NULL`;
+
+  switch (op) {
+    case "eq":
+      return { clause: `${bothNotNull} AND (${internResolved(fmtA)} = ${internResolved(fmtB)} OR CAST(${rawA} AS TEXT) = CAST(${rawB} AS TEXT))`, params: [] };
+    case "ne":
+      return { clause: `${bothNotNull} AND ${internResolved(fmtA)} != ${internResolved(fmtB)} AND CAST(${rawA} AS TEXT) != CAST(${rawB} AS TEXT)`, params: [] };
+    case "gt":
+      return { clause: `${bothNotNull} AND CAST(${rawA} AS REAL) > CAST(${rawB} AS REAL)`, params: [] };
+    case "gte":
+      return { clause: `${bothNotNull} AND CAST(${rawA} AS REAL) >= CAST(${rawB} AS REAL)`, params: [] };
+    case "lt":
+      return { clause: `${bothNotNull} AND CAST(${rawA} AS REAL) < CAST(${rawB} AS REAL)`, params: [] };
+    case "lte":
+      return { clause: `${bothNotNull} AND CAST(${rawA} AS REAL) <= CAST(${rawB} AS REAL)`, params: [] };
+    default:
+      // Unreachable for well-formed callers — resolver-level validation (find.ts)
+      // rejects compareCol on contains/regex/is-null/not-null before this runs.
+      return { clause: "0", params: [] };
+  }
+}
+
+/** AND-joins conditions — the existing, unchanged default combinator (empty group = match-all). */
 export function combineConditions(conditions: SqlCondition[]): SqlCondition {
+  return combineWithOp(conditions, "AND");
+}
+
+/**
+ * PMT:narrow-ochre's OR support: joins conditions with the given boolean
+ * operator instead of hardcoding AND — find.ts's condition-tree compiler calls
+ * this once per allOf/anyOf group. An empty AND group matches everything
+ * (existing behavior, unchanged); an empty OR group matches nothing (the
+ * empty disjunction is false, same as SQL's own "no branch matched").
+ */
+export function combineWithOp(conditions: SqlCondition[], op: "AND" | "OR"): SqlCondition {
   const nonEmpty = conditions.filter((c) => c.clause.length > 0);
-  if (nonEmpty.length === 0) return { clause: "1", params: [] };
+  if (nonEmpty.length === 0) return { clause: op === "AND" ? "1" : "0", params: [] };
   return {
-    clause: nonEmpty.map((c) => `(${c.clause})`).join(" AND "),
+    clause: nonEmpty.map((c) => `(${c.clause})`).join(` ${op} `),
     params: nonEmpty.flatMap((c) => c.params),
   };
 }

@@ -23,7 +23,7 @@ import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
 import {
   buildCondition,
   buildTimeRangeFilter,
-  combineConditions,
+  combineWithOp,
   rawCol,
   buildDisplaySelect,
   resolveBacktraceDisplayValues,
@@ -32,8 +32,9 @@ import {
   makeInternResolver,
   makeInternTargetResolver,
   type ConditionOp,
+  type SqlCondition,
 } from "../engine/sqlHydrate.js";
-import { buildFieldResolver } from "../engine/fieldRef.js";
+import { buildFieldResolver, type FieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -44,8 +45,58 @@ export interface Condition {
   /** Column mnemonic to test. */
   col: string;
   op: ConditionOp;
-  /** Value to compare against. Not needed for is-null/not-null. */
+  /** Value to compare against. Not needed for is-null/not-null. Mutually exclusive with compareCol. */
   val?: string | number;
+  /**
+   * PMT:narrow-ochre: compare `col` against another column on the same row
+   * instead of the literal `val` (e.g. find rows where downstream-cost
+   * exceeds direct-cost: {col: "downstream-cost", op: "gt", compareCol:
+   * "direct-cost"}). Only valid with eq/ne/gt/gte/lt/lte. Mutually exclusive
+   * with val.
+   */
+  compareCol?: string;
+}
+
+/**
+ * PMT:narrow-ochre's shallow AND/OR condition tree. A bare array (the
+ * existing, unchanged shape) is an implicit allOf. `allOf`/`anyOf` nest to
+ * express "any of several patterns" or mixed AND-OR — deliberately NOT a
+ * general expression grammar (see find.ts's header comment / the prompt's
+ * explicit scope guardrail): every leaf is still a structured, parameterized
+ * Condition, never an arbitrary expression string.
+ */
+export type ConditionGroup = Condition | { allOf: ConditionGroup[] } | { anyOf: ConditionGroup[] };
+
+function isConditionLeaf(g: ConditionGroup): g is Condition {
+  return "col" in g;
+}
+
+/** Flattens a condition tree to its leaf Conditions, for validation passes that must see every leaf regardless of nesting. */
+function leaves(group: ConditionGroup): Condition[] {
+  if (isConditionLeaf(group)) return [group];
+  const nested = "allOf" in group ? group.allOf : group.anyOf;
+  return nested.flatMap(leaves);
+}
+
+/** Ops that support compareCol (see Condition.compareCol) — the two numeric-shaped families. */
+const CROSS_COLUMN_OPS = new Set<ConditionOp>(["eq", "ne", "gt", "gte", "lt", "lte"]);
+
+/** Compiles a condition tree to one parameterized SqlCondition, resolving each leaf's col/compareCol through the field resolver. */
+function compileConditionGroup(
+  group: ConditionGroup,
+  resolver: FieldResolver,
+  internTarget: (v: string) => string
+): SqlCondition {
+  if (isConditionLeaf(group)) {
+    const base = resolver.resolveComparable(group.col, "filter on").base;
+    const compareBase =
+      group.compareCol !== undefined ? resolver.resolveComparable(group.compareCol, "compare against").base : undefined;
+    return buildCondition(base, group.op, group.val, internTarget, compareBase);
+  }
+  if ("allOf" in group) {
+    return combineWithOp(group.allOf.map((g) => compileConditionGroup(g, resolver, internTarget)), "AND");
+  }
+  return combineWithOp(group.anyOf.map((g) => compileConditionGroup(g, resolver, internTarget)), "OR");
 }
 
 export interface FindOptions {
@@ -56,7 +107,7 @@ export interface FindOptions {
    * structured "ambiguous-schema" error listing the available instances.
    */
   position?: number;
-  where: Condition[];
+  where: ConditionGroup[];
   columns?: string[];
   sort?: { by: string; dir?: "asc" | "desc" };
   limit?: number;
@@ -74,7 +125,7 @@ export interface FindResult {
   schema: string;
   run: number;
   /** Conditions that were applied. */
-  conditions: Condition[];
+  conditions: ConditionGroup[];
   /** Total rows matching all conditions (before limit/offset). */
   matchCount: number;
   returnedRows: number;
@@ -119,13 +170,21 @@ export async function findRows(
   // firstWithRole would only be correct by coincidence of column order.
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 
-  // Validate regex patterns early and throw a clear error — before touching SQL.
-  for (const cond of where) {
+  // Validate every leaf condition early and throw a clear error — before touching SQL.
+  for (const cond of where.flatMap(leaves)) {
     if (cond.op === "regex" && cond.val !== undefined) {
       try {
         new RegExp(String(cond.val), "i");
       } catch {
         throw new Error(`Invalid regex pattern for column "${cond.col}": ${cond.val}`);
+      }
+    }
+    if (cond.compareCol !== undefined) {
+      if (cond.val !== undefined) {
+        throw new Error(`Condition on "${cond.col}" cannot set both "val" and "compareCol" — use one or the other.`);
+      }
+      if (!CROSS_COLUMN_OPS.has(cond.op)) {
+        throw new Error(`"compareCol" is only valid with eq/ne/gt/gte/lt/lte (got op "${cond.op}" on "${cond.col}").`);
       }
     }
   }
@@ -145,14 +204,12 @@ export async function findRows(
       ? columns.filter((c) => resolver.tryResolve(c) !== null)
       : meta.cols.map((c) => c.mnemonic);
 
-  // --- Build WHERE (each condition's col resolved to its physical base) ---
+  // --- Build WHERE (each condition tree compiled to one parameterized clause) ---
   const internTarget = makeInternTargetResolver(db);
-  const conditions = where.map((c) =>
-    buildCondition(resolver.resolveComparable(c.col, "filter on").base, c.op, c.val, internTarget)
-  );
+  const conditions = where.map((g) => compileConditionGroup(g, resolver, internTarget));
   const sortBase = sort?.by ? resolver.resolveComparable(sort.by, "sort by").base : undefined;
   if (timeRange && timeColumn) conditions.push(buildTimeRangeFilter(timeColumn, timeRange));
-  const combined = combineConditions(conditions);
+  const combined = combineWithOp(conditions, "AND");
 
   const matchCount = (
     db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE ${combined.clause}`).get(...combined.params) as {
