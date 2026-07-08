@@ -39,6 +39,16 @@ export interface CellDetail {
   /** Unit hint, present only for weight columns. */
   unit?: WeightUnit;
   /**
+   * Present when `fmt`/`raw` were cut to MAX_CELL_CHARS — some cells resolve
+   * to an unbounded blob (e.g. a base64-encoded image body pulled through the
+   * interned-value ref scheme; verified live against a real HTTPTraffic trace,
+   * up to 342 KB for one cell) with no size relationship to the rest of the
+   * row. `originalLength` is the untruncated character count, so the agent
+   * knows how much was cut without re-fetching.
+   */
+  truncated?: boolean;
+  originalLength?: number;
+  /**
    * Simplified child values for compound cells (thread, process, etc.).
    * Keys are child tag names, values are their fmt strings.
    */
@@ -94,6 +104,62 @@ function extractKperfBt(cell: Cell): CellDetail["backtrace"] {
   };
 }
 
+// ─── Size cap + header redaction ────────────────────────────────────────────────
+
+/**
+ * get_row is the "give me everything" drill-down (query/find deliberately
+ * stay fmt-only summaries) — but "everything" still needs a backstop. A
+ * single cell can resolve to an unbounded blob with no relationship to the
+ * row's own size: verified live against a real device HTTPTraffic trace
+ * (PMT:loam-merlin), an interned image response body resolved to 342 KB for
+ * ONE cell, because the intern/ref scheme that keeps the trace compact on
+ * disk has no size ceiling on what it dedupes. 2000 chars keeps a genuinely
+ * useful amount of text (a full header block, a real error message) while
+ * capping the pathological case; `truncated`/`originalLength` on CellDetail
+ * tell the agent how much was cut.
+ */
+export const MAX_CELL_CHARS = 2000;
+
+export function truncateText(s: string): { text: string; truncated: boolean; originalLength?: number } {
+  if (s.length <= MAX_CELL_CHARS) return { text: s, truncated: false };
+  return {
+    text: `${s.slice(0, MAX_CELL_CHARS)} … [truncated — ${s.length.toLocaleString()} chars total]`,
+    truncated: true,
+    originalLength: s.length,
+  };
+}
+
+/**
+ * HTTP header cells (CFNetwork's request-headers/response-headers, and any
+ * schema shaped like them) come back as one flattened "(Key : Value), (Key :
+ * Value)" string, not a compound cell — so redaction has to pattern-match
+ * pairs within that string rather than target a known child field. Verified
+ * live: this exact "(Name : Value)" shape is what com-apple-cfnetwork-
+ * transaction-intervals-full-info's request-headers/response-headers
+ * actually produce. Scoped to mnemonics containing "header" so it never
+ * touches unrelated compound cells that might coincidentally contain
+ * parenthesized text.
+ */
+const SENSITIVE_HEADER_NAMES = new Set([
+  "authorization", "proxy-authorization", "cookie", "set-cookie",
+  "x-api-key", "api-key", "x-auth-token", "x-access-token", "x-session-token",
+]);
+const HEADER_PAIR_RE = /\(([^:()]+?)\s*:\s*([^()]*)\)/g;
+
+export function redactSensitiveHeaders(mnemonic: string, text: string): string {
+  if (!mnemonic.toLowerCase().includes("header")) return text;
+  return text.replace(HEADER_PAIR_RE, (match, key: string, _value: string) =>
+    SENSITIVE_HEADER_NAMES.has(key.trim().toLowerCase()) ? `(${key.trim()} : [REDACTED])` : match
+  );
+}
+
+/** Apply header redaction then the size cap, in that order — redaction can
+ *  only shrink a value, so running it first never changes whether a value
+ *  needed truncating in a way that would hide a still-oversized blob. */
+export function sanitizeCellText(mnemonic: string, s: string): { text: string; truncated: boolean; originalLength?: number } {
+  return truncateText(redactSensitiveHeaders(mnemonic, s));
+}
+
 // ─── Cell detail builder ──────────────────────────────────────────────────────
 
 function buildCellDetail(
@@ -104,12 +170,19 @@ function buildCellDetail(
 ): CellDetail | null {
   if (cell === null) return null;
 
+  const fmtSanitized = sanitizeCellText(mnemonic, cell.fmt);
+  const rawSanitized = typeof cell.raw === "string" ? sanitizeCellText(mnemonic, cell.raw) : undefined;
+  const anyTruncated = fmtSanitized.truncated || (rawSanitized?.truncated ?? false);
+
   const base: CellDetail = {
     type: cell.type,
-    fmt: cell.fmt,
-    raw: cell.raw,
+    fmt: fmtSanitized.text,
+    raw: rawSanitized ? rawSanitized.text : cell.raw,
     role,
     ...(unit ? { unit } : {}),
+    ...(anyTruncated
+      ? { truncated: true, originalLength: fmtSanitized.originalLength ?? rawSanitized?.originalLength }
+      : {}),
   };
 
   // Inline pre-symbolicated backtrace: track-detail (Allocations/Leaks) or a
@@ -157,7 +230,10 @@ function buildCellDetail(
   // Generic compound cell — flatten children to childValues.
   const childValues: Record<string, string | null> = {};
   for (const [childTag, childCell] of Object.entries(cell.children)) {
-    childValues[childTag] = childCell?.fmt ?? null;
+    childValues[childTag] =
+      childCell?.fmt !== undefined && childCell?.fmt !== null
+        ? sanitizeCellText(mnemonic, childCell.fmt).text
+        : null;
   }
   return { ...base, childValues };
 }
