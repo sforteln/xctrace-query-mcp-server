@@ -116,9 +116,22 @@ function parseSchemaCols(schemaNode: Record<string, any>): SchemaCol[] {
  * Coerce a raw text string to a number if it looks like one, else keep as
  * string. We only coerce all-digit strings (no floats — fmt already carries the
  * human-readable form; raw is the machine value).
+ *
+ * PMT:loam-merlin: an all-digit value past Number.MAX_SAFE_INTEGER (e.g. a
+ * uint64 sentinel like error-code's "no error" = 2^64-1 =
+ * 18446744073709551615) silently rounds to a nearby-but-wrong double if
+ * coerced — verified live against a real HTTPTraffic trace: it came back as
+ * 18446744073709552000, off by 385. Keep those as the exact digit string
+ * instead; fmt already carries the human-readable form and a caller doing a
+ * sentinel/equality comparison should compare the string, not a rounded
+ * float. Every legitimate small-enough value (durations, counts, ns
+ * timestamps within a sane trace length) is unaffected.
  */
-function coerceRaw(text: string): number | string {
-  return /^\d+$/.test(text.trim()) ? Number(text.trim()) : text.trim();
+export function coerceRaw(text: string): number | string {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return trimmed;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : trimmed;
 }
 
 /**

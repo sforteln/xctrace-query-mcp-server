@@ -51,9 +51,17 @@ function asArray<T>(v: T | T[] | undefined): T[] {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Mirror parseTable.ts coerceRaw: all-digit → number, else string. */
-function coerceRaw(s: string): number | string {
-  return /^\d+$/.test(s.trim()) ? Number(s.trim()) : s.trim();
+/**
+ * Mirror parseTable.ts coerceRaw: all-digit → number, else string — except a
+ * value past Number.MAX_SAFE_INTEGER stays the exact digit string instead of
+ * silently rounding (see parseTable.ts's coerceRaw for the verified uint64
+ * sentinel precision-loss case this guards against; PMT:loam-merlin).
+ */
+export function coerceRaw(s: string): number | string {
+  const trimmed = s.trim();
+  if (!/^\d+$/.test(trimmed)) return trimmed;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) ? n : trimmed;
 }
 
 /** Engineering-types that carry a time value — mirrors session.ts's TIME_ENGINEERING_TYPES. */
