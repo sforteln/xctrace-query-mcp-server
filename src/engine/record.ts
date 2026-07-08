@@ -14,7 +14,7 @@
  */
 import { execFile, spawn, ChildProcess } from "node:child_process";
 import { XctraceError, XctraceErrorDetails } from "./xctrace.js";
-import { isSimulatorTarget } from "../core/listDevices.js";
+import { existsSync } from "node:fs";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +70,15 @@ export interface RecordOptions {
 export interface RecordResult {
   /** Absolute path of the produced .trace bundle (same as opts.output). */
   tracePath: string;
+  /**
+   * Non-fatal run issues xctrace reported while STILL saving a viewable trace —
+   * e.g. a bundled instrument that's unsupported on the target ("Hitches is not
+   * supported on this platform" on a Simulator, where Hitches needs real
+   * display/GPU present-timing hardware). The trace is valid and the other
+   * instruments recorded; the flagged ones just have no data. Present only when
+   * the recording finished "with errors" but the bundle was saved anyway.
+   */
+  runIssues?: string[];
 }
 
 const XCRUN = "xcrun";
@@ -87,6 +96,20 @@ function parseTimeLimitMs(s: string): number | null {
 }
 
 // ─── stderr → structured error ────────────────────────────────────────────────
+
+/**
+ * Pull xctrace's "* [Error] …" / "[Warning] …" run-issue lines out of its
+ * combined output (e.g. "Hitches is not supported on this platform"). Used to
+ * surface WHICH bundled instruments errored on a partial-success recording.
+ */
+export function extractRunIssues(output: string): string[] {
+  const issues: string[] = [];
+  for (const line of output.split("\n")) {
+    const m = line.match(/\[(?:Error|Warning)\]\s*(.+?)\s*$/);
+    if (m) issues.push(m[1].trim());
+  }
+  return issues;
+}
 
 function classifyRecordFailure(
   stderr: string,
@@ -247,7 +270,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
       XCRUN,
       args,
       { maxBuffer: DEFAULT_MAX_BUFFER, encoding: "utf8", timeout: timeoutMs },
-      (err, _stdout, stderr) => {
+      (err, stdout, stderr) => {
         if (err) {
           if ((err as NodeJS.ErrnoException).code === "ENOENT") {
             reject(
@@ -263,37 +286,18 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
             typeof (err as { code?: unknown }).code === "number"
               ? (err as { code: number }).code
               : null;
-          const failure = classifyRecordFailure(stderr ?? "", exitCode, [XCRUN, ...args]);
-          // Recognize the Simulator injection-capture edge case (PMT:gravel-kite):
-          // xctrace exits non-zero (observed: code 1 with EMPTY stderr) and
-          // captures no data when profiling a Simulator with an injection-based
-          // instrument (Allocations/Leaks/Time Profiler) — it launches the app but
-          // records nothing, and gives NO diagnostic. Recognize it from the target
-          // (nothing in stderr to match on) and hand back an actionable message.
-          if (failure.kind === "record-failed" && device) {
-            void isSimulatorTarget(device)
-              .then((isSim) => {
-                reject(
-                  isSim
-                    ? new XctraceError(
-                        "simulator-capture-failed",
-                        `Recording the iOS Simulator "${device}" via xctrace produced no data ` +
-                          `(exit ${exitCode ?? "non-zero"}${(stderr ?? "").trim() ? "" : ", no error message"}). ` +
-                          `Simulator profiling through the xctrace CLI is unreliable and instrument-specific: attach and ` +
-                          `all-processes both fail here even though the app runs as a live host process, Animation Hitches is ` +
-                          `unsupported on a Simulator (no real display), and Allocations/VM Tracker reject its target types. ` +
-                          `The Instruments GUI profiles Simulators reliably where the CLI doesn't — so for far-swan recording, ` +
-                          `use a physical device (start the app from Xcode, then attach by PID; attach-by-NAME doesn't resolve ` +
-                          `on device/sim), or profile the Simulator from Instruments.app directly.`,
-                        { command: [XCRUN, ...args], exitCode: exitCode ?? null, stderr: (stderr ?? "").trim() }
-                      )
-                    : failure
-                );
-              })
-              .catch(() => reject(failure));
+          // Non-zero exit but the .trace was STILL SAVED (xctrace prints "trace is
+          // still ready to be viewed") = PARTIAL SUCCESS: a bundled instrument is
+          // unsupported on the target (e.g. Animation Hitches on a Simulator — no
+          // real display) so it errors, but the rest of the template recorded
+          // fine. Keep the valid trace + surface the run-issues rather than
+          // discarding a good capture on a benign sub-instrument error.
+          const out = `${stdout ?? ""}\n${stderr ?? ""}`;
+          if (/still ready to be viewed|output file saved/i.test(out) && existsSync(output)) {
+            resolve({ tracePath: output, runIssues: extractRunIssues(out) });
             return;
           }
-          reject(failure);
+          reject(classifyRecordFailure(stderr ?? "", exitCode, [XCRUN, ...args]));
           return;
         }
         resolve({ tracePath: output });
