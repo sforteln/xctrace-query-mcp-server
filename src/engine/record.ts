@@ -99,11 +99,15 @@ function classifyRecordFailure(
     s.includes("no process found") ||
     s.includes("unable to find") ||
     s.includes("could not find") ||
+    s.includes("cannot find process") ||
     s.includes("no running instance")
   ) {
     return new XctraceError(
       "target-not-found",
-      `xctrace could not find the target process or app: ${stderr.trim()}`,
+      `xctrace could not find the attach target: ${stderr.trim()}. On a device or Simulator, ` +
+        `attach-by-NAME frequently fails even when the process IS running — attach by PID instead ` +
+        `(get it from \`xcrun devicectl device info processes --device <udid>\` for a device, or the ` +
+        `PID printed by \`xcrun simctl launch <udid> <bundle-id>\` for a Simulator).`,
       { command, stderr: stderr.trim() }
     );
   }
@@ -274,11 +278,13 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
                     ? new XctraceError(
                         "simulator-capture-failed",
                         `Recording against the iOS Simulator "${device}" captured no data ` +
-                          `(xctrace exited ${exitCode ?? "non-zero"}` +
-                          `${(stderr ?? "").trim() ? "" : " with no error message"}). ` +
-                          `Injection-based instruments (Allocations, Leaks, Time Profiler) launch the app on the ` +
-                          `Simulator but don't capture. Record on a physical device instead — call list_devices, then ` +
-                          `connect + unlock + trust it — or pick an instrument that doesn't require injection.`,
+                          `(xctrace exited ${exitCode ?? "non-zero"}). Simulator profiling via xctrace is ` +
+                          `unreliable — attach AND launch both fail here (verified: attach exit 21, launch exit 1, ` +
+                          `both empty). Record on a physical device instead, using the normal dev flow: start the app ` +
+                          `from Xcode (fresh build), then attach by PID (attach-by-NAME does not resolve on ` +
+                          `devices/simulators — get the PID from \`xcrun devicectl device info processes --device <udid>\`). ` +
+                          `Note: injection instruments (Allocations/Leaks) log malloc backtraces only at launch time, ` +
+                          `so attach yields the process but not allocation stacks.`,
                         { command: [XCRUN, ...args], exitCode: exitCode ?? null, stderr: (stderr ?? "").trim() }
                       )
                     : failure
