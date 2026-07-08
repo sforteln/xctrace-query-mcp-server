@@ -1625,7 +1625,11 @@ export function createServer(): McpServer {
           "For a device/Simulator target, prefer the CFBundleIdentifier (e.g. \"com.acme.MyApp\") — far-swan " +
           "resolves it to the live PID, because attach-by-NAME doesn't resolve on a device/sim and the process " +
           "name is CFBundleExecutable, NOT the display name shown on the Home Screen / in Instruments. The app " +
-          "must already be running (start it in Xcode) — far-swan attaches, it never launches or deploys."
+          "must already be running (start it in Xcode) — far-swan attaches, it never launches or deploys. " +
+          "Attach to a STABLE running instance, not one that just launched or was just relaunched — a " +
+          "freshly-(re)started process's PID can churn or briefly report stale in launchctl/devicectl, so a " +
+          "resolve immediately after Xcode → Run can attach to the wrong (or a dead) PID; give it a moment to " +
+          "settle first."
       ),
     launch: z
       .string()
