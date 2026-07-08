@@ -15,6 +15,7 @@ import { z } from "zod";
 import { openTrace, summary, getSession, closeSession } from "./engine/session.js";
 import { describeSchema } from "./core/schema.js";
 import { listInstruments } from "./core/listInstruments.js";
+import { listDevices } from "./core/listDevices.js";
 import { queryTable } from "./core/query.js";
 import { getRow } from "./core/getRow.js";
 import { aggregateTable } from "./core/aggregate.js";
@@ -363,6 +364,28 @@ export function createServer(): McpServer {
           actionsAfterListInstruments(sessionId, lastRunSchemas, result.lastRun)
         );
         return text(toMcpText(response));
+      })
+  );
+
+  // ── list_devices ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_devices",
+    {
+      title: "List Devices",
+      description:
+        "List recordable targets — the host Mac, physical iOS devices, and booted/shutdown Simulators — " +
+        "so you can pick a `device` value for start_recording (by name or UDID) instead of knowing a UDID out-of-band. " +
+        "Each entry carries kind (mac/device/simulator), os, and state (online/offline/booted/shutdown). " +
+        "LIVE: runs `xctrace list devices` FRESH on every call — never cached — so if a device was offline and the dev " +
+        "just plugged it in, unlocked it, and trusted this Mac, simply call again to see it come online. " +
+        "An OFFLINE physical device is recoverable (connect + unlock + trust), not absent — the `note` says how. " +
+        "⚠️ Not for listing a trace's instruments — that's list_instruments (a schema inventory of an already-open trace).",
+      inputSchema: {},
+    },
+    async () =>
+      safeToolWithLog("list_devices", {}, async () => {
+        const result = await listDevices();
+        return text(toMcpText(envelope(result, [])));
       })
   );
 

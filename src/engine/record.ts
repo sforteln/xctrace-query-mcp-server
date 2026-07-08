@@ -14,6 +14,7 @@
  */
 import { execFile, spawn, ChildProcess } from "node:child_process";
 import { XctraceError, XctraceErrorDetails } from "./xctrace.js";
+import { isSimulatorTarget } from "../core/listDevices.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -258,7 +259,35 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
             typeof (err as { code?: unknown }).code === "number"
               ? (err as { code: number }).code
               : null;
-          reject(classifyRecordFailure(stderr ?? "", exitCode, [XCRUN, ...args]));
+          const failure = classifyRecordFailure(stderr ?? "", exitCode, [XCRUN, ...args]);
+          // Recognize the Simulator injection-capture edge case (PMT:gravel-kite):
+          // xctrace exits non-zero (observed: code 1 with EMPTY stderr) and
+          // captures no data when profiling a Simulator with an injection-based
+          // instrument (Allocations/Leaks/Time Profiler) — it launches the app but
+          // records nothing, and gives NO diagnostic. Recognize it from the target
+          // (nothing in stderr to match on) and hand back an actionable message.
+          if (failure.kind === "record-failed" && device) {
+            void isSimulatorTarget(device)
+              .then((isSim) => {
+                reject(
+                  isSim
+                    ? new XctraceError(
+                        "simulator-capture-failed",
+                        `Recording against the iOS Simulator "${device}" captured no data ` +
+                          `(xctrace exited ${exitCode ?? "non-zero"}` +
+                          `${(stderr ?? "").trim() ? "" : " with no error message"}). ` +
+                          `Injection-based instruments (Allocations, Leaks, Time Profiler) launch the app on the ` +
+                          `Simulator but don't capture. Record on a physical device instead — call list_devices, then ` +
+                          `connect + unlock + trust it — or pick an instrument that doesn't require injection.`,
+                        { command: [XCRUN, ...args], exitCode: exitCode ?? null, stderr: (stderr ?? "").trim() }
+                      )
+                    : failure
+                );
+              })
+              .catch(() => reject(failure));
+            return;
+          }
+          reject(failure);
           return;
         }
         resolve({ tracePath: output });

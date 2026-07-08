@@ -26,6 +26,7 @@ export type XctraceErrorKind =
   | "parse-error"        // output could not be parsed as expected
   | "record-failed"      // xctrace record exited non-zero (general failure)
   | "target-not-found"   // --attach target process/app not found
+  | "simulator-capture-failed" // Simulator launched but the injection instrument captured no data (observed: exit 1, empty stderr, empty trace)
   | "bad-template"       // --template name does not exist
   | "permission-denied"  // Instruments/DTServiceHub authorization not granted
   | "ambiguous-schema"   // schema appears multiple times in this run — needs a position
