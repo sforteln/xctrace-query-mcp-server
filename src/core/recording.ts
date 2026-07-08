@@ -362,6 +362,51 @@ export function mitigateHangsOsLogFidelity(
   };
 }
 
+/**
+ * PMT:plain-creek: default bare "Points of Interest" onto every recording
+ * whose resolved template doesn't already bundle it — unconditional, not
+ * gated on a risk signal the way mitigateHangsOsLogFidelity is, because the
+ * two confirmed facts that justify Hangs' conditional/compensating shape
+ * don't apply here: (1) fidelity — calm-starling already confirmed composing
+ * "Points of Interest" bare has NO fidelity loss (unlike os_log for Hangs,
+ * the full instrument's own default capture is already complete); (2) cost —
+ * re-verified live (2026-07-08) at 60s against a quiet target (Finder) and
+ * 30s against a busier one (Xcode): POI's OWN schemas (os-signpost,
+ * OSSignpostIntervals, os-signpost-arg, PointsOfInterestEvents) stayed at 0
+ * rows in every run, quiet or busy — this Mac's live targets never called
+ * os_signpost during the test windows, so genuine signpost-VOLUME cost is
+ * still unmeasured. Bundle-size deltas that showed up between runs (e.g.
+ * +21% Xcode base-vs-POI) traced entirely to OTHER already-present schemas
+ * (kdebug/cpu-profile/runloop-events), and a base-vs-base control (no POI
+ * instrument at all) reproduced comparable or larger swings in those same
+ * schemas — confirming the deltas are ordinary run-to-run noise on a live,
+ * uncontrolled process, not a POI-attributable cost. Net: near-zero cost
+ * confirmed for the common (no-signpost) case; near-zero cost for a genuine
+ * signpost-heavy target remains a reasoned expectation (signposts are just
+ * unified-logging entries, architecturally same cost family as birch-river's
+ * already-measured small-per-line os_log cost), not something this session
+ * could measure directly. That asymmetry — free when unused, valuable when
+ * used, worst case small and never worse than the caller could get by adding
+ * it explicitly — is why it defaults on rather than waiting to be asked.
+ */
+export function defaultPointsOfInterest(
+  resolvedTemplate: string,
+  resolvedExtraInstruments: string[]
+): { instrument?: string; note?: string } {
+  if (resolvedTemplate === "Points of Interest") return {};
+  if ((TEMPLATE_BUNDLES[resolvedTemplate] ?? []).includes("Points of Interest")) return {};
+  if (resolvedExtraInstruments.includes("Points of Interest")) return {};
+  return {
+    instrument: "Points of Interest",
+    note:
+      "\"Points of Interest\" was auto-added bare — the resolved template doesn't bundle it, and " +
+      "composing it costs ~0 when the app never calls os_signpost (confirmed live at 5s/30s/60s " +
+      "against both quiet and busy targets). If the app DOES call os_signpost, query the " +
+      "'os-signpost' / 'OSSignpostIntervals' / 'os-signpost-arg' / 'PointsOfInterestEvents' schemas — " +
+      "every other time series in this recording lines up against named signpost intervals for free.",
+  };
+}
+
 export const RECORDING_INTENTS = {
   cpu: {
     label: "Time Profiler",

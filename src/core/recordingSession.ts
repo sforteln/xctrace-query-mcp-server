@@ -27,6 +27,7 @@ import {
   expandTemplates,
   bareInstrumentTemplateNotes,
   mitigateHangsOsLogFidelity,
+  defaultPointsOfInterest,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -204,9 +205,16 @@ export async function startSession(
   // bare composition — see mitigateHangsOsLogFidelity's own doc for the
   // verified cost/scope tradeoffs behind making this automatic.
   const hangsMitigation = mitigateHangsOsLogFidelity(expanded.fidelityAtRisk, baseExtraInstruments);
-  const resolvedExtraInstruments = hangsMitigation.instrument
+  const withHangsMitigation = hangsMitigation.instrument
     ? [...baseExtraInstruments, hangsMitigation.instrument]
     : baseExtraInstruments;
+  // PMT:plain-creek: default bare "Points of Interest" onto every recording
+  // whose resolved template doesn't already bundle it — see the function's
+  // own doc for the cost/fidelity evidence behind making this unconditional.
+  const poiDefault = defaultPointsOfInterest(resolvedTemplate, withHangsMitigation);
+  const resolvedExtraInstruments = poiDefault.instrument
+    ? [...withHangsMitigation, poiDefault.instrument]
+    : withHangsMitigation;
   const resolvedLabel = [
     intent.label,
     ...(templates ?? []).map((t) => `template:${t}`),
@@ -229,6 +237,7 @@ export async function startSession(
       ...expanded.notes,
       ...bareInstrumentTemplateNotes(resolvedTemplate, instruments),
       ...(hangsMitigation.note ? [hangsMitigation.note] : []),
+      ...(poiDefault.note ? [poiDefault.note] : []),
     ].join("\n\n") || undefined;
   // intent.recordingOptions (the base template's own curated options) wins on
   // key collision — expanded options come from ADDITIONAL composed

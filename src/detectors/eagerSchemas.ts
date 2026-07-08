@@ -93,6 +93,18 @@ export function isBoundedKind(schema: string): boolean {
  * GCD-Performance mistake in the other direction (assumed signal-less,
  * wasn't — here: assumed bounded, might not be). Verify their real row
  * counts on a live trace before promoting them into this list.
+ *
+ * Also deliberately NOT included — PMT:plain-creek's Points of Interest
+ * schemas (os-signpost, OSSignpostIntervals, os-signpost-arg,
+ * PointsOfInterestEvents), even though that prompt made POI's INSTRUMENT
+ * default onto every recording (see defaultPointsOfInterest in
+ * recording.ts). Row count there is event-driven — one row per app
+ * os_signpost call — so unlike hitches/device-display-info it has no
+ * bounded-by-nature shape; every live test this session (quiet and busy
+ * targets) came back 0 rows, which confirms it's cheap but does NOT
+ * establish an upper bound for a genuinely signpost-heavy app. Surfaced
+ * instead as a next-action note in the recording result (see
+ * defaultPointsOfInterest's own note text) rather than eager-ingested.
  */
 export const EAGER_ALLOWLIST: readonly string[] = ["hitches", "hitches-renders", "device-display-info"];
 
