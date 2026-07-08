@@ -89,10 +89,22 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Leaks": ["Points of Interest"],
   "Core AI": ["Time Profiler"],
   "Core ML": ["Time Profiler"],
-  "Processor Trace": ["Points of Interest"],
+  // PMT:calm-starling: does NOT bundle the full "Points of Interest" instrument —
+  // could not re-verify live (this Mac's Apple Silicon CPU doesn't support
+  // Processor Trace at all), but trusting the prior session's confirmed "no
+  // signpost-related schema at all" finding over the unverified prior claim here.
+  "Processor Trace": [],
   "Network": ["Points of Interest"],
   "App Launch": ["Time Profiler"],
-  "Animation Hitches": ["Hangs", "Points of Interest", "Time Profiler"],
+  // PMT:calm-starling: does NOT bundle the full "Points of Interest" instrument —
+  // re-verified live against a fresh target (Xcode, not previously used) and via
+  // the Instruments.app GUI's own "Add Instrument" list for this template (shows
+  // Hitches/Display/Time Profiler/Thread Activity/Thermal State/Hangs — no
+  // signpost instrument at all): Animation Hitches' own os-signpost coverage is
+  // a BARE 'os-signpost' schema only (no OSSignpostIntervals/os-signpost-arg/
+  // PointsOfInterestEvents) — see the "hitches" RECORDING_INTENTS note for the
+  // caller-facing guidance this correction feeds into.
+  "Animation Hitches": ["Hangs", "Time Profiler"],
   "Swift Concurrency": ["Hangs", "Points of Interest", "Time Profiler"],
 };
 
@@ -160,6 +172,33 @@ export function resolveTemplateName(name: string): string {
 }
 
 /**
+ * PMT:calm-starling: template names that do NOT also exist as a bare
+ * `--instrument` name — confirmed live against every key in TEMPLATE_BUNDLES
+ * via `xcrun xctrace list instruments` (2026-07-08). This matters because
+ * expandTemplates() below composes an EXTRA `templates` entry by pushing its
+ * own headline name into the bare-instrument list (`[name, ...bundle]`) — the
+ * BASE template is always safe (passed via `--template`, never `--instrument`),
+ * but composing one of THESE names as an extra tries `--instrument "<name>"`,
+ * which xctrace rejects outright. Reproduced live: `xctrace record --template
+ * "Time Profiler" --instrument "Data Persistence" ...` fails with "Instrument
+ * with name 'Data Persistence' cannot be found" (exit 56) — previously an
+ * opaque generic `record-failed`, not caught before ever shelling out.
+ *
+ * Every other TEMPLATE_BUNDLES key (Time Profiler, SwiftUI, Foundation Models,
+ * CPU Profiler, Leaks, Allocations, Power Profiler, Core AI, Core ML,
+ * Processor Trace, CPU Counters) is ALSO a valid bare instrument name —
+ * verified the same way — so composing any of those as an extra template is
+ * fine and unaffected by this guard.
+ */
+export const TEMPLATE_ONLY_NAMES = new Set<string>([
+  "Data Persistence",
+  "Network",
+  "App Launch",
+  "Swift Concurrency",
+  "Animation Hitches",
+]);
+
+/**
  * Expand a caller's explicit `templates` list — additional WHOLE templates to
  * layer onto the base one — into the real union of instruments xctrace needs,
  * plus any recordingOptions those templates bake in. Each name is expanded to
@@ -168,6 +207,10 @@ export function resolveTemplateName(name: string): string {
  * and no configurable-options bundle to discover). This is the ONLY place
  * TEMPLATE_BUNDLES expansion happens — `instruments` (bare) is never silently
  * promoted through this path, see bareInstrumentTemplateNotes() below.
+ *
+ * @throws {XctraceError} kind "template-only-name" when a composed name is in
+ * TEMPLATE_ONLY_NAMES — fails fast, before ever shelling out to xctrace,
+ * rather than surfacing xctrace's own opaque "Instrument ... cannot be found".
  */
 export function expandTemplates(
   names: string[],
@@ -188,6 +231,16 @@ export function expandTemplates(
 
   for (const rawName of names) {
     const name = resolveTemplateName(rawName);
+    if (name !== resolvedTemplate && TEMPLATE_ONLY_NAMES.has(name)) {
+      throw new XctraceError(
+        "template-only-name",
+        `"${name}" is a TEMPLATE name with no matching bare \`--instrument\` — composing it via ` +
+          `\`templates\` (as an extra on top of "${resolvedTemplate}") is not supported by xctrace: ` +
+          `confirmed live that this fails outright ("Instrument with name '${name}' cannot be found"). ` +
+          `Use it as your BASE template instead (the \`template\`/\`type\` param), or check ` +
+          `\`xcrun xctrace list instruments\` for a real bare-instrument alternative.`
+      );
+    }
     const bundle = TEMPLATE_BUNDLES[name] ?? [];
     const expansion = [name, ...bundle];
     const added: string[] = [];
@@ -416,11 +469,15 @@ export const RECORDING_INTENTS = {
       "After opening, query the 'hitches' schema — like 'potential-hangs', it carries no " +
       "backtrace of its own, but UNLIKE 'hangs' (type: \"hangs\"), you don't need to compose " +
       "anything extra to find out what was running: the Animation Hitches template already " +
-      "bundles Hangs + Points of Interest + Time Profiler for free (with a tighter 33ms hang " +
-      "threshold tuned for hitch detection, vs. the default 250ms) — correlate a hitch's " +
-      "[start, start+duration] against Time Profiler's samples directly, or call_tree(view: " +
-      "\"hot\" or \"spine\", timeRange: <the hitch's window>), no re-recording needed. If the " +
-      "app calls os_signpost, its events are already captured — no extra instrument needed.",
+      "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
+      "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
+      "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
+      "timeRange: <the hitch's window>), no re-recording needed. Its OWN os_signpost coverage is " +
+      "partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, missing " +
+      "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — if the app calls os_signpost " +
+      "and you need the full picture, compose instruments: [\"Points of Interest\"] explicitly " +
+      "(safe to add bare — unlike Hangs/os-log, the full instrument's own default capture is " +
+      "already complete, no fidelity loss from composing it this way).",
   },
   "swift-concurrency": {
     label: "Swift Concurrency",
@@ -463,7 +520,11 @@ export const RECORDING_INTENTS = {
       "templates (not instruments) is what you want here: it records the COMPLETE SwiftUI " +
       "template — its own Hangs + Time Profiler bundle, layout tracing enabled — alongside " +
       "Data Persistence, in one recording. instruments: [\"SwiftUI\"] would give you only " +
-      "the bare SwiftUI instrument, missing that bundle.",
+      "the bare SwiftUI instrument, missing that bundle. Data Persistence's OWN os_signpost " +
+      "coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, " +
+      "missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — compose " +
+      "instruments: [\"Points of Interest\"] explicitly if the app calls os_signpost and you " +
+      "need the full picture (safe to add bare — no fidelity loss from composing it this way).",
     privacyNotice:
       "Data Persistence recordings capture entity names, fetch predicates, and object contents. " +
       "Database records including user-generated content may be stored in the trace.",
@@ -480,7 +541,11 @@ export const RECORDING_INTENTS = {
       "recording — verified live: it adds the 'ane-hw-intervals' schema (start/duration per ANE-busy " +
       "interval, no thread/backtrace column), which correlate can pair against ModelInferenceTable's " +
       "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
-      "this inference' — a provable hardware fact, not an assumption.",
+      "this inference' — a provable hardware fact, not an assumption. Foundation Models' OWN " +
+      "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare " +
+      "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — " +
+      "compose instruments: [\"Points of Interest\"] explicitly if you need the full signpost " +
+      "picture (safe to add bare — no fidelity loss from composing it this way).",
     privacyNotice:
       "This recording captures ALL Foundation Models prompts and responses in unencrypted form, " +
       "including any sensitive or personally identifying information such as emails, messages, " +

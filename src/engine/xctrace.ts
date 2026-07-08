@@ -28,6 +28,7 @@ export type XctraceErrorKind =
   | "target-not-found"   // --attach target process/app not found
   | "injection-attach-failed" // target was found/launched but the injecting instrument's attach step itself failed (commonly a hardened/code-signed target rejecting liboainject)
   | "bad-template"       // --template name does not exist
+  | "template-only-name" // a `templates` composition entry names a template that xctrace does NOT also expose as a bare --instrument (composing it this way fails outright — see recording.ts's TEMPLATE_ONLY_NAMES)
   | "permission-denied"  // Instruments/DTServiceHub authorization not granted
   | "ambiguous-schema"   // schema appears multiple times in this run — needs a position
   | "table-too-large";   // aborted mid-parse — approaching the process's heap limit
