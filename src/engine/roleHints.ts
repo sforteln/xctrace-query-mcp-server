@@ -887,6 +887,59 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "other-arg": detail,
     },
   },
+  // PMT:lean-knoll: verified live (real xctrace export, read-only, against
+  // 2026-07-07T20-27-57-animation-hitches.trace) — UNLIKE os-log/runloop-
+  // intervals above, heuristics do NOT already get this right: none of
+  // "requested-qo-s"/"effective-qo-s"/"mismatch-qo-s" match any mnemonic
+  // pattern (checked against classifyWithHints before adding this — all three
+  // default to "detail" without this pin), so this entry is a genuine
+  // correctness fix, not just a friendly-name/gate-closer. mismatch-qo-s'
+  // real engineering-type is "state" (not "state" mnemonic as the prompt's own
+  // paraphrase suggested) — its fmt value is the literal string "QoS classes
+  // mismatch" when a thread's requested and effective QoS classes diverge, a
+  // single filterable label, not something to compute.
+  ThreadQoSTable: {
+    instrument: "System Trace (Thread QoS)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      process: thread,
+      thread: thread,
+      "requested-qo-s": label,
+      "effective-qo-s": label,
+      "mismatch-qo-s": label,
+    },
+  },
+  // PMT:lean-knoll: verified live, same recording/method as ThreadQoSTable
+  // above — "scheduled-priority"/"base-priority" also default to "detail"
+  // without this pin (checked before adding). fmt carries both the OS
+  // priority-class name and its number (e.g. "User Interactive - 46"); raw is
+  // the plain number, directly comparable cross-column via find()'s
+  // compareCol (PMT:narrow-ochre) to detect scheduled < base (a priority
+  // inversion).
+  ThreadPriority: {
+    instrument: "System Trace (Thread Priority)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      process: thread,
+      thread: thread,
+      "scheduled-priority": label,
+      "base-priority": label,
+    },
+  },
+  // ThreadActivity (the why-dig substrate behind ThreadQoSTable/ThreadPriority
+  // above) — NOT pinned here deliberately: a ~495K-row-scale scheduling
+  // firehose (made-runnable-by-thread, preempted-by-thread, yielded-to-thread,
+  // thread-state, syscall (+duration), thermal-throttled, tagged-backtrace),
+  // opened only in a bounded hitch/mismatch window, never eager-ingested
+  // (PMT:ruddy-elk's never-eager firehose calibration). Column shape
+  // confirmed live for this comment only, via a read-only export immediately
+  // deleted afterward — see PMT:lean-knoll's completion report.
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────

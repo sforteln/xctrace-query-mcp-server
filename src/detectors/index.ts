@@ -18,6 +18,8 @@ import { fmMainActorSaturation } from "./fmMainActorSaturation.js";
 import { outlierSweep } from "./outlierSweep.js";
 import { nearMissSweep } from "./nearMissSweep.js";
 import { renderHitchSweep } from "./renderHitchSweep.js";
+import { qosMismatch } from "./qosMismatch.js";
+import { priorityInversion } from "./priorityInversion.js";
 
 export const DETECTORS: readonly Detector[] = [
   swiftuiOverInvalidation,
@@ -32,6 +34,8 @@ export const DETECTORS: readonly Detector[] = [
   outlierSweep,
   nearMissSweep,
   renderHitchSweep,
+  qosMismatch,
+  priorityInversion,
 ];
 
 export * from "./types.js";
