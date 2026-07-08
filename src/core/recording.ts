@@ -264,6 +264,51 @@ export function bareInstrumentTemplateNotes(
   return notes;
 }
 
+/**
+ * PMT:birch-river: Hangs' com.apple.runtime-issues os-log coverage never
+ * survives a bare `--instrument` addition (see expandTemplates' fidelityAtRisk
+ * doc) — a real xctrace behavior, not a far-swan bug, confirmed via
+ * PMT:full-trace's template audit. When Hangs specifically lands in
+ * fidelityAtRisk, auto-add the bare "os_log" instrument to at least partially
+ * compensate.
+ *
+ * Verified live (A/B test against a real attached process, 5s and 30s, PMT:
+ * birch-river) before making this automatic: bare os_log's own bundle-size
+ * cost is small (+0.3% at 5s, +0.6% at 30s over a ~22MB baseline) and it stays
+ * scoped to the attached/launched process by default
+ * (recordAllProcessesInSingleProcessMode defaults false, so it is NOT a
+ * system-wide firehose) — light enough to add automatically for this
+ * specific, confirmed trigger. But it comes back COMPLETELY UNSCOPED on
+ * subsystem/category (confirmed live: com.apple.network/com.apple.iCloudQuota/
+ * com.apple.DesktopServices alongside anything runtime-issues-relevant),
+ * unlike a real template's own curated capture — the os-log lens's
+ * quickStart/nextActions default to a filter approximating the known
+ * runtime-issues watchlist, not an exact match (xctrace itself provides no way
+ * to apply that scope to a bare os_log instrument).
+ *
+ * Deliberately NOT generalized to every fidelityAtRisk instrument — only
+ * Hangs is confirmed to correlate with os-log coverage today. Points of
+ * Interest, Foundation Models, and Network each have their own DIFFERENT
+ * os-log scope (per PMT:full-trace's per-template mapping), so auto-adding
+ * os_log for those triggers would apply the wrong watchlist.
+ */
+export function mitigateHangsOsLogFidelity(
+  fidelityAtRisk: string[],
+  resolvedExtraInstruments: string[]
+): { instrument?: string; note?: string } {
+  if (!fidelityAtRisk.includes("Hangs")) return {};
+  if (resolvedExtraInstruments.includes("os_log")) return {};
+  return {
+    instrument: "os_log",
+    note:
+      "Hangs was added bare (see fidelityAtRisk) — its com.apple.runtime-issues os-log coverage does not " +
+      "come along for free the way it would via a real Hangs-bundling template, so bare \"os_log\" was " +
+      "auto-added to compensate. It comes back completely UNSCOPED (no subsystem/category filter applied " +
+      "by xctrace) — query/find the 'os-log' schema (its lens default already approximates the curated " +
+      "runtime-issues scope) rather than treating every row as hang-relevant.",
+  };
+}
+
 export const RECORDING_INTENTS = {
   cpu: {
     label: "Time Profiler",

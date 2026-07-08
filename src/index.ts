@@ -39,6 +39,7 @@ import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
+import osLogLens from "./lenses/osLog/index.js";
 import { getConfig, updateConfig, configPath, defaultFallbackCacheDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace } from "./core/discovery.js";
@@ -138,6 +139,10 @@ const LENSES: Lens[] = [
   // purpose (e.g. alongside Foundation Models or a Hangs investigation), never
   // the sole reason for a recording — so it sits last, same tier as thermal.
   runLoopsLens,
+  // os-log is never a recording intent's own headline instrument either
+  // (always composed bare — a caller's own choice or the Hangs-fidelity
+  // mitigation above) — same tier as runLoops/thermal.
+  osLogLens,
 ];
 
 /**

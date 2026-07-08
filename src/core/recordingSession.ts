@@ -26,6 +26,7 @@ import {
   collectPrivacyNotices,
   expandTemplates,
   bareInstrumentTemplateNotes,
+  mitigateHangsOsLogFidelity,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -196,9 +197,16 @@ export async function startSession(
   const resolvedTemplate = template ?? intent.template;
   const expanded = expandTemplates(templates ?? [], resolvedTemplate);
   const literalInstruments = [...(intent.extraInstruments ?? []), ...(instruments ?? [])];
-  const resolvedExtraInstruments = [
+  const baseExtraInstruments = [
     ...new Set([...literalInstruments, ...expanded.instruments].filter((i) => i !== resolvedTemplate)),
   ];
+  // PMT:birch-river: compensate for Hangs' os-log coverage not surviving a
+  // bare composition — see mitigateHangsOsLogFidelity's own doc for the
+  // verified cost/scope tradeoffs behind making this automatic.
+  const hangsMitigation = mitigateHangsOsLogFidelity(expanded.fidelityAtRisk, baseExtraInstruments);
+  const resolvedExtraInstruments = hangsMitigation.instrument
+    ? [...baseExtraInstruments, hangsMitigation.instrument]
+    : baseExtraInstruments;
   const resolvedLabel = [
     intent.label,
     ...(templates ?? []).map((t) => `template:${t}`),
@@ -217,7 +225,11 @@ export async function startSession(
     [...new Set([intent.privacyNotice, ...adHocNotices].filter((n): n is string => Boolean(n)))].join("\n\n") ||
     undefined;
   const resolvedCompositionNote =
-    [...expanded.notes, ...bareInstrumentTemplateNotes(resolvedTemplate, instruments)].join("\n\n") || undefined;
+    [
+      ...expanded.notes,
+      ...bareInstrumentTemplateNotes(resolvedTemplate, instruments),
+      ...(hangsMitigation.note ? [hangsMitigation.note] : []),
+    ].join("\n\n") || undefined;
   // intent.recordingOptions (the base template's own curated options) wins on
   // key collision — expanded options come from ADDITIONAL composed
   // templates, so the base template's explicit choice takes precedence.

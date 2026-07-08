@@ -36,6 +36,7 @@ import coreDataLens from "../src/lenses/coreData/index.js";
 import allocationsLens from "../src/lenses/allocations/index.js";
 import thermalLens from "../src/lenses/thermal/index.js";
 import runLoopsLens from "../src/lenses/runLoops/index.js";
+import osLogLens from "../src/lenses/osLog/index.js";
 
 // Mirrors src/index.ts's LENSES array — kept independent of it (imported
 // directly from each lens module) so this test doesn't need index.ts to
@@ -52,6 +53,7 @@ const LENSES: Array<{ label: string; lens: Lens }> = [
   { label: "timeProfiler", lens: timeProfilerLens },
   { label: "thermal", lens: thermalLens },
   { label: "runLoops", lens: runLoopsLens },
+  { label: "osLog", lens: osLogLens },
 ];
 
 // Schemas whose lens calls peekTable() internally and therefore need a real,
