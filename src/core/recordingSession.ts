@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { spawnRecord } from "../engine/record.js";
 import { resolveAttachTarget } from "./resolveAttachTarget.js";
+import { isSimulatorTarget } from "./listDevices.js";
 import {
   defaultOutputPath,
   writeRecordingOptionsFile,
@@ -28,6 +29,7 @@ import {
   bareInstrumentTemplateNotes,
   mitigateHangsOsLogFidelity,
   defaultPointsOfInterest,
+  deviceOnlyInstrumentWarning,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -135,6 +137,16 @@ export interface StartSessionResult {
    * template's own bundle. See PMT:gravel-falcon.
    */
   fidelityAtRisk?: string[];
+  /**
+   * Present when the target is a Simulator AND the resolved template/
+   * instruments include one or more device-only instruments (needs the GPU,
+   * real display, energy/thermal sensors, or CPU performance counters/ANE —
+   * see DEVICE_ONLY_INSTRUMENTS in recording.ts). A WARNING, not a block —
+   * the curated map may drift; the rest of the recording still proceeds, and
+   * record()'s partial-success runIssues handling is the backstop for the
+   * actual outcome. See PMT:stormy-coast.
+   */
+  deviceOnlyWarning?: string;
 }
 
 /**
@@ -273,6 +285,15 @@ export async function startSession(
       ? await resolveAttachTarget(attach, device)
       : attach;
 
+  // PMT:stormy-coast: xctrace doesn't expose Simulator instrument compatibility
+  // itself — only the Instruments GUI does (greys out unsupported instruments) —
+  // so warn upfront from the curated DEVICE_ONLY_INSTRUMENTS map rather than
+  // finding out from a failed/un-exportable sub-instrument after the fact.
+  const deviceOnlyWarning =
+    device !== undefined && (await isSimulatorTarget(device))
+      ? deviceOnlyInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, true)
+      : undefined;
+
   const handle = spawnRecord({
     template: resolvedTemplate,
     extraInstruments: resolvedExtraInstruments,
@@ -381,6 +402,7 @@ export async function startSession(
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
     ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
     ...(expanded.fidelityAtRisk.length > 0 ? { fidelityAtRisk: expanded.fidelityAtRisk } : {}),
+    ...(deviceOnlyWarning ? { deviceOnlyWarning } : {}),
   };
 }
 

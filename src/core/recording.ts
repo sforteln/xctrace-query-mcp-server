@@ -389,6 +389,83 @@ export function mitigateHangsOsLogFidelity(
  * used, worst case small and never worse than the caller could get by adding
  * it explicitly — is why it defaults on rather than waiting to be asked.
  */
+/**
+ * PMT:stormy-coast: curated device-only instrument map, keyed by hardware
+ * dependency. xctrace does NOT expose Simulator compatibility — only the
+ * Instruments GUI does (greys out unsupported instruments for a sim target)
+ * — so this is sourced from xcodeAI's GUI-derived list (2026-07-08), same
+ * curation discipline as TEMPLATE_BUNDLES (curated because xctrace won't
+ * confirm it). A Simulator handed one of these produces a failed or
+ * un-exportable (sub-)trace instead of a clear upfront error — exactly the
+ * "Hitches is not supported on this platform" failure class that cost a
+ * prior session real time. Reconciled: Allocations is SIM-SAFE — earlier
+ * Allocations-on-sim failures traced to a stale PID + an --all-processes
+ * target-type mistake, not a real incompatibility, so it is deliberately
+ * NOT in this set.
+ *
+ * RULE OF THUMB for anything not listed here (new/unknown instruments): if
+ * the metric needs the GPU, the real display/present pipeline, energy/
+ * thermal sensors, or CPU performance counters/ANE, it's device-only;
+ * CPU/memory/allocation/concurrency/signpost/persistence work is sim-safe.
+ */
+export const DEVICE_ONLY_INSTRUMENTS: Record<string, string> = {
+  // display/present timing — needs the real display + present pipeline
+  "Animation Hitches": "a real display/present pipeline",
+  Hitches: "a real display/present pipeline",
+  "Core Animation FPS": "a real display/present pipeline",
+  "Frame Lifetimes": "a real display/present pipeline",
+  Display: "a real display/present pipeline",
+  // GPU — needs real GPU hardware
+  GPU: "real GPU hardware",
+  "Metal Application": "real GPU hardware",
+  "Metal GPU Counters": "real GPU hardware",
+  "Metal Performance Overview": "real GPU hardware",
+  "Advanced Graphics Statistics": "real GPU hardware",
+  "Foveated Streaming": "real GPU hardware",
+  // energy/thermal — needs real power/thermal sensors
+  "Power Profiler": "real power/thermal sensors",
+  "Location Energy Model": "real power/thermal sensors",
+  "Thermal State": "real thermal sensors",
+  // hardware PMU / ANE — needs real performance-monitoring hardware
+  "CPU Counters": "real CPU performance-counter hardware",
+  "Processor Trace": "real CPU performance-counter hardware",
+  "Neural Engine": "real ANE hardware",
+  "Core AI": "real ANE hardware",
+};
+
+/**
+ * PMT:stormy-coast: WARN (never block — the map is curated, may drift as
+ * Xcode changes; the record() partial-success runIssues handling remains
+ * the backstop for the actual outcome) when a Simulator target is asked for
+ * a device-only instrument, whether requested directly (`resolvedExtra
+ * Instruments`) or pulled in as part of the base template's own bundle
+ * (`resolvedTemplate`'s TEMPLATE_BUNDLES entry) — e.g. the SwiftUI/Animation
+ * Hitches templates both bundle Hitches, so a SwiftUI recording on a sim
+ * should pre-warn that Hitches won't capture even though the caller never
+ * named it directly.
+ */
+export function deviceOnlyInstrumentWarning(
+  resolvedTemplate: string,
+  resolvedExtraInstruments: string[],
+  isSimulator: boolean
+): string | undefined {
+  if (!isSimulator) return undefined;
+  const candidates = new Set([
+    resolvedTemplate,
+    ...(TEMPLATE_BUNDLES[resolvedTemplate] ?? []),
+    ...resolvedExtraInstruments,
+  ]);
+  const flagged = [...candidates].filter((name) => name in DEVICE_ONLY_INSTRUMENTS);
+  if (flagged.length === 0) return undefined;
+  return flagged
+    .map(
+      (name) =>
+        `"${name}" is device-only (needs ${DEVICE_ONLY_INSTRUMENTS[name]}) — it won't capture on a ` +
+        `Simulator; the rest of the recording will still work. Use a physical device for "${name}".`
+    )
+    .join("\n\n");
+}
+
 export function defaultPointsOfInterest(
   resolvedTemplate: string,
   resolvedExtraInstruments: string[]
