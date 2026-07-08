@@ -492,6 +492,41 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "detachment-suggestion": detail,
     },
   },
+  // display-surface-swap (PMT:rust-gravel): the per-swap event log Displays
+  // produces. Verified live (committed fixture): it carries FIVE start-time-
+  // typed columns (timestamp, delay, hid-time, generation-time,
+  // desired-presentation-time) — so an un-pinned primaryTime would be
+  // position-dependent (the exact order-invariance hazard the cross-schema
+  // edge derivation guards against, f3203f0's class). Pin primaryTime to the
+  // canonical swap timestamp; the other start-time columns are specific
+  // sub-timestamps/measures, not the axis a window-join uses, so they're
+  // pinned to detail. swap-id is engineering-type "displayed-surface-swap" —
+  // a DIFFERENT id-space from hitches.swap-id (uint32); the schemaEdges
+  // registry records that as a NEGATIVE edge.
+  "display-surface-swap": {
+    instrument: "Displays (surface swaps)",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      delay: detail,
+      "display-name": label,
+      "surface-id": detail,
+      "framebuffer-index": detail,
+      "swap-id": detail,
+      // color: render-buffer-depth (the back-buffer count), same as
+      // display-vsyncs-interval.color — a small count, not a UI tag.
+      color: count,
+      "pixel-format": detail,
+      "hid-time": detail,
+      "generation-time": detail,
+      "min-quanta": detail,
+      "desired-presentation-time": detail,
+      "layer1-surface-id": detail,
+      "layer2-surface-id": detail,
+      "layer1-pixel-format": detail,
+      "layer2-pixel-format": detail,
+    },
+  },
   "hang-risks": {
     instrument: "Hang Risks",
     primaryTime: "time",

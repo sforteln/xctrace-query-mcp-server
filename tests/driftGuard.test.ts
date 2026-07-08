@@ -15,9 +15,24 @@
  * All checks derive their reference data from live source imports — no hardcoded lists.
  */
 import { describe, it, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, basename } from "node:path";
 import { createServer } from "../src/index.js";
 import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
 import { RECORDING_INTENTS } from "../src/core/recording.js";
+import type { SchemaCol } from "../src/engine/parseTable.js";
+import { parseTableXml } from "../src/engine/parseTable.js";
+import { parseTrackDetailXml } from "../src/engine/parseTrackDetail.js";
+import { classifyWithHints } from "../src/engine/roleHints.js";
+import { primaryTime as relatePrimaryTime } from "../src/core/relate.js";
+import {
+  CURATED_EDGES,
+  deriveEdges,
+  connectionsFor,
+  invert,
+  edgeTimeColumn,
+  type SchemaEdge,
+} from "../src/engine/schemaEdges.js";
 
 // ── Extract tool metadata from the live server ────────────────────────────────
 
@@ -45,7 +60,7 @@ const SCHEMA_REF_EXEMPTIONS = new Set([
   "time-profile", // used by call_tree; real schema name but no fixture yet (backtrace track-detail)
   "cpu-profile",  // CPU Profiler's tagged-backtrace schema; verified live this session, no fixture yet
   "ane-hw-intervals", // Neural Engine instrument's interval schema; verified live (PMT:amber-ibis), no fixture yet
-  "runloop-intervals", // Run Loops instrument's interval schema; verified live (PMT:steel-spruce), no fixture yet
+  // (runloop-intervals graduated to a committed fixture in PMT:rust-gravel — now in VERIFIED_PAIRS, exemption removed.)
   "os-signpost", // bare-instrument Points of Interest schema; verified live repeatedly (PMT:calm-starling), no fixture yet
   "Prompt",       // Instruments UI phase-label in list_fm_requests description — not a schema name
   "Resolve",      // Instruments UI phase-label in list_fm_requests description — not a schema name
@@ -173,4 +188,172 @@ describe("Identifier integrity: RECORDING_INTENTS notes don't reference stale sc
       ).toEqual([]);
     });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cross-schema connection registry drift guards (PMT:rust-gravel)
+//
+// Extends this file's existing "reference data from the committed fixtures +
+// VERIFIED_PAIRS, no parallel harness" discipline to the SchemaEdge registry:
+//   (a) referential + coverage gate — every schema/col a CURATED edge names
+//       exists in a committed fixture
+//   (b) order-invariant derivation — permuting fixture schema/column order
+//       reproduces the identical derived edge set (the f3203f0 position-
+//       dependence class)
+//   (c) negative-edge — the swap-id non-join stays a genuine different-id-space
+//       (flips if Apple ever unifies them)
+//   (d) kind-consistency — a time-window edge's endpoints carry primaryTime; a
+//       tuple edge carries a thread pair + a time pair
+//   (e) inverted-equality — the connection graph is bidirectionally consistent
+//       (every A→B edge has its structural inverse surfaced from B)
+// plus a guard that edgeTimeColumn never drifts from relate.primaryTime.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Load every committed fixture's real columns, keyed by the ACTUAL schema name.
+// schema-table: "foo__bar.xml" → "foo/bar". track-detail names carry spaces, so
+// its filenames also encode "-" for a space: "Allocations__Allocations-List" →
+// "Allocations/Allocations List".
+function loadFixtureCols(): Map<string, SchemaCol[]> {
+  const root = new URL("./fixtures/xcode-27.0", import.meta.url).pathname;
+  const map = new Map<string, SchemaCol[]>();
+  for (const kind of ["schema-table", "track-detail"] as const) {
+    const dir = join(root, kind);
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith(".xml")) continue;
+      let schema = basename(f, ".xml").replace(/__/g, "/");
+      if (kind === "track-detail") schema = schema.replace(/-/g, " ");
+      const xml = readFileSync(join(dir, f), "utf8");
+      const parsed = kind === "schema-table" ? parseTableXml(xml) : parseTrackDetailXml(xml, schema);
+      map.set(schema, parsed.cols);
+    }
+  }
+  return map;
+}
+
+const FIXTURE_COLS = loadFixtureCols();
+const FIXTURE_SCHEMAS = [...FIXTURE_COLS.entries()].map(([schema, cols]) => ({ schema, cols }));
+
+const roleOf = (schema: string, col: string): string | undefined =>
+  classifyWithHints(schema, FIXTURE_COLS.get(schema)!).find((c) => c.mnemonic === col)?.roleInfo.role;
+
+const edgeKey = (e: SchemaEdge): string =>
+  `${e.from}|${e.to}|${e.kind}|${e.on.map((p) => `${p.fromCol}=${p.toCol}`).join(",")}`;
+
+// (a) REFERENTIAL + COVERAGE GATE ────────────────────────────────────────────────
+describe("schemaEdges (a): every curated edge is referentially valid against a committed fixture", () => {
+  CURATED_EDGES.forEach((edge, i) => {
+    it(`#${i} ${edge.from} →${edge.kind}→ ${edge.to}: both endpoints fixtured, keyed columns exist`, () => {
+      const fromCols = FIXTURE_COLS.get(edge.from);
+      const toCols = FIXTURE_COLS.get(edge.to);
+      expect(fromCols, `no committed fixture for "${edge.from}" — coverage gate: a curated edge may only name a fixtured schema`).toBeDefined();
+      expect(toCols, `no committed fixture for "${edge.to}" — coverage gate: a curated edge may only name a fixtured schema`).toBeDefined();
+      const onKeys = (edge as { onKeys?: Array<{ fromCol: string; toCol: string }> }).onKeys;
+      if (onKeys) {
+        for (const pair of onKeys) {
+          expect(fromCols!.some((c) => c.mnemonic === pair.fromCol), `${edge.from}.${pair.fromCol} not in the committed fixture`).toBe(true);
+          expect(toCols!.some((c) => c.mnemonic === pair.toCol), `${edge.to}.${pair.toCol} not in the committed fixture`).toBe(true);
+        }
+      }
+    });
+  });
+});
+
+// (b) ORDER-INVARIANT DERIVATION ─────────────────────────────────────────────────
+describe("schemaEdges (b): derived-layer derivation is order-invariant over the fixtures", () => {
+  const baseline = new Set(deriveEdges(FIXTURE_SCHEMAS).map(edgeKey));
+
+  it("emits a non-trivial number of derived edges (guards against a silently-empty derivation)", () => {
+    expect(baseline.size).toBeGreaterThan(10);
+  });
+
+  it("reversed schema order + reversed columns within each schema reproduces the identical edge set", () => {
+    const permuted = [...FIXTURE_SCHEMAS].reverse().map((s) => ({ schema: s.schema, cols: [...s.cols].reverse() }));
+    expect(new Set(deriveEdges(permuted).map(edgeKey))).toEqual(baseline);
+  });
+
+  it("a rotation + a per-schema column rotation reproduces the identical edge set", () => {
+    const half = Math.floor(FIXTURE_SCHEMAS.length / 2);
+    const rotated = [...FIXTURE_SCHEMAS.slice(half), ...FIXTURE_SCHEMAS.slice(0, half)].map((s) => ({
+      schema: s.schema,
+      cols: s.cols.length > 1 ? [s.cols[s.cols.length - 1], ...s.cols.slice(0, -1)] : s.cols,
+    }));
+    expect(new Set(deriveEdges(rotated).map(edgeKey))).toEqual(baseline);
+  });
+});
+
+// (c) NEGATIVE-EDGE ──────────────────────────────────────────────────────────────
+describe("schemaEdges (c): the swap-id negative edge stays a genuine non-join", () => {
+  it("hitches.swap-id and display-surface-swap.swap-id are different engineering-types (different id-spaces)", () => {
+    const a = FIXTURE_COLS.get("hitches")!.find((c) => c.mnemonic === "swap-id")!;
+    const b = FIXTURE_COLS.get("display-surface-swap")!.find((c) => c.mnemonic === "swap-id")!;
+    expect(a.engineeringType).not.toBe(b.engineeringType);
+  });
+
+  it("the registry records exactly this pair as a curated NEGATIVE edge", () => {
+    const neg = CURATED_EDGES.find(
+      (e) => e.kind === "negative" && e.from === "hitches" && e.to === "display-surface-swap"
+    );
+    expect(neg).toBeDefined();
+  });
+});
+
+// (d) KIND-CONSISTENCY ───────────────────────────────────────────────────────────
+describe("schemaEdges (d): edge kinds are structurally consistent over the fixtures", () => {
+  const derived = deriveEdges(FIXTURE_SCHEMAS);
+
+  it("every derived time-window edge's endpoints classify as a time role", () => {
+    for (const e of derived.filter((e) => e.kind === "time-window")) {
+      expect(roleOf(e.from, e.on[0].fromCol), `${e.from}.${e.on[0].fromCol}`).toBe("time");
+      expect(roleOf(e.to, e.on[0].toCol), `${e.to}.${e.on[0].toCol}`).toBe("time");
+    }
+  });
+
+  it("every derived tuple edge carries a thread pair (pair 0) and a time pair (pair 1)", () => {
+    const tuples = derived.filter((e) => e.kind === "tuple");
+    expect(tuples.length).toBeGreaterThan(0);
+    for (const e of tuples) {
+      expect(e.on).toHaveLength(2);
+      expect(roleOf(e.from, e.on[0].fromCol)).toBe("thread");
+      expect(roleOf(e.to, e.on[0].toCol)).toBe("thread");
+      expect(roleOf(e.from, e.on[1].fromCol)).toBe("time");
+      expect(roleOf(e.to, e.on[1].toCol)).toBe("time");
+    }
+  });
+
+  it("every curated directional/window edge resolves a primaryTime on BOTH endpoints", () => {
+    for (const def of CURATED_EDGES.filter((d) => !(d as { onKeys?: unknown }).onKeys)) {
+      expect(edgeTimeColumn(def.from, FIXTURE_COLS.get(def.from)!), `${def.from} primaryTime`).not.toBeNull();
+      expect(edgeTimeColumn(def.to, FIXTURE_COLS.get(def.to)!), `${def.to} primaryTime`).not.toBeNull();
+    }
+  });
+});
+
+// (e) INVERTED-EQUALITY (bidirectional consistency) ───────────────────────────────
+describe("schemaEdges (e): the connection graph is bidirectionally consistent", () => {
+  it("every edge A→B in connectionsFor(A) has its structural inverse in connectionsFor(B)", () => {
+    const missing: string[] = [];
+    for (const { schema } of FIXTURE_SCHEMAS) {
+      for (const e of connectionsFor(schema, FIXTURE_SCHEMAS).edges) {
+        const wantKey = edgeKey(invert(e));
+        const back = connectionsFor(e.to, FIXTURE_SCHEMAS).edges;
+        if (!back.some((b) => edgeKey(b) === wantKey)) {
+          missing.push(`${edgeKey(e)} — no inverse in connectionsFor("${e.to}")`);
+        }
+      }
+    }
+    expect(missing, missing.slice(0, 5).join("\n")).toEqual([]);
+  });
+});
+
+// edgeTimeColumn must never drift from relate.primaryTime (they share the same rule). ──
+describe("schemaEdges: edgeTimeColumn agrees with relate.primaryTime for every fixture", () => {
+  it("resolves the identical primary time column across all fixtured schemas", () => {
+    const disagreements: string[] = [];
+    for (const { schema, cols } of FIXTURE_SCHEMAS) {
+      const mine = edgeTimeColumn(schema, cols);
+      const theirs = relatePrimaryTime(schema, classifyWithHints(schema, cols));
+      if (mine !== theirs) disagreements.push(`${schema}: edges=${mine} relate=${theirs}`);
+    }
+    expect(disagreements).toEqual([]);
+  });
 });
