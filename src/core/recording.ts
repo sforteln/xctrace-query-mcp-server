@@ -528,7 +528,14 @@ export const RECORDING_INTENTS = {
     note:
       "App Launch requires --launch: its purpose is capturing the startup sequence from " +
       "process creation. Use record_cpu with attach for CPU profiling of a running app. " +
-      "The App Launch template already bundles Time Profiler for free.",
+      "The App Launch template already bundles Time Profiler for free. IMPORTANT — if the " +
+      "target app is ALREADY RUNNING, --launch does NOT start a fresh process: most macOS/" +
+      "iOS apps are effectively singleton, so the OS just activates/foregrounds the existing " +
+      "instance instead of launching a new one — there is no real launch event for this " +
+      "template to capture, so the recording silently produces no startup data (not an error, " +
+      "just an empty/uninteresting trace). Verified live (PMT:loam-merlin, FileActivity " +
+      "session): fully quit the target app first, THEN start this recording, so --launch " +
+      "triggers a genuine process-creation event.",
   },
   leaks: {
     label: "Leaks",
