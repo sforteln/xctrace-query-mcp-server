@@ -1517,7 +1517,13 @@ export function createServer(): McpServer {
     attach: z
       .string()
       .optional()
-      .describe("PID or process name of a running process to attach to."),
+      .describe(
+        "PID, CFBundleIdentifier, or process name of an ALREADY-RUNNING process to attach to. " +
+          "For a device/Simulator target, prefer the CFBundleIdentifier (e.g. \"com.acme.MyApp\") — far-swan " +
+          "resolves it to the live PID, because attach-by-NAME doesn't resolve on a device/sim and the process " +
+          "name is CFBundleExecutable, NOT the display name shown on the Home Screen / in Instruments. The app " +
+          "must already be running (start it in Xcode) — far-swan attaches, it never launches or deploys."
+      ),
     launch: z
       .string()
       .optional()

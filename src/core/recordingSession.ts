@@ -19,6 +19,7 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { spawnRecord } from "../engine/record.js";
+import { resolveAttachTarget } from "./resolveAttachTarget.js";
 import {
   defaultOutputPath,
   writeRecordingOptionsFile,
@@ -242,10 +243,19 @@ export async function startSession(
   // the-bundle forms count as an app launch (the debug-build case).
   const resolvedLaunchArgs = isAppLaunchPath(launch) ? ["-ApplePersistenceIgnoreState", "YES"] : undefined;
 
+  // PMT:sleek-vault: attach-by-NAME doesn't resolve on a device/Simulator, so when
+  // targeting one, resolve the CFBundleIdentifier/name to a live PID and attach by
+  // PID (the app must already be running — far-swan attaches, never launches). On
+  // the host Mac (no device) attach-by-name works, so pass it through unchanged.
+  const resolvedAttach =
+    attach !== undefined && device !== undefined
+      ? await resolveAttachTarget(attach, device)
+      : attach;
+
   const handle = spawnRecord({
     template: resolvedTemplate,
     extraInstruments: resolvedExtraInstruments,
-    attach,
+    attach: resolvedAttach,
     launch,
     launchArgs: resolvedLaunchArgs,
     device,
