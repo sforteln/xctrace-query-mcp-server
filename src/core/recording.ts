@@ -356,7 +356,11 @@ export const RECORDING_INTENTS = {
       "Interest + Thermal State for free, so it's a strict superset of this recording plus full CPU " +
       "attribution, in one pass, without running two separate CPU-sampling instruments side by side. " +
       "Reach for type: \"hangs\" specifically when you want lower-overhead hang-watching over a long " +
-      "session and don't need CPU attribution.",
+      "session and don't need CPU attribution. To confirm whether the main thread was GENUINELY " +
+      "busy during a hang investigation (rather than just parked waiting on a mach port, which a " +
+      "sampled thread can look identical to), compose instruments: [\"Run Loops\"] into the recording " +
+      "— its 'runloop-intervals' schema's interval-type: \"Busy\" rows are a direct, explicit signal " +
+      "for real main-thread work, distinct from benign \"Waiting For Events\" idle time.",
   },
   hitches: {
     label: "Animation Hitches",

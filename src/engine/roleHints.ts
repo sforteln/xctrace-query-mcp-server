@@ -827,6 +827,66 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "average-rtt": ns,
     },
   },
+  // PMT:steel-spruce: verified live (xctrace record --instrument "Run Loops"
+  // --attach, real .trace export) — the heuristic classifier ALREADY gets
+  // every column here right (checked via classifyWithHints before adding
+  // this): "start"/"duration" resolve via engineering-type, "interval-type"/
+  // "label" match the mnemonic label rule, "color"'s event-concept
+  // engineering-type is already a label, "thread"/"process" are already
+  // thread-role. This entry's real job is the friendly instrument name
+  // (describeSchema's `instrument` field has no other source) and pinning
+  // primaryTime/primaryWeight explicitly against future heuristic drift —
+  // same rationale as the os-log entry above. No backtrace column exists on
+  // either schema, so hasCallstack correctly stays false for both regardless
+  // of this pin.
+  "runloop-intervals": {
+    instrument: "Run Loops",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      duration: ns,
+      "interval-type": label,
+      "interval-identifier": detail,
+      "nesting-level": detail,
+      "containment-level": detail,
+      mode: detail,
+      "is-main": detail,
+      thread: thread,
+      process: thread,
+      "runloop-pointer": detail,
+      timeout: detail,
+      "run-result": detail,
+      "return-after-source-handled": detail,
+      "waiting-on-ports": detail,
+      "received-port": detail,
+      label: label,
+      color: label,
+    },
+  },
+  // The point-event counterpart to runloop-intervals — verified live in the
+  // SAME recording: each interval's start/end boundary appears here as a
+  // separate START/END row (event-type), the same interval/point-pair shape
+  // os-signpost/OSSignpostIntervals uses elsewhere in this file. No duration
+  // column (it's point events, not intervals), so no primaryWeight.
+  "runloop-events": {
+    instrument: "Run Loops",
+    primaryTime: "timestamp",
+    columns: {
+      timestamp: t,
+      "timestamp-accuracy": detail,
+      "interval-type": label,
+      "event-type": label,
+      "interval-identifier": detail,
+      "nesting-level": detail,
+      mode: detail,
+      "is-main": detail,
+      thread: thread,
+      "runloop-pointer": detail,
+      timeout: detail,
+      "other-arg": detail,
+    },
+  },
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ import swiftUILens from "../src/lenses/swiftUI/index.js";
 import coreDataLens from "../src/lenses/coreData/index.js";
 import allocationsLens from "../src/lenses/allocations/index.js";
 import thermalLens from "../src/lenses/thermal/index.js";
+import runLoopsLens from "../src/lenses/runLoops/index.js";
 
 // Mirrors src/index.ts's LENSES array — kept independent of it (imported
 // directly from each lens module) so this test doesn't need index.ts to
@@ -50,6 +51,7 @@ const LENSES: Array<{ label: string; lens: Lens }> = [
   { label: "hangs", lens: hangsLens },
   { label: "timeProfiler", lens: timeProfilerLens },
   { label: "thermal", lens: thermalLens },
+  { label: "runLoops", lens: runLoopsLens },
 ];
 
 // Schemas whose lens calls peekTable() internally and therefore need a real,

@@ -38,6 +38,7 @@ import swiftUILens from "./lenses/swiftUI/index.js";
 import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
 import thermalLens from "./lenses/thermal/index.js";
+import runLoopsLens from "./lenses/runLoops/index.js";
 import { getConfig, updateConfig, configPath, defaultFallbackCacheDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace } from "./core/discovery.js";
@@ -132,6 +133,11 @@ const LENSES: Lens[] = [
   hangsLens,
   timeProfilerLens,
   thermalLens,
+  // Run Loops has no RECORDING_INTENTS type of its own — like Thermal State,
+  // it's only ever composed onto another recording for a specific diagnostic
+  // purpose (e.g. alongside Foundation Models or a Hangs investigation), never
+  // the sole reason for a recording — so it sits last, same tier as thermal.
+  runLoopsLens,
 ];
 
 /**
