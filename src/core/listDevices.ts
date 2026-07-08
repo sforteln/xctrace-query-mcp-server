@@ -97,17 +97,24 @@ export function parseDevicesOutput(stdout: string, bootedUdids: Set<string>): De
   return devices;
 }
 
-/** UDIDs of currently-booted simulators, from `simctl list devices booted`. */
+/**
+ * UDIDs of currently-booted simulators, from `simctl list devices booted --json`.
+ * The JSON form is sturdier than regex-parsing the text output (per xcodeAI):
+ * `{ devices: { "<runtime>": [{ udid, state: "Booted", ... }] } }`.
+ */
 async function bootedSimulatorUdids(): Promise<Set<string>> {
   try {
-    const { stdout } = await pExecFile("xcrun", ["simctl", "list", "devices", "booted"]);
+    const { stdout } = await pExecFile("xcrun", ["simctl", "list", "devices", "booted", "--json"]);
+    const parsed = JSON.parse(stdout) as {
+      devices?: Record<string, Array<{ udid?: string; state?: string }>>;
+    };
     const udids = new Set<string>();
-    for (const m of stdout.matchAll(/\(([0-9A-Fa-f-]{36})\)\s*\(Booted\)/g)) {
-      udids.add(m[1]);
+    for (const list of Object.values(parsed.devices ?? {})) {
+      for (const d of list) if (d.state === "Booted" && d.udid) udids.add(d.udid);
     }
     return udids;
   } catch {
-    return new Set(); // simctl unavailable → treat all sims as shutdown
+    return new Set(); // simctl unavailable / unparseable → treat all sims as shutdown
   }
 }
 
