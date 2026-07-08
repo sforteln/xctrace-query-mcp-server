@@ -34,6 +34,7 @@ import {
 import { buildFieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent } from "../engine/sqliteStore.js";
 import type { WeightUnit } from "../engine/roleInference.js";
+import { emptyResultNote } from "./emptyResultNote.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -361,6 +362,24 @@ export async function aggregateTable(
   }));
 
   const notes: string[] = [];
+
+  // PMT:thorny-verge: an empty `groups` array is ambiguous on its own — did
+  // the filter/timeRange exclude everything, or did every row that DID match
+  // have a null groupBy/measure value (excluded from GROUP BY, not from the
+  // filter)? Distinguish both from "this schema genuinely has 0 rows".
+  if (totalGroups === 0) {
+    if (totalRows === 0) {
+      const filterApplied = Boolean((filter && Object.keys(filter).length > 0) || timeRange);
+      const zeroRowsNote = emptyResultNote({ matchedCount: totalRows, unfilteredCount: meta.rowCount, filterApplied });
+      if (zeroRowsNote) notes.push(zeroRowsNote);
+    } else {
+      notes.push(
+        `${totalRows.toLocaleString("en-US")} row(s) matched your filter/timeRange, but every one had a null ` +
+        `"${groupByCols.join(", ")}" and/or "${measure ?? ""}" value — excluded from grouping, not from the filter. ` +
+        "Check describe_schema's role classification for a column that's actually populated for these rows."
+      );
+    }
+  }
 
   // A blank top group means groupBy chose the wrong column for at least some
   // row types — the result LOOKS like a real answer, which is exactly the

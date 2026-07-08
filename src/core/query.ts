@@ -32,6 +32,7 @@ import {
 } from "../engine/sqlHydrate.js";
 import { buildFieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
+import { emptyResultNote } from "./emptyResultNote.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
@@ -102,6 +103,12 @@ export interface QueryResult {
   timeColumn: string | null;
   /** Whether this schema has a backtrace-role column (get_row/call_tree can resolve one). */
   hasBacktrace: boolean;
+  /**
+   * Present only when totalRows is 0 — distinguishes "your filter/timeRange
+   * excluded everything" (the schema has data) from "this schema genuinely
+   * has 0 rows" (PMT:thorny-verge).
+   */
+  note?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -259,6 +266,15 @@ export async function queryTable(
     columnsShown,
     timeColumn,
     hasBacktrace: classified.some((c) => c.roleInfo.role === "backtrace"),
+    ...(totalRows === 0
+      ? {
+          note: emptyResultNote({
+            matchedCount: totalRows,
+            unfilteredCount: meta.rowCount,
+            filterApplied: Boolean((filter && Object.keys(filter).length > 0) || timeRange),
+          }),
+        }
+      : {}),
   };
 
   setCachedCall(sessionId, cacheKey, result);

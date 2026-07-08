@@ -82,6 +82,8 @@ export interface CorrelateResult {
   unit?: WeightUnit;
   /** Present only when matchThread found zero matches despite temporal candidates existing. */
   threadMismatchWarning?: string;
+  /** Present only when totalIntervals is 0 — distinguishes an excluded-by-filter intervalsSchema from a genuinely empty one (PMT:thorny-verge). */
+  note?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -136,5 +138,6 @@ export async function correlate(
     })),
     ...(r.unit ? { unit: r.unit } : {}),
     ...(r.threadMismatchWarning ? { threadMismatchWarning: r.threadMismatchWarning } : {}),
+    ...(r.note ? { note: r.note } : {}),
   };
 }

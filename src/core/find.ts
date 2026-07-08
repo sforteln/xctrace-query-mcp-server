@@ -36,6 +36,7 @@ import {
 } from "../engine/sqlHydrate.js";
 import { buildFieldResolver, type FieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
+import { emptyResultNote } from "./emptyResultNote.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -134,6 +135,12 @@ export interface FindResult {
   hasMore: boolean;
   rows: FindRow[];
   columnsShown: string[];
+  /**
+   * Present only when matchCount is 0 — distinguishes "your where/timeRange
+   * excluded everything" (the schema has data) from "this schema genuinely
+   * has 0 rows" (PMT:thorny-verge).
+   */
+  note?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -264,6 +271,15 @@ export async function findRows(
     hasMore: offset + rows.length < matchCount,
     rows,
     columnsShown,
+    ...(matchCount === 0
+      ? {
+          note: emptyResultNote({
+            matchedCount: matchCount,
+            unfilteredCount: meta.rowCount,
+            filterApplied: where.length > 0 || Boolean(timeRange),
+          }),
+        }
+      : {}),
   };
 
   setCachedCall(sessionId, cacheKey, result);

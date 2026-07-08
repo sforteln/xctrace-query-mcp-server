@@ -717,6 +717,70 @@ interface FoldResult {
   totalSamples: number;
 }
 
+/**
+ * PMT:thorny-verge — the deferred f3203f0 bonus: when a fold produces
+ * totalSamples===0 despite a real backtrace column being present (the
+ * wrong-schema case is already handled upstream by emptyCallTreeResult
+ * before this ever runs), distinguish WHY: a thread filter that matched
+ * nothing (the schema has samples, wrong substring — the exact class of bug
+ * f3203f0 itself fixed) vs. a genuinely off-CPU/idle window (no samples
+ * anywhere in this window, not just for one thread). Two cheap COUNT(*)
+ * probes — only run when totalSamples is already 0, never on the common
+ * non-empty path, so this never turns a fast result slow.
+ */
+function zeroSamplesNote(
+  db: DatabaseSync,
+  tableName: string,
+  btMnemonic: string,
+  threadCol: string | null,
+  thread: string | undefined,
+  timeCol: string | null,
+  timeRange: { startNs?: number; endNs?: number } | undefined
+): string | null {
+  const btIdCol = quoteIdent(`${btMnemonic}__backtrace_id`);
+  function countWhere(conds: string[], params: Array<string | number>): number {
+    const where = conds.length > 0 ? conds.join(" AND ") : "1";
+    return (db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(tableName)} WHERE ${where}`).get(...params) as { n: number }).n;
+  }
+
+  const timeConds: string[] = [`${btIdCol} IS NOT NULL`];
+  const timeParams: Array<string | number> = [];
+  if (timeCol && timeRange) {
+    if (timeRange.startNs !== undefined) {
+      timeConds.push(`CAST(${quoteIdent(timeCol)} AS REAL) >= ?`);
+      timeParams.push(timeRange.startNs);
+    }
+    if (timeRange.endNs !== undefined) {
+      timeConds.push(`CAST(${quoteIdent(timeCol)} AS REAL) <= ?`);
+      timeParams.push(timeRange.endNs);
+    }
+  }
+
+  if (threadCol && thread) {
+    const withinWindowNoThread = countWhere(timeConds, timeParams);
+    if (withinWindowNoThread > 0) {
+      return (
+        `0 samples matched thread filter "${thread}" — ${withinWindowNoThread.toLocaleString("en-US")} sample(s) ` +
+        "exist in this window without it. Either this substring doesn't match this schema's thread column " +
+        "(try a shorter substring, or check describe_schema), or the thread was genuinely idle/off-CPU here."
+      );
+    }
+  }
+
+  if (timeCol && timeRange) {
+    const schemaWide = countWhere([`${btIdCol} IS NOT NULL`], []);
+    if (schemaWide > 0) {
+      return (
+        `0 samples in this time window, though the schema has ${schemaWide.toLocaleString("en-US")} sample(s) ` +
+        "elsewhere — likely genuinely off-CPU/idle in this specific window, not a data problem. Widen timeRange " +
+        "or pick a different window."
+      );
+    }
+  }
+
+  return null;
+}
+
 function foldFromSql(
   db: DatabaseSync,
   tableName: string,
@@ -872,6 +936,13 @@ async function buildTrackDetailCallTree(
     result.note = result.note ? `${filterNote} ${result.note}` : filterNote;
   }
 
+  if (totalSamples === 0) {
+    // thread is never filtered here (unsupported, see above) — only the
+    // timeRange-caused-empty branch of zeroSamplesNote can ever fire.
+    const zeroNote = zeroSamplesNote(db, handle.tableName, btMnemonic, null, undefined, timeCol, timeRange);
+    if (zeroNote) result.note = result.note ? `${result.note} ${zeroNote}` : zeroNote;
+  }
+
   return result;
 }
 
@@ -952,5 +1023,12 @@ export async function callTree(
     { threadCol, thread, timeCol, timeRange }
   );
 
-  return buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples);
+  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples);
+
+  if (totalSamples === 0) {
+    const zeroNote = zeroSamplesNote(db, handle.tableName, taggedBtCol.mnemonic, threadCol, thread, timeCol, timeRange);
+    if (zeroNote) result.note = result.note ? `${result.note} ${zeroNote}` : zeroNote;
+  }
+
+  return result;
 }

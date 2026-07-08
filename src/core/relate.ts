@@ -31,6 +31,7 @@ import { formatValue } from "./aggregate.js";
 import { combineConditions, fmtCol, rawCol, resolveInternedDisplayValues, makeInternResolver, makeInternTargetResolver, internResolved, type SqlCondition } from "../engine/sqlHydrate.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import type { WeightUnit, ClassifiedColumn } from "../engine/roleInference.js";
+import { emptyResultNote } from "./emptyResultNote.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -119,6 +120,15 @@ export interface RelateResult {
    * likely don't align; retry matchThread:false before concluding no relation.
    */
   threadMismatchWarning?: string;
+  /**
+   * Present only when totalA is 0 — distinguishes "your aFilter/timeRange
+   * excluded every schemaA row" (schemaA has data) from "schemaA genuinely
+   * has 0 rows" (PMT:thorny-verge). totalMatches/totalGroups being 0 with
+   * totalA > 0 is often a legitimate finding (e.g. "0 unmatched" for a
+   * not-exists/leak check is good news), so this deliberately does NOT fire
+   * on that case — only on the genuinely ambiguous "no A rows at all" one.
+   */
+  note?: string;
 }
 
 // ─── Column resolution ──────────────────────────────────────────────────────────
@@ -354,6 +364,19 @@ export async function relate(
         "then retry matchThread:false if they genuinely differ before concluding there's no relation."
       : undefined;
 
+  // PMT:thorny-verge: only fires on totalA===0 (no schemaA rows at all to
+  // relate) — NOT on totalMatches/totalGroups===0 with totalA>0, since that's
+  // often the legitimate finding itself (e.g. "0 unmatched" for a leak check).
+  const note =
+    totalA === 0
+      ? emptyResultNote({
+          matchedCount: totalA,
+          unfilteredCount: metaA.rowCount,
+          filterApplied: Boolean((aFilter && Object.keys(aFilter).length > 0) || timeRange),
+          itemNoun: `${schemaA} rows`,
+        })
+      : undefined;
+
   return {
     schemaA, schemaB, run, joinCondition, polarity, groupBy,
     measure: measure ?? null,
@@ -368,6 +391,7 @@ export async function relate(
     ...(measure && unit ? { unit } : {}),
     ...(rows ? { rows } : {}),
     ...(threadMismatchWarning ? { threadMismatchWarning } : {}),
+    ...(note ? { note } : {}),
   };
 }
 
