@@ -101,6 +101,16 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
       note: "N+1 detection: aggregate(groupBy: \"fetch-entity\", op: \"count\") and compare the count for an entity (e.g. \"Prompt\") against that entity's real object count in the app (a query(schema, limit:1).totalRows on the entity's own store, or a known figure). fetch count ≫ object count is a strong N+1 signal — correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
     },
   ],
+  OSSignpostIntervals: [
+    {
+      note: "Empty is NOT necessarily a coverage gap — verified live, PMT:vivid-rill: this schema only ever receives a CUSTOM app subsystem's rows when the recording was started with signpostSubsystems set (start_recording composes the separate `os_signpost` instrument + dynamicTracingEnabledSubsystems from it). No template or instrument composition choice substitutes for this — it's the only gate. Empty here does not mean emitEvent-style instant signposts are missing too; check PointsOfInterestEvents separately (a completely different capture path, gated by the Points of Interest instrument + category: .pointsOfInterest, not by signpostSubsystems).",
+    },
+  ],
+  PointsOfInterestEvents: [
+    {
+      note: "Captures only emitEvent-style INSTANT signposts on a log handle with category: .pointsOfInterest — never beginInterval/endInterval calls, no matter which instruments are composed. Verified live, PMT:vivid-rill: the Points of Interest instrument alone is sufficient (already auto-composed by default, no signpostSubsystems needed) — but interval-type signposts will NEVER appear here regardless; check OSSignpostIntervals for those (which needs signpostSubsystems set instead).",
+    },
+  ],
 };
 
 // ─── Auto-derived: gross form ────────────────────────────────────────────────────

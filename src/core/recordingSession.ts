@@ -119,6 +119,24 @@ export interface StartSessionOptions {
    * "Blank template".
    */
   template?: string | string[];
+  /**
+   * Subsystem name(s) to enable for CUSTOM app-defined os_signpost interval
+   * capture (`OSSignposter.beginInterval`/`endInterval` calls, landing in
+   * the `OSSignpostIntervals` schema) — e.g. ["com.example.myapp"]. This is
+   * the ONLY way to capture those: verified live (test-os-signpost-
+   * subsystem-capture.md, PMT:vivid-rill) that `os_signpost` is a real,
+   * separate xctrace instrument (distinct from "Points of Interest") whose
+   * `dynamicTracingEnabledSubsystems` recording-option defaults to an EMPTY
+   * array — with no subsystem listed, the OS never enables tracing for a
+   * custom app subsystem, no matter which template or which other
+   * instruments are composed. When given, composes the bare `os_signpost`
+   * instrument and sets this option. Not needed for `emitEvent`-style
+   * instant signposts on a `category: .pointsOfInterest` log handle — those
+   * land in `PointsOfInterestEvents` via the `Points of Interest` instrument
+   * alone (already auto-composed by defaultPointsOfInterest), no subsystem
+   * gate at all.
+   */
+  signpostSubsystems?: string[];
 }
 
 export interface StartSessionResult {
@@ -195,7 +213,7 @@ export function isAppLaunchPath(launch: string | undefined): boolean {
 export async function startSession(
   opts: StartSessionOptions
 ): Promise<StartSessionResult> {
-  const { attach, launch, device, timeLimit, instruments, template } = opts;
+  const { attach, launch, device, timeLimit, instruments, template, signpostSubsystems } = opts;
 
   // `template` is a single string (one base) or an array (first entry is the
   // base, passed via --template; the rest are additional whole templates
@@ -223,9 +241,21 @@ export async function startSession(
   // whose resolved template doesn't already bundle it — see the function's
   // own doc for the cost/fidelity evidence behind making this unconditional.
   const poiDefault = defaultPointsOfInterest(resolvedTemplate, withHangsMitigation);
-  const resolvedExtraInstruments = poiDefault.instrument
+  const withPoiDefault = poiDefault.instrument
     ? [...withHangsMitigation, poiDefault.instrument]
     : withHangsMitigation;
+  // PMT:vivid-rill: custom app-defined os_signpost INTERVAL capture
+  // (beginInterval/endInterval → OSSignpostIntervals) needs the separate
+  // `os_signpost` instrument + dynamicTracingEnabledSubsystems — verified
+  // live (test-os-signpost-subsystem-capture.md) that neither is ever
+  // composed/set by anything else in this codebase, so without this,
+  // OSSignpostIntervals never carries a custom subsystem's rows no matter
+  // which template is chosen.
+  const wantsSignpostSubsystems = signpostSubsystems !== undefined && signpostSubsystems.length > 0;
+  const resolvedExtraInstruments =
+    wantsSignpostSubsystems && !withPoiDefault.includes("os_signpost")
+      ? [...withPoiDefault, "os_signpost"]
+      : withPoiDefault;
 
   // Every resolved name (base + composed extras) — what launchRequired,
   // curated notes, and the Allocations/Leaks recipe all key off, regardless
@@ -281,6 +311,12 @@ export async function startSession(
   const customNote = rawBaseName !== undefined ? CUSTOM_TEMPLATE_NOTES[rawBaseName] : undefined;
   const templateNote = customNote ?? (resolvedTemplate !== undefined ? TEMPLATE_NOTES[resolvedTemplate] : undefined);
   const leaksNote = allocationsLeaksNote(resolvedNames);
+  const signpostSubsystemsNote = wantsSignpostSubsystems
+    ? `os_signpost composed with dynamicTracingEnabledSubsystems: [${signpostSubsystems!.map((s) => `"${s}"`).join(", ")}] — ` +
+      "custom beginInterval/endInterval calls from those subsystems will land in OSSignpostIntervals. This does NOT " +
+      "affect emitEvent-style instant signposts (category: .pointsOfInterest) — those already land in " +
+      "PointsOfInterestEvents via the Points of Interest instrument alone, no subsystem gate needed."
+    : undefined;
   const resolvedCompositionNote =
     [
       ...(templateNote ? [templateNote] : []),
@@ -289,14 +325,20 @@ export async function startSession(
       ...bareInstrumentTemplateNotes(resolvedTemplate, instruments),
       ...(hangsMitigation.note ? [hangsMitigation.note] : []),
       ...(poiDefault.note ? [poiDefault.note] : []),
+      ...(signpostSubsystemsNote ? [signpostSubsystemsNote] : []),
     ].join("\n\n") || undefined;
-  // The base template's own curated options win on key collision — expanded
-  // options come from ADDITIONAL composed templates, so the base template's
-  // explicit choice takes precedence.
+  // The base template's own curated options win on key collision over
+  // composed-extra options — but the caller's own explicit signpostSubsystems
+  // ask is the most specific of all and wins over everything (nothing in
+  // TEMPLATE_BUNDLES/TEMPLATE_RECORDING_OPTIONS sets os_signpost options
+  // today anyway, so this collision is theoretical, not yet observed).
   const baseRecordingOptions = resolvedTemplate !== undefined ? TEMPLATE_RECORDING_OPTIONS[resolvedTemplate] : undefined;
+  const signpostRecordingOptions = wantsSignpostSubsystems
+    ? { os_signpost: { dynamicTracingEnabledSubsystems: signpostSubsystems! } }
+    : undefined;
   const resolvedRecordingOptions =
-    Object.keys(expanded.recordingOptions).length > 0 || baseRecordingOptions
-      ? { ...expanded.recordingOptions, ...baseRecordingOptions }
+    Object.keys(expanded.recordingOptions).length > 0 || baseRecordingOptions || signpostRecordingOptions
+      ? { ...expanded.recordingOptions, ...baseRecordingOptions, ...signpostRecordingOptions }
       : undefined;
 
   // No base template at all (instruments-only recording) — derive the output

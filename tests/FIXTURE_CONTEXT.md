@@ -44,6 +44,15 @@ tests/fixtures/xcode-27.0/
                                    had ZERO rows for this schema (a real "not ingested/empty" case — see
                                    PMT:still-hail); 2 fake rows (a 120Hz main + a 60Hz secondary display) cover
                                    the frame-budget resolver's two headline cases
+    OSSignpostIntervals.xml       SYNTHETIC — real schema (columns/engineering-types verified live via direct
+                                   `xctrace export` against 2026-07-09T00-10-37-foundation-models.trace), but
+                                   that trace's own export had ZERO rows (PMT:vivid-rill — the trace predates
+                                   signpostSubsystems support, so no custom-subsystem interval ever got
+                                   captured); 2 fake rows (PreFlight + MCPFindProject begin/end pairs on
+                                   com.promptmanager.ai) cover a typical app-defined interval pair
+    PointsOfInterestEvents.xml    SYNTHETIC — real schema (verified live the same way, same trace, same ZERO-
+                                   rows situation — PMT:vivid-rill); 2 fake rows (POITest emitEvent instants on
+                                   com.promptmanager.ai) cover the instant-event capture path
     display-vsyncs-interval.xml   from 2026-07-07T20-27-57-animation-hitches.trace run 1 — real data, first
                                    10 of 2,364 rows (no private content: just "Display 1" + timestamps).
                                    Note for anyone re-deriving cadence from this fixture: `duration` is a

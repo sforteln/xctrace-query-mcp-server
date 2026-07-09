@@ -1625,6 +1625,20 @@ export function createServer(): McpServer {
       .string()
       .optional()
       .describe("Target device name or UDID. Omit for host Mac."),
+    signpostSubsystems: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Subsystem name(s) for CUSTOM app-defined os_signpost INTERVAL capture (OSSignposter." +
+        "beginInterval/endInterval calls, e.g. [\"com.example.myapp\"]) — the ONLY way to populate " +
+        "OSSignpostIntervals with app data: `os_signpost` is a real, separate xctrace instrument " +
+        "whose dynamicTracingEnabledSubsystems option defaults to empty, so without this, no custom " +
+        "subsystem's interval signposts are captured no matter which template is chosen. When given, " +
+        "composes the bare os_signpost instrument and sets this option. NOT needed for emitEvent-style " +
+        "instant signposts on a category: .pointsOfInterest log handle — those already land in " +
+        "PointsOfInterestEvents via the Points of Interest instrument alone (already auto-composed), " +
+        "no subsystem gate at all."
+      ),
   };
 
   // ── start_recording ─────────────────────────────────────────────────────────
@@ -1649,15 +1663,21 @@ export function createServer(): McpServer {
         "See `template`'s own description for the exact array-ordering rules and a short list " +
         "of known-good multi-template combinations worth knowing before you start (Allocations+" +
         "Leaks for backtraces, Data Persistence+SwiftUI for attribution).\n\n" +
+        "Chasing your OWN app's os_signpost calls specifically? Two independent capture paths, " +
+        "neither needs a particular template: emitEvent-style instants (category: .pointsOfInterest) " +
+        "land in PointsOfInterestEvents via the Points of Interest instrument alone (already auto-" +
+        "composed by default); beginInterval/endInterval calls need `signpostSubsystems` set to your " +
+        "subsystem name(s) — without it, OSSignpostIntervals never carries custom app data no matter " +
+        "which template or instruments you choose. See `signpostSubsystems`'s own description.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
-    async ({ instruments, template, attach, launch, timeLimit, device }) =>
+    async ({ instruments, template, attach, launch, timeLimit, device, signpostSubsystems }) =>
       safeToolWithLog(
         "start_recording",
-        { instruments, template, attach, launch, timeLimit, device },
+        { instruments, template, attach, launch, timeLimit, device, signpostSubsystems },
         async () => {
           // PMT:ash-stone gap #1: `instruments` alone (no `template` at all)
           // is valid — xctrace has an implicit "Blank template" fallback when
@@ -1666,14 +1686,16 @@ export function createServer(): McpServer {
           // --template flag works and prints "Starting recording with the
           // Blank template and HTTP Traffic Instrument"). This is a self-
           // imposed far-swan restriction being relaxed, not new xctrace
-          // behavior.
+          // behavior. `signpostSubsystems` alone is ALSO sufficient — it
+          // composes bare os_signpost, giving something concrete to record.
           const hasBase = template !== undefined && (!Array.isArray(template) || template.length > 0);
           const hasInstruments = instruments !== undefined && instruments.length > 0;
-          if (!hasBase && !hasInstruments) {
+          const hasSignpostSubsystems = signpostSubsystems !== undefined && signpostSubsystems.length > 0;
+          if (!hasBase && !hasInstruments && !hasSignpostSubsystems) {
             return text(
               JSON.stringify({
-                error: "one of `template` or `instruments` is required",
-                hint: "Pass template: \"<real xctrace template name>\" (or an array for multiple), or instruments: [...] alone for a template-less bare-instruments recording.",
+                error: "one of `template`, `instruments`, or `signpostSubsystems` is required",
+                hint: "Pass template: \"<real xctrace template name>\" (or an array for multiple), instruments: [...] alone for a template-less bare-instruments recording, or signpostSubsystems: [...] alone to capture just custom os_signpost intervals.",
               })
             );
           }
@@ -1684,6 +1706,7 @@ export function createServer(): McpServer {
             launch,
             device,
             timeLimit,
+            signpostSubsystems,
           });
           return text(
             JSON.stringify(

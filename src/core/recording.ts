@@ -540,9 +540,13 @@ export function defaultPointsOfInterest(
     note:
       "\"Points of Interest\" was auto-added bare — the resolved template doesn't bundle it, and " +
       "composing it costs ~0 when the app never calls os_signpost (confirmed live at 5s/30s/60s " +
-      "against both quiet and busy targets). If the app DOES call os_signpost, query the " +
-      "'os-signpost' / 'OSSignpostIntervals' / 'os-signpost-arg' / 'PointsOfInterestEvents' schemas — " +
-      "every other time series in this recording lines up against named signpost intervals for free.",
+      "against both quiet and busy targets). PMT:vivid-rill: this instrument alone is enough for " +
+      "emitEvent-style instant signposts on a category: .pointsOfInterest log handle (they land in " +
+      "'PointsOfInterestEvents', no further config needed) and for the raw 'os-signpost' schema's " +
+      "event rows — but it does NOT capture beginInterval/endInterval calls into 'OSSignpostIntervals' " +
+      "for a CUSTOM app subsystem; that needs the separate os_signpost instrument + " +
+      "dynamicTracingEnabledSubsystems (pass signpostSubsystems: [\"your.subsystem\"] to start_recording) " +
+      "regardless of which template or instruments are composed.",
   };
 }
 
@@ -634,10 +638,12 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
     "timeRange: <the hitch's window>), no re-recording needed. Its OWN os_signpost coverage is " +
     "partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, missing " +
-    "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — if the app calls os_signpost " +
-    "and you need the full picture, compose instruments: [\"Points of Interest\"] explicitly " +
-    "(safe to add bare — unlike Hangs/os-log, the full instrument's own default capture is " +
-    "already complete, no fidelity loss from composing it this way).",
+    "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. Composing instruments: " +
+    "[\"Points of Interest\"] explicitly (safe to add bare — no fidelity loss) gets you " +
+    "PointsOfInterestEvents for emitEvent-style instants, but NOT OSSignpostIntervals — " +
+    "custom beginInterval/endInterval calls need the separate os_signpost instrument + " +
+    "dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: [\"your.subsystem\"] " +
+    "to start_recording — see PMT:vivid-rill).",
   "Swift Concurrency":
     "Records Swift Task and Actor lifetimes, executor queue depth, and task state transitions. " +
     "After opening, query SwiftTaskLifetime, SwiftActorLifetime, SwiftActorQueueSize, " +
@@ -667,9 +673,12 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "Persistence\"]) fails outright (\"Data Persistence\" has no bare --instrument form xctrace can " +
     "compose as an extra; verified live, error kind \"template-only-name\"). Data Persistence's OWN " +
     "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' " +
-    "schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — compose " +
-    "instruments: [\"Points of Interest\"] explicitly if the app calls os_signpost and you " +
-    "need the full picture (safe to add bare — no fidelity loss from composing it this way).",
+    "schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. Composing " +
+    "instruments: [\"Points of Interest\"] explicitly (safe to add bare — no fidelity loss) gets " +
+    "you PointsOfInterestEvents for emitEvent-style instants, but NOT OSSignpostIntervals — " +
+    "custom beginInterval/endInterval calls need the separate os_signpost instrument + " +
+    "dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: [\"your.subsystem\"] " +
+    "to start_recording — see PMT:vivid-rill).",
   "Foundation Models":
     "Records all on-device Foundation Models inference calls: prompts, responses, " +
     "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable. " +
@@ -680,9 +689,12 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
     "this inference' — a provable hardware fact, not an assumption. Foundation Models' OWN " +
     "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare " +
-    "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — " +
-    "compose instruments: [\"Points of Interest\"] explicitly if you need the full signpost " +
-    "picture (safe to add bare — no fidelity loss from composing it this way).",
+    "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. " +
+    "Composing instruments: [\"Points of Interest\"] explicitly (safe to add bare — no fidelity " +
+    "loss) gets you PointsOfInterestEvents for emitEvent-style instants, but NOT " +
+    "OSSignpostIntervals — custom beginInterval/endInterval calls need the separate os_signpost " +
+    "instrument + dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: " +
+    "[\"your.subsystem\"] to start_recording — see PMT:vivid-rill).",
 };
 
 /**
