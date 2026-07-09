@@ -105,6 +105,10 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
     {
       note: "Empty is NOT necessarily a coverage gap — verified live, PMT:vivid-rill: this schema only ever receives a CUSTOM app subsystem's rows when the recording was started with signpostSubsystems set (start_recording composes the separate `os_signpost` instrument + dynamicTracingEnabledSubsystems from it). No template or instrument composition choice substitutes for this — it's the only gate. Empty here does not mean emitEvent-style instant signposts are missing too; check PointsOfInterestEvents separately (a completely different capture path, gated by the Points of Interest instrument + category: .pointsOfInterest, not by signpostSubsystems).",
     },
+    {
+      column: "name",
+      note: "Comparing repeated turns of the same operation: if a signpost fires once per turn (per prompt, per request, per retry) with the *same* name every time, groupBy: 'name' collapses all turns into one group — there's nothing to compare, and that's a sign the instrumentation needs fixing, not that there's no signal. Fix: suffix the name with an incrementing count per turn ('PreFlight #1', 'PreFlight #2', ...) so each turn gets its own group and groupBy (via correlate or aggregate) naturally separates and compares them — one occurrence of a number is noise, ten comparable occurrences is a real trend or a confirmed baseline. Caveat: correlate's intervalsFilter is exact-match only, so a turn-suffixed name won't match {name: 'PreFlight'} anymore — use find(schema, {where: [{col: 'name', op: 'contains', val: 'PreFlight'}]}) instead when you need to select the whole family of turns.",
+    },
   ],
   PointsOfInterestEvents: [
     {
