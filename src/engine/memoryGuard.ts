@@ -59,8 +59,11 @@ export function assertMemoryBudget(rowsParsedSoFar: number, schema: string): voi
     `Aborted parsing "${schema}" after ${rowsParsedSoFar.toLocaleString("en-US")} rows — heap usage ` +
     `(${heapUsedMb} MB) crossed ${Math.round(MEMORY_BUDGET_FRACTION * 100)}% of the process's ${heapLimitMb} MB ` +
     "limit. This table is too large to materialize fully. Narrow it: pass timeRange (query/aggregate/" +
-    "call_tree/correlate), a filter (query/find), or columns (query) to fetch a bounded subset instead " +
-    "of the whole table.",
+    "call_tree/correlate) or columns (query) to fetch a bounded subset instead of the whole table. " +
+    "A plain filter/find-predicate (query/find's `filter`, correlate's `intervalsFilter`/`eventsFilter`) " +
+    "does NOT prevent this on its own — it's applied AFTER parsing, so the full table still gets " +
+    "materialized first (verified live, PMT:onyx-spark). timeRange is the only parameter that narrows " +
+    "DURING streaming, before this limit is even at risk.",
     { rowsParsedBeforeAbort: rowsParsedSoFar, heapUsedMb, heapLimitMb }
   );
 }

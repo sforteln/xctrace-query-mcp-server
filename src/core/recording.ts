@@ -680,7 +680,10 @@ export const RECORDING_INTENTS = {
       "templates (not instruments) is what you want here: it records the COMPLETE SwiftUI " +
       "template — its own Hangs + Time Profiler bundle, layout tracing enabled — alongside " +
       "Data Persistence, in one recording. instruments: [\"SwiftUI\"] would give you only " +
-      "the bare SwiftUI instrument, missing that bundle. Data Persistence's OWN os_signpost " +
+      "the bare SwiftUI instrument, missing that bundle. ORDER MATTERS: type:\"core-data\" must " +
+      "be the BASE — the reverse (type:\"swiftui\" + templates:[\"core-data\"]) fails outright " +
+      "(\"Data Persistence\" has no bare --instrument form xctrace can compose as an extra; " +
+      "verified live, error kind \"template-only-name\"). Data Persistence's OWN os_signpost " +
       "coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, " +
       "missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — compose " +
       "instruments: [\"Points of Interest\"] explicitly if the app calls os_signpost and you " +

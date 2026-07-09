@@ -29,6 +29,7 @@ import { preferredThreadColumn, type ClassifiedColumn } from "../engine/roleInfe
 import {
   connectionsFor,
   carriesOwnBacktrace,
+  carriesFoldableBacktrace,
   type SchemaEdge,
 } from "../engine/schemaEdges.js";
 
@@ -69,6 +70,9 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
       column: "duration",
       note: "For a stutter, sort by 'duration' (the inclusive main-thread time of the update — the stutter itself), NOT 'downstream-cost' (the size of the invalidation cascade to OTHER views — a related but different question).",
     },
+    {
+      note: "This schema is commonly 1M+ rows. correlate()'s intervalsFilter/eventsFilter runs POST-parse, not during streaming — passing a filter WITHOUT timeRange still materializes the full schema and can abort with table-too-large. Only timeRange triggers real streaming narrowing. Always pass timeRange when this schema is the intervalsSchema or eventsSchema — get a window from a list_swiftui_view_body_updates/query row's start+duration. Verified live, PMT:onyx-spark.",
+    },
   ],
   SwiftUIFilteredUpdates: [
     {
@@ -80,6 +84,21 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
     {
       column: "duration",
       note: "A hitch's 'duration' is an ENTRY POINT, not a verdict — a long hitch with no on-CPU main-thread sample in its window is an off-CPU held frame (GPU/compositor-bound), not a compute problem. Classify (correlate against time-sample) before concluding.",
+    },
+  ],
+  "hang-risks": [
+    {
+      note: "If this is empty but 'potential-hangs' has rows, that's expected, not a data problem: hang-risks only populates from the FULL Hangs template; Hangs composed BARE (e.g. via templates:[...]'s fidelityAtRisk, common when composing Hangs onto another base) produces potential-hangs but not hang-risks. Use call_tree(schema:\"time-profile\", view:\"hot\", timeRange: <a potential-hangs row's [start, start+duration]>) to get the hang's call stack instead. Verified live, PMT:onyx-spark.",
+    },
+  ],
+  "core-data-fetch": [
+    {
+      column: "spid",
+      note: "spid is a SENTINEL, not a real id — every row reads 18,446,744,073,709,551,615 (max uint64, 0xFFFFFFFFFFFFFFFF). Verified live (PMT:onyx-spark): it is NOT a join key, don't filter or group on it.",
+    },
+    {
+      column: "fetch-entity",
+      note: "N+1 detection: aggregate(groupBy: \"fetch-entity\", op: \"count\") and compare the count for an entity (e.g. \"Prompt\") against that entity's real object count in the app (a query(schema, limit:1).totalRows on the entity's own store, or a known figure). fetch count ≫ object count is a strong N+1 signal — correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
     },
   ],
 };
@@ -212,7 +231,18 @@ export function buildQueryHints(input: QueryHintsInput): QueryHints {
   // Part 3 — CORRELATION (tagged-backtrace).
   let correlation: string;
   if (carriesOwnBacktrace(schema, cols)) {
-    correlation = "Carries its OWN backtrace — call_tree this schema directly to see the actual call stack of the work.";
+    // carriesOwnBacktrace alone conflates two different shapes — verified
+    // live (PMT:onyx-spark's SwiftUI × Core Data retrospective) this
+    // produced a WRONG hint for core-data-fetch ("call_tree this schema
+    // directly" — actually returns 0 samples). Foldable (tagged-backtrace,
+    // many samples call_tree aggregates) vs. resolved-per-row (ONE already-
+    // symbolicated stack per row, e.g. core-data-fetch/fault/save, syscall —
+    // get_row reads it directly, call_tree returns 0) need different advice.
+    correlation = carriesFoldableBacktrace(schema, cols)
+      ? "Carries its OWN backtrace — call_tree this schema directly to see the actual call stack of the work."
+      : "Carries its OWN backtrace — but it's ONE already-resolved, symbolicated stack per row, not a " +
+        "sample tree to fold. Use get_row(rowIndex) on a specific row to read it directly; call_tree on " +
+        "this schema returns 0 samples (it has no per-sample tagged-backtrace to aggregate).";
   } else {
     // Point at a present sibling that DOES carry a backtrace, reachable by a
     // POSITIVE join (never an anti-join — you can't read a stack out of an

@@ -134,14 +134,45 @@ function resolve(schema: string, cols: SchemaCol[]): Resolved {
 }
 
 /**
- * True when this schema carries its OWN resolved backtrace (call_tree it
- * directly) vs. merely points at work living elsewhere (join to get the
- * stack) — PMT:azure-forge, folded in. A per-schema NODE property, derived
- * from classification (any backtrace-role column), so it's version-proof and
- * needs no curated list.
+ * True when this schema carries its OWN backtrace in SOME form (a backtrace-
+ * role column, of ANY engineering-type) vs. merely points at work living
+ * elsewhere (join to get the stack) — PMT:azure-forge, folded in. A per-schema
+ * NODE property, derived from classification, so it's version-proof and needs
+ * no curated list.
+ *
+ * Deliberately does NOT distinguish foldable (tagged-backtrace, a per-sample
+ * stack call_tree aggregates across many rows) from resolved-per-row (a plain
+ * "backtrace" column — ONE already-symbolicated stack per row, e.g.
+ * core-data-fetch/fault/save, syscall). Both are real, useful backtraces for
+ * THIS purpose — "does correlating INTO this schema get you a stack to read
+ * at all" — so this stays the broad check for that caller (queryHints.ts's
+ * sibling-search: any backtrace-carrying sibling is worth joining to). Use
+ * {@link carriesFoldableBacktrace} instead when the question is specifically
+ * "can call_tree fold this schema's OWN backtrace column" — conflating the
+ * two produced a real, verified-live wrong hint (PMT:onyx-spark's SwiftUI ×
+ * Core Data retrospective): queryHints told an agent to "call_tree this
+ * schema directly" for core-data-fetch, which actually returns 0 samples
+ * with "use get_row instead" — call_tree itself already gets this right
+ * (src/core/callTree.ts checks engineering-type "tagged-backtrace"
+ * specifically); queryHints just wasn't asking the same question.
  */
 export function carriesOwnBacktrace(schema: string, cols: SchemaCol[]): boolean {
   return classifyWithHints(schema, cols).some((c) => c.roleInfo.role === "backtrace");
+}
+
+/**
+ * True only when this schema has a FOLDABLE backtrace — engineering-type
+ * "tagged-backtrace" specifically, the per-sample-stack shape call_tree
+ * aggregates across many rows into a tree/hot-list/spine. False for a schema
+ * whose backtrace is a single already-resolved stack per row (engineering-
+ * type "backtrace"/"text-backtrace") — that kind answers via get_row(rowIndex)
+ * directly, and call_tree on it returns 0 samples (see the exact check this
+ * mirrors: src/core/callTree.ts's `taggedBtCol` lookup). This is the
+ * discriminator queryHints.ts's "call_tree this schema directly" recommendation
+ * needs — carriesOwnBacktrace alone is NOT enough (see its own doc comment).
+ */
+export function carriesFoldableBacktrace(schema: string, cols: SchemaCol[]): boolean {
+  return cols.some((c) => c.engineeringType === "tagged-backtrace");
 }
 
 // ─── Derived layer ───────────────────────────────────────────────────────────
