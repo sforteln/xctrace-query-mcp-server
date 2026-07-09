@@ -563,11 +563,11 @@ export class SqliteTableWriter {
     // differently-shaped ingestion (mirrors the DROP TABLE above).
     db.prepare("DELETE FROM promoted_column WHERE table_name = ?").run(tableName);
     db.prepare("DELETE FROM column_identity WHERE table_name = ?").run(tableName);
-    // Persist this ingestion's column metadata (PMT:ruby-peak) — cols are
-    // known in full up front (unlike promoted paths, discovered incrementally
-    // as rows arrive), so this can be written once, right here, rather than
-    // waiting for finish().
-    persistIngestedSchemaCols(db, tableName, this.cols);
+    // persistIngestedSchemaCols is written at finish(), NOT here — see finish()'s
+    // own comment for why (PMT:onyx-spark: writing it here, eagerly, before any
+    // row is inserted, silently marked an ABORTED table-too-large ingest as
+    // "fully ingested, safe to reuse" — verified live, a genuine data-integrity
+    // bug, not hypothetical).
 
     const insertCols = this.insertColumnNames();
     this.insertStmt = db.prepare(
@@ -870,6 +870,21 @@ export class SqliteTableWriter {
       this.inTxn = false;
     }
     this.persistFieldMetadata();
+    // PMT:ruby-peak's cross-process reuse marker (PMT:onyx-spark: moved HERE
+    // from the constructor). Deliberately gated on reaching finish() — the
+    // caller only calls finish() after the FULL row stream is consumed with
+    // no exception (see parseTable.ts's saxStream "end" handler); a
+    // table-too-large abort mid-stream returns without ever calling finish(),
+    // so _ingested_schema correctly stays UNWRITTEN for that table_name, and a
+    // later getTable() call sees no reuse-eligible entry and re-attempts a
+    // full (fresh DROP + re-ingest) rather than silently serving the partial
+    // row set left behind by the abort as if it were the complete table.
+    // Verified live: before this fix, a real trace's swiftui-updates table sat
+    // at 905,000 of ~1.2M real rows after an aborted ingest, and every
+    // subsequent query/aggregate/correlate call against it silently returned
+    // that partial count as `totalRows` with no error and no indication data
+    // was missing — a genuine data-integrity bug, not a hypothetical.
+    persistIngestedSchemaCols(this.db, this.tableName, this.cols);
     return this.rowCount;
   }
 
