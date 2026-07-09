@@ -608,7 +608,17 @@ export const RECORDING_INTENTS = {
       "busy during a hang investigation (rather than just parked waiting on a mach port, which a " +
       "sampled thread can look identical to), compose instruments: [\"Run Loops\"] into the recording " +
       "— its 'runloop-intervals' schema's interval-type: \"Busy\" rows are a direct, explicit signal " +
-      "for real main-thread work, distinct from benign \"Waiting For Events\" idle time.",
+      "for real main-thread work, distinct from benign \"Waiting For Events\" idle time. " +
+      "TRYING TO CAPTURE A SEVERE HANG specifically (not routine profiling)? This template's low " +
+      "overhead is exactly what you want — a heavier instrument (e.g. full SwiftUI tracing) adds " +
+      "real load that can worsen the exact condition you're trying to capture (verified live, " +
+      "PMT:onyx-spark: an 852K-row swiftui-updates stream measurably worsened an already-severe hang " +
+      "during capture). Pair with a bounded timeLimit rather than open-ended interactive recording " +
+      "— auto-finalize can preserve bundle structure even if the recording host itself freezes mid-" +
+      "session, which open-ended recording can't. See aidocs/howRecordingWorks.md for the full case, " +
+      "including the harder limit: a hang severe enough to freeze the IDE hosting BOTH the target " +
+      "and this recorder's own connection may not be reliably capturable from inside that same host " +
+      "at all, regardless of instrument choice or timeLimit.",
   },
   hitches: {
     label: "Animation Hitches",

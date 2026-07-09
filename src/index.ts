@@ -1643,7 +1643,16 @@ export function createServer(): McpServer {
     timeLimit: z
       .string()
       .optional()
-      .describe('Optional cap, e.g. "30s", "2m". Omit for open-ended (stop via stop_recording).'),
+      .describe(
+        'Optional cap, e.g. "30s", "2m". Omit for open-ended (stop via stop_recording). Set this ' +
+          "whenever there's a realistic chance the target — or its host, e.g. an IDE hosting both " +
+          "the app and this recorder's own connection — won't survive the recording (a severe-hang " +
+          "investigation, a suspected crash repro): timeLimit's auto-finalize can preserve bundle " +
+          "structure even if the server process dies mid-session, where an open-ended interactive " +
+          "recording interrupted the same way can produce a completely unopenable bundle (verified " +
+          'live, PMT:onyx-spark — see aidocs/howRecordingWorks.md). Auto-finalize surviving does NOT ' +
+          "guarantee the data itself flushed though — check stop_recording's finalizeWarning."
+      ),
     device: z
       .string()
       .optional()
