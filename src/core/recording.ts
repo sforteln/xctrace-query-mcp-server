@@ -23,8 +23,12 @@ import { resolveAssetPath } from "./assetPaths.js";
 export interface RecordingIntent {
   /** Friendly name shown in the response so the agent knows what was recorded. */
   label: string;
-  /** xctrace --template value. */
-  template: string;
+  /**
+   * xctrace --template value. Undefined only for the synthetic ad-hoc intent
+   * start_recording builds for an instruments-only recording (no type/
+   * template/templates) — every REAL curated entry below always has one.
+   */
+  template?: string;
   /**
    * Extra instruments to add on top of the template via repeated
    * `--instrument <name>`. Built-in templates are single-instrument — e.g.
@@ -169,7 +173,7 @@ export interface ExpandedTemplates {
  */
 export function resolveTemplateName(name: string): string {
   const intent = (RECORDING_INTENTS as Record<string, RecordingIntent>)[name];
-  return intent ? intent.template : name;
+  return intent?.template ?? name;
 }
 
 /**
@@ -215,16 +219,21 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
  */
 export function expandTemplates(
   names: string[],
-  resolvedTemplate: string
+  resolvedTemplate: string | undefined
 ): ExpandedTemplates {
-  const seen = new Set<string>([resolvedTemplate]);
+  // `resolvedTemplate` is undefined only for an instruments-only recording
+  // (no type/template/templates at all, xctrace's implicit "Blank template")
+  // — there's no base to seed `seen`/`baseCovered` with in that case.
+  const baseLabel = resolvedTemplate ?? "(no base template — instruments-only)";
+  const seen = new Set<string>(resolvedTemplate !== undefined ? [resolvedTemplate] : []);
   // Instruments the base template's OWN bundle already covers with full
   // fidelity — a real `--template <resolvedTemplate>` invocation, not a bare
   // `--instrument` addition. Anything in here (or the base name itself)
   // keeps its tuned config/auxiliary behavior even if a composed extra also
   // "wants" it; anything NOT in here that ends up in `instruments` only got
   // there via a bare addition — see PMT:gravel-falcon.
-  const baseCovered = new Set<string>([resolvedTemplate, ...(TEMPLATE_BUNDLES[resolvedTemplate] ?? [])]);
+  const baseBundle = resolvedTemplate !== undefined ? TEMPLATE_BUNDLES[resolvedTemplate] ?? [] : [];
+  const baseCovered = new Set<string>(resolvedTemplate !== undefined ? [resolvedTemplate, ...baseBundle] : []);
   const instruments: string[] = [];
   const recordingOptions: Record<string, Record<string, unknown>> = {};
   const notes: string[] = [];
@@ -273,11 +282,11 @@ export function expandTemplates(
     const fidelityNote =
       addedAtRisk.length > 0
         ? ` ${addedAtRisk.join(", ")} ${addedAtRisk.length === 1 ? "was" : "were"} added bare (not part of ` +
-          `"${resolvedTemplate}"'s own bundle) — tuned configuration and any template-only auxiliary behavior ` +
+          `"${baseLabel}"'s own bundle) — tuned configuration and any template-only auxiliary behavior ` +
           `(e.g. Hangs' threshold, os-log's subsystem/category scope) is NOT guaranteed to match a real ` +
           `template recording of "${name}".`
         : bundle.length > 0
-          ? ` Full fidelity — every instrument here is already covered by "${resolvedTemplate}"'s own bundle.`
+          ? ` Full fidelity — every instrument here is already covered by "${baseLabel}"'s own bundle.`
           : "";
     notes.push(
       bundle.length > 0
@@ -300,7 +309,7 @@ export function expandTemplates(
  * "the whole template" and picked the wrong param.
  */
 export function bareInstrumentTemplateNotes(
-  resolvedTemplate: string,
+  resolvedTemplate: string | undefined,
   callerInstruments: string[] | undefined
 ): string[] {
   const notes: string[] = [];
@@ -446,14 +455,14 @@ export const DEVICE_ONLY_INSTRUMENTS: Record<string, string> = {
  * named it directly.
  */
 export function deviceOnlyInstrumentWarning(
-  resolvedTemplate: string,
+  resolvedTemplate: string | undefined,
   resolvedExtraInstruments: string[],
   isSimulator: boolean
 ): string | undefined {
   if (!isSimulator) return undefined;
   const candidates = new Set([
-    resolvedTemplate,
-    ...(TEMPLATE_BUNDLES[resolvedTemplate] ?? []),
+    ...(resolvedTemplate !== undefined ? [resolvedTemplate] : []),
+    ...(resolvedTemplate !== undefined ? TEMPLATE_BUNDLES[resolvedTemplate] ?? [] : []),
     ...resolvedExtraInstruments,
   ]);
   const flagged = [...candidates].filter((name) => name in DEVICE_ONLY_INSTRUMENTS);
@@ -467,12 +476,100 @@ export function deviceOnlyInstrumentWarning(
     .join("\n\n");
 }
 
+/**
+ * PMT:ash-stone gap #2: known-broken instrument/template combinations on a
+ * SPECIFIC Xcode version — a fundamentally different curation problem from
+ * DEVICE_ONLY_INSTRUMENTS above. That map is a stable hardware fact (true
+ * forever, sourced from the Instruments GUI's own compatibility list — an
+ * Apple-provided signal). THIS map is genuinely live-repro-only: one
+ * session's crash reproduction, not corroborated by any Apple compatibility
+ * surface, and — unlike a hardware fact — can be silently fixed in the very
+ * next Xcode release, making a stale entry actively misleading rather than
+ * just unhelpful. There is no reliable signal for "has Apple fixed this
+ * yet" short of re-testing, so entries are NOT auto-expired — each carries
+ * its own verifiedAt/xcodeVersion so a future reader (human or agent) can
+ * judge staleness themselves, and the warning text repeats that caveat
+ * every time it fires rather than relying on the code being pruned promptly.
+ *
+ * `xcodeVersion` is a PREFIX match against detectXcodeVersion()'s output
+ * (e.g. "27." matches "27.0", "27.1", any 27.x beta or GA) — deliberately
+ * coarse, since a beta bug reproduced on one point release is not proven
+ * fixed on a sibling point release without re-testing either.
+ */
+export interface KnownBrokenInstrumentEntry {
+  /** Xcode version prefix this was confirmed against, e.g. "27." for any 27.x. */
+  xcodeVersion: string;
+  /** What breaks and how — the actionable symptom, not just "avoid this". */
+  symptom: string;
+  /** Suggested retry/mitigation — steer toward, never a hard block. */
+  mitigation: string;
+  /** Session/date + evidence this was verified live, for future staleness judgment. */
+  verifiedAt: string;
+}
+
+export const KNOWN_BROKEN_INSTRUMENTS: Record<string, KnownBrokenInstrumentEntry[]> = {
+  "Network Connections": [
+    {
+      xcodeVersion: "27.",
+      symptom:
+        "Crashes on write, corrupting the whole trace bundle: raw .atrc data present but no template " +
+        "document and no per-instrument stores — \"Document Missing Template Error\" on open/export. " +
+        "Every OTHER instrument in the Network template records fine; only Network Connections crashes.",
+      mitigation:
+        "Retry with instruments: [\"HTTP Traffic\"] (or other Network-template members) individually " +
+        "instead of type: \"network\" / templates: [\"Network\"], which pulls in Network Connections as " +
+        "part of its bundle. The SAME \"Document Missing Template Error\" symptom was also reproduced " +
+        "with a completely different pairing (templates: [\"File Activity\"] + Time Profiler/Hangs on " +
+        "this same beta) — evidence this is a broader unstable-COMBINATION pattern on this Xcode version, " +
+        "not specific to Network Connections alone, so retrying with FEWER composed instruments generally " +
+        "is the safer move, not just swapping out this one name.",
+      verifiedAt:
+        "2026-07-08, PMT:ash-stone (HTTPTraffic.trace device recording + manual Instruments.app GUI " +
+        "repro that isolated Network Connections as the crashing instrument).",
+    },
+  ],
+};
+
+/**
+ * WARN (never block — see the map's own doc comment on why this evidence is
+ * weaker than DEVICE_ONLY_INSTRUMENTS') when the current Xcode version
+ * matches a curated known-broken entry for the resolved template/instruments.
+ * `xcodeVersion` is whatever detectXcodeVersion() returns for THIS machine —
+ * null (undetectable) means no warning, never a false positive from missing data.
+ */
+export function knownBrokenInstrumentWarning(
+  resolvedTemplate: string | undefined,
+  resolvedExtraInstruments: string[],
+  xcodeVersion: string | null
+): string | undefined {
+  if (!xcodeVersion) return undefined;
+  const candidates = new Set([
+    ...(resolvedTemplate !== undefined ? [resolvedTemplate] : []),
+    ...(resolvedTemplate !== undefined ? TEMPLATE_BUNDLES[resolvedTemplate] ?? [] : []),
+    ...resolvedExtraInstruments,
+  ]);
+  const warnings: string[] = [];
+  for (const name of candidates) {
+    for (const entry of KNOWN_BROKEN_INSTRUMENTS[name] ?? []) {
+      if (xcodeVersion.startsWith(entry.xcodeVersion)) {
+        warnings.push(
+          `"${name}" is known broken on Xcode ${xcodeVersion} (matches curated range "${entry.xcodeVersion}"): ` +
+            `${entry.symptom} Mitigation: ${entry.mitigation} (verified ${entry.verifiedAt} — a beta-specific, ` +
+            `live-repro-only finding, not sourced from an Apple compatibility list; may already be fixed in a ` +
+            `newer Xcode — re-verify before trusting this indefinitely.)`
+        );
+      }
+    }
+  }
+  return warnings.length > 0 ? warnings.join("\n\n") : undefined;
+}
+
 export function defaultPointsOfInterest(
-  resolvedTemplate: string,
+  resolvedTemplate: string | undefined,
   resolvedExtraInstruments: string[]
 ): { instrument?: string; note?: string } {
   if (resolvedTemplate === "Points of Interest") return {};
-  if ((TEMPLATE_BUNDLES[resolvedTemplate] ?? []).includes("Points of Interest")) return {};
+  if (resolvedTemplate !== undefined && (TEMPLATE_BUNDLES[resolvedTemplate] ?? []).includes("Points of Interest")) return {};
   if (resolvedExtraInstruments.includes("Points of Interest")) return {};
   return {
     instrument: "Points of Interest",

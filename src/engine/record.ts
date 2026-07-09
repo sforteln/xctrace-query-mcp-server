@@ -27,8 +27,17 @@ export interface SpawnRecordHandle {
 }
 
 export interface RecordOptions {
-  /** Instruments template name, e.g. "Time Profiler", "Allocations". */
-  template: string;
+  /**
+   * Instruments template name, e.g. "Time Profiler", "Allocations". Omit
+   * entirely (not a literal "Blank" string — xctrace doesn't recognize that
+   * as a real template name) for a template-less, instruments-only
+   * recording: xctrace falls back to its own implicit "Blank template" when
+   * `--template` is never passed at all. Verified live: `xcrun xctrace
+   * record --instrument "HTTP Traffic" --attach <pid> ...` (no --template
+   * flag) works and prints "Starting recording with the Blank template and
+   * HTTP Traffic Instrument".
+   */
+  template?: string;
   /**
    * Extra instruments to add on top of the template via repeated
    * `--instrument <name>` flags. Built-in xctrace templates are single-
@@ -221,7 +230,7 @@ export function spawnRecord(opts: RecordOptions): SpawnRecordHandle {
   // other option (including --output) has to come before it.
   const args: string[] = [
     "xctrace", "record",
-    "--template", template,
+    ...(template !== undefined ? ["--template", template] : []),
     ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),
@@ -277,7 +286,7 @@ export async function record(opts: RecordOptions): Promise<RecordResult> {
   // other option (including --output) has to come before it.
   const args: string[] = [
     "xctrace", "record",
-    "--template", template,
+    ...(template !== undefined ? ["--template", template] : []),
     ...(extraInstruments ?? []).flatMap((name) => ["--instrument", name]),
     ...(device ? ["--device", device] : []),
     ...(timeLimit ? ["--time-limit", timeLimit] : []),

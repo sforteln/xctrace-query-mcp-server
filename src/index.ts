@@ -1570,7 +1570,8 @@ export function createServer(): McpServer {
       .optional()
       .describe(
         `Which Instruments template to record with. Options: ${intentDescriptions}. ` +
-        "Optional if `template` is given instead — required otherwise."
+        "Optional if `template`/`templates` is given instead, or if `instruments` alone is given " +
+        "for a template-less bare-instruments recording — one of the four is required."
       ),
     instruments: z
       .array(z.string())
@@ -1679,6 +1680,12 @@ export function createServer(): McpServer {
         "are normally real xctrace template names (\"Swift Concurrency\", properly cased/" +
         "spaced) — a `type` enum key (\"swift-concurrency\") also works there and resolves " +
         "automatically, so don't worry about exact spelling for anything `type` already covers.\n\n" +
+        "`instruments` ALONE (no type/template/templates at all) is also valid — a template-less " +
+        "recording of just those bare instruments, xctrace's own implicit \"Blank template\" " +
+        "fallback. Useful for a standalone instrument with no template of its own. Names in " +
+        "`instruments` must match `xcrun xctrace list instruments` exactly — they are NEVER " +
+        "template names (that's what `templates`/`type`/`template` are for); passing a template-" +
+        "only name here (e.g. \"System Trace\") fails outright since it isn't a real instrument.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
@@ -1695,15 +1702,29 @@ export function createServer(): McpServer {
           // first entry fills that role; the rest are additional templates
           // to compose on top, same as if they'd been passed alongside a
           // real `type`/`template`.
-          if (type === undefined && template === undefined && (!templates || templates.length === 0)) {
+          //
+          // `instruments` alone (no type/template/templates at all) is ALSO
+          // valid — PMT:ash-stone gap #1: xctrace has an implicit "Blank
+          // template" fallback when --template is never passed, verified
+          // live (`xcrun xctrace record --instrument "HTTP Traffic" --attach
+          // <pid> ...` with no --template flag works and prints "Starting
+          // recording with the Blank template and HTTP Traffic Instrument").
+          // This is a self-imposed far-swan restriction being relaxed, not
+          // new xctrace behavior.
+          const hasBase = type !== undefined || template !== undefined || (templates !== undefined && templates.length > 0);
+          const hasInstruments = instruments !== undefined && instruments.length > 0;
+          if (!hasBase && !hasInstruments) {
             return text(
               JSON.stringify({
-                error: "one of `type`, `template`, or `templates` is required",
-                hint: `Pass type (one of: ${intentKeys.join(", ")}), a raw template name/path, or templates: [...] with at least one real template name.`,
+                error: "one of `type`, `template`, `templates`, or `instruments` is required",
+                hint: `Pass type (one of: ${intentKeys.join(", ")}), a raw template name/path, templates: [...] with at least one real template name, or instruments: [...] alone for a template-less bare-instruments recording.`,
               })
             );
           }
-          const usingTemplatesAsBase = type === undefined && template === undefined;
+          // Only treat `templates` as the BASE-supplying path when it's
+          // actually non-empty — otherwise (instruments-only, hasBase false
+          // via templates) this must NOT try to read templates![0].
+          const usingTemplatesAsBase = type === undefined && template === undefined && templates !== undefined && templates.length > 0;
           // resolveTemplateName tolerates a `type` key landing here by mistake
           // (e.g. "swift-concurrency" instead of "Swift Concurrency") — same
           // normalization expandTemplates() applies to every other entry.
@@ -1712,7 +1733,11 @@ export function createServer(): McpServer {
           const intent =
             type !== undefined
               ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
-              : { label: baseTemplate!, template: baseTemplate!, launchRequired: false };
+              : {
+                  label: baseTemplate ?? "Blank template (instruments-only)",
+                  template: baseTemplate,
+                  launchRequired: false,
+                };
           const result = await startSession({
             intent,
             instruments,

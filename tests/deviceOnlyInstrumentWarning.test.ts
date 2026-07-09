@@ -55,4 +55,16 @@ describe("deviceOnlyInstrumentWarning", () => {
       expect(note).toContain(name);
     }
   });
+
+  // PMT:ash-stone gap #1: an instruments-only recording has no resolved
+  // template at all — there's no TEMPLATE_BUNDLES entry to look up, but a
+  // device-only instrument requested bare must still warn.
+  it("still warns for a device-only bare instrument with no base template at all", () => {
+    const note = deviceOnlyInstrumentWarning(undefined, ["GPU"], true);
+    expect(note).toMatch(/"GPU"/);
+  });
+
+  it("does nothing with no base template and no device-only instruments", () => {
+    expect(deviceOnlyInstrumentWarning(undefined, ["HTTP Traffic"], true)).toBeUndefined();
+  });
 });

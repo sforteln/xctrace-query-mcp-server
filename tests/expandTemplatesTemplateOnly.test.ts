@@ -43,4 +43,20 @@ describe("expandTemplates rejects template-only names composed as an extra", () 
     // resolveTemplateName runs first — the guard checks the RESOLVED name, not the raw type key.
     expect(() => expandTemplates(["core-data"], "Time Profiler")).toThrow(XctraceError);
   });
+
+  // PMT:ash-stone gap #1: an instruments-only recording has no base template
+  // at all — expandTemplates must not throw just because there's nothing to
+  // seed `seen`/`baseCovered` with.
+  it("does not throw with no base template at all (instruments-only, no composed templates)", () => {
+    expect(() => expandTemplates([], undefined)).not.toThrow();
+    const result = expandTemplates([], undefined);
+    expect(result.instruments).toEqual([]);
+    expect(result.fidelityAtRisk).toEqual([]);
+  });
+
+  it("still expands a composed template correctly with no base template at all", () => {
+    const result = expandTemplates(["SwiftUI"], undefined);
+    expect(result.instruments).toContain("SwiftUI");
+    expect(result.instruments).toContain("Hangs");
+  });
 });

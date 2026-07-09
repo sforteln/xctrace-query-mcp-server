@@ -19,6 +19,7 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { spawnRecord } from "../engine/record.js";
+import { detectXcodeVersion } from "../engine/xcodeVersion.js";
 import { resolveAttachTarget } from "./resolveAttachTarget.js";
 import { isSimulatorTarget, assertUnambiguousDevice } from "./listDevices.js";
 import {
@@ -30,6 +31,7 @@ import {
   mitigateHangsOsLogFidelity,
   defaultPointsOfInterest,
   deviceOnlyInstrumentWarning,
+  knownBrokenInstrumentWarning,
   type RecordingIntent,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
@@ -147,6 +149,17 @@ export interface StartSessionResult {
    * actual outcome. See PMT:stormy-coast.
    */
   deviceOnlyWarning?: string;
+  /**
+   * Present when the resolved template/instruments match a curated known-
+   * broken combination on the CURRENT Xcode version (see
+   * KNOWN_BROKEN_INSTRUMENTS in recording.ts) — e.g. Network Connections
+   * crashing on write on this Xcode 27 beta. A WARNING, not a block — this
+   * evidence is genuinely live-repro-only (not sourced from any Apple
+   * compatibility list the way DEVICE_ONLY_INSTRUMENTS is), and a beta bug
+   * can be fixed in the very next Xcode release, so treat this as a strong
+   * hint to retry differently, not a permanent fact. See PMT:ash-stone.
+   */
+  knownBrokenWarning?: string;
 }
 
 /**
@@ -265,7 +278,15 @@ export async function startSession(
       ? { ...expanded.recordingOptions, ...intent.recordingOptions }
       : undefined;
 
-  const tracePath = await defaultOutputPath(resolvedTemplate);
+  // No base template at all (instruments-only recording) — derive the output
+  // filename slug from the first extra instrument instead, so the file isn't
+  // named after a literal "undefined".
+  const tracePath = await defaultOutputPath(resolvedTemplate ?? resolvedExtraInstruments[0] ?? "recording");
+  // Human-readable stand-in for the `template` field on every response/status
+  // type below (all typed as plain `string` — display metadata, never fed
+  // back into an xctrace call) so an instruments-only recording doesn't
+  // report an empty/undefined template.
+  const templateLabel = resolvedTemplate ?? "(none — instruments-only, xctrace's implicit Blank template)";
   const recordingOptionsFile = await writeRecordingOptionsFile(tracePath, resolvedRecordingOptions);
   const recordingId = randomUUID();
 
@@ -300,6 +321,15 @@ export async function startSession(
       ? deviceOnlyInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, true)
       : undefined;
 
+  // PMT:ash-stone gap #2: warn (never block) when the CURRENT Xcode matches a
+  // curated known-broken instrument/combination — unlike deviceOnlyWarning
+  // this isn't sim-specific, since the confirmed repro was a device recording.
+  const knownBrokenWarning = knownBrokenInstrumentWarning(
+    resolvedTemplate,
+    resolvedExtraInstruments,
+    await detectXcodeVersion()
+  );
+
   const handle = spawnRecord({
     template: resolvedTemplate,
     extraInstruments: resolvedExtraInstruments,
@@ -331,7 +361,7 @@ export async function startSession(
   const rec: ActiveRecording = {
     recordingId,
     tracePath,
-    template: resolvedTemplate,
+    template: templateLabel,
     instrumentsUsed: resolvedLabel,
     note: intent.note,
     status: "recording",
@@ -402,13 +432,14 @@ export async function startSession(
     recordingId,
     status: "recording",
     tracePath,
-    template: resolvedTemplate,
+    template: templateLabel,
     instrumentsUsed: resolvedLabel,
     ...(intent.note ? { note: intent.note } : {}),
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
     ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
     ...(expanded.fidelityAtRisk.length > 0 ? { fidelityAtRisk: expanded.fidelityAtRisk } : {}),
     ...(deviceOnlyWarning ? { deviceOnlyWarning } : {}),
+    ...(knownBrokenWarning ? { knownBrokenWarning } : {}),
   };
 }
 

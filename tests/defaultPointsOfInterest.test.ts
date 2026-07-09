@@ -44,4 +44,17 @@ describe("defaultPointsOfInterest", () => {
     const result = defaultPointsOfInterest("SwiftUI", ["os_log"]);
     expect(result.instrument).toBe("Points of Interest");
   });
+
+  // PMT:ash-stone gap #1: an instruments-only recording (no base template at
+  // all) has no TEMPLATE_BUNDLES entry to check — should degrade to the same
+  // auto-add behavior as any other POI-less template, not throw.
+  it("auto-adds bare Points of Interest when there's no base template at all (instruments-only)", () => {
+    const result = defaultPointsOfInterest(undefined, ["HTTP Traffic"]);
+    expect(result.instrument).toBe("Points of Interest");
+  });
+
+  it("does not re-add it when already present, with no base template", () => {
+    const result = defaultPointsOfInterest(undefined, ["Points of Interest"]);
+    expect(result).toEqual({});
+  });
 });
