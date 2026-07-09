@@ -30,11 +30,11 @@ describe("animation hitches lens — off-CPU classification caveat", () => {
     expect(classify!.description).toMatch(/not a verdict/);
   });
 
-  it("recommends re-recording with type hitches when no Time Profiler data is present", () => {
+  it("recommends re-recording with template Animation Hitches when no Time Profiler data is present", () => {
     const actions = animationHitchesLens.nextActions("s", "hitches", 1, ["hitches"]);
     const redirect = actions.find((a) => a.tool === "start_recording");
     expect(redirect).toBeDefined();
-    expect(redirect!.args).toMatchObject({ type: "hitches" });
+    expect(redirect!.args).toMatchObject({ template: "Animation Hitches" });
   });
 });
 

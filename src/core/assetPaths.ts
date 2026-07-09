@@ -2,7 +2,7 @@
  * PMT:gold-haven — package-relative asset path resolution.
  *
  * far-swan occasionally ships a custom, offline-validated .tracetemplate
- * alongside its own code (see RECORDING_INTENTS' "memory-vm" entry) — a
+ * alongside its own code (see CUSTOM_TEMPLATE_PATHS' "memory-vm" entry) — a
  * genuinely different, safer risk category than composing a template
  * dynamically at request time (PMT:pine-basin explicitly descoped that): a
  * shipped template was validated ONCE, by a human, in Instruments.app,

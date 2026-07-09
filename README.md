@@ -108,7 +108,7 @@ AI:     [calls find on potential-hangs with duration filter]
 ```
 User:   I want to see what inference calls my app is making. It's already running.
 
-AI:     [calls start_recording, type "foundation-models", attach to MyApp process]
+AI:     [calls start_recording, template "Foundation Models", attach to MyApp process]
         Recording started. Interact with the AI feature in your app, then tell me
         when to stop.
 
@@ -157,7 +157,7 @@ AI:     [reads your codebase, finds a real, specific flow likely to exercise it 
         Starting a launch-mode recording now — launch mode is required here so
         allocations from before the recording started aren't invisible.
 
-        [calls start_recording, type: "leaks-backtraces", launch: <your app path>]
+        [calls start_recording, template: ["Allocations", "Leaks"], launch: <your app path>]
         Recording started — go ahead and run through that flow.
 
 User:   Done.
@@ -167,18 +167,18 @@ AI:     [stops, analyzes, reports a verdict — either a real leak with a
         "no app-owned leaks found" if the flow is clean]
 ```
 
-The same pattern works for any category — the AI picks the `type` (and composes a second whole template when the question spans two systems, e.g. `templates: ["SwiftUI"]` on a Core Data recording to attribute fetches to the UI event that triggered them) and finds a concrete exercise from your actual code, not a canned script:
+The same pattern works for any category — the AI picks the `template` (and composes a second whole template when the question spans two systems, e.g. `template: ["Data Persistence", "SwiftUI"]` to attribute fetches to the UI event that triggered them) and finds a concrete exercise from your actual code, not a canned script:
 
 | You're worried about... | AI reaches for... |
 |---|---|
-| Memory leaks / unbounded growth | `type: "leaks-backtraces"`, launch mode (attach can't symbolicate objects already live before it attached) |
-| UI hangs / stutters / jank | `type: "cpu"` (bundles Hangs + Points of Interest + Thermal State for free) or `type: "hitches"` for animation-specific frame drops |
-| Main-actor contention / async task pileup | `type: "swift-concurrency"` |
-| Excessive Core Data / SwiftData fetches | `type: "core-data"`, composed with `templates: ["SwiftUI"]` if you want fetches attributed to the UI event that caused them |
-| Network inefficiency (redundant requests, no connection reuse) | `type: "network"` |
-| CPU/thermal efficiency under sustained load | `type: "cpu"` (Thermal State is bundled in — correlate a hot thermal interval against the CPU samples to see what was driving it) |
+| Memory leaks / unbounded growth | `template: ["Allocations", "Leaks"]`, launch mode (attach can't symbolicate objects already live before it attached) |
+| UI hangs / stutters / jank | `template: "Time Profiler"` (bundles Hangs + Points of Interest + Thermal State for free) or `template: "Animation Hitches"` for animation-specific frame drops |
+| Main-actor contention / async task pileup | `template: "Swift Concurrency"` |
+| Excessive Core Data / SwiftData fetches | `template: "Data Persistence"`, composed as `template: ["Data Persistence", "SwiftUI"]` (Data Persistence first) if you want fetches attributed to the UI event that caused them |
+| Network inefficiency (redundant requests, no connection reuse) | `template: "Network"` |
+| CPU/thermal efficiency under sustained load | `template: "Time Profiler"` (Thermal State is bundled in — correlate a hot thermal interval against the CPU samples to see what was driving it) |
 
-**Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (`templates: ["SwiftUI"]` on a Core Data recording, say) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
+**Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (`template: ["Data Persistence", "SwiftUI"]`, say) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
 
 Whichever category you pick, if your app already calls `os_signpost` around its own operations, that's not a separate concern — it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
 

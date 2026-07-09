@@ -52,7 +52,7 @@ gumming during an attempt to capture an already-severe hang, so the recorder bec
 problem it was trying to observe.
 
 When the goal is specifically "capture a severe hang, not routine profiling": reach for
-`type: "hangs"` (CPU Profiler, low overhead — see its own `RECORDING_INTENTS` note for what it
+`template: "CPU Profiler"` (low overhead — see its own `TEMPLATE_NOTES` entry for what it
 does and doesn't carry) rather than composing heavy instrumentation like full SwiftUI tracing, and
 combine it with a bounded `timeLimit` (Lesson 1) for the same robustness reason.
 

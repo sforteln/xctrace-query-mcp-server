@@ -20,9 +20,9 @@ const HANGS_SCHEMAS = [HANGS_SCHEMA, HITCHES_SCHEMA, HANG_RISKS_SCHEMA];
  * potential-hangs/hitches carry start/duration/thread/process but NO
  * backtrace of their own (confirmed: not in roleHints.ts's column set for
  * either schema) — they say WHEN, never WHAT. This is a backstop for the
- * RECORDING_INTENTS notes on "hangs"/"hitches" that already tell an agent to
- * compose Time Profiler upfront; this only fires if that got missed (or a
- * pre-existing trace is being reopened, where the recording-time note was
+ * TEMPLATE_NOTES entries for "CPU Profiler"/"Animation Hitches" that already
+ * tell an agent to compose Time Profiler upfront; this only fires if that
+ * got missed (or a pre-existing trace is being reopened, where the note was
  * never seen at all) — same two-destination shape as the Leaks lens's
  * unattributableFractionHint, just auto-derived from schema presence instead
  * of a data-content check.
@@ -52,26 +52,27 @@ function timeProfileCorrelationHint(
   // onto this recording — composing the bare instrument doesn't bring
   // Thermal State along (that's template-level bundling only) and would run
   // two separate CPU-sampling instruments (this schema's own + time-profile)
-  // side by side for no benefit. type: "cpu" already bundles Hangs + Points
-  // of Interest + Thermal State, a strict superset of type: "hangs" plus
-  // full CPU attribution in one pass. hitches has no analog in Time
-  // Profiler at all (only Animation Hitches produces it, and that template
-  // already bundles Time Profiler) — verified live, don't guess here either.
-  const redirect = schema === HANGS_SCHEMA ? { type: "cpu" } : { type: "hitches" };
+  // side by side for no benefit. template: "Time Profiler" already bundles
+  // Hangs + Points of Interest + Thermal State, a strict superset of
+  // template: "CPU Profiler" plus full CPU attribution in one pass. hitches
+  // has no analog in Time Profiler at all (only Animation Hitches produces
+  // it, and that template already bundles Time Profiler) — verified live,
+  // don't guess here either.
+  const redirect = schema === HANGS_SCHEMA ? { template: "Time Profiler" } : { template: "Animation Hitches" };
   return {
     tool: "start_recording",
     args: redirect,
     description:
       schema === HANGS_SCHEMA
         ? "potential-hangs has no backtrace column of its own, and this trace has no Time Profiler " +
-          "samples to correlate against — re-record with type: \"cpu\" instead of composing " +
-          "instruments: [\"Time Profiler\"] onto this one: Time Profiler's own template already " +
-          "bundles Hangs + Points of Interest + Thermal State for free, so it's a strict superset " +
-          "of this recording plus full CPU attribution, without running two CPU-sampling " +
+          "samples to correlate against — re-record with template: \"Time Profiler\" instead of " +
+          "composing instruments: [\"Time Profiler\"] onto this one: Time Profiler's own template " +
+          "already bundles Hangs + Points of Interest + Thermal State for free, so it's a strict " +
+          "superset of this recording plus full CPU attribution, without running two CPU-sampling " +
           "instruments side by side."
         : "hitches has no backtrace column of its own, and this trace has no Time Profiler samples " +
-          "to correlate against — re-record with type: \"hitches\" (Animation Hitches), which " +
-          "already bundles Time Profiler for free.",
+          "to correlate against — re-record with template: \"Animation Hitches\", which already " +
+          "bundles Time Profiler for free.",
   };
 }
 

@@ -39,9 +39,13 @@ describe("expandTemplates rejects template-only names composed as an extra", () 
     }
   });
 
-  it("a caller-supplied `type` key that resolves to a template-only template still throws", () => {
-    // resolveTemplateName runs first — the guard checks the RESOLVED name, not the raw type key.
-    expect(() => expandTemplates(["core-data"], "Time Profiler")).toThrow(XctraceError);
+  // PMT:stubborn-beck: the old `type` enum (e.g. "core-data" → "Data
+  // Persistence") is gone — resolveCustomTemplateName only resolves genuine
+  // custom-template shortcuts (e.g. "memory-vm"), never former type keys.
+  // An unrecognized name like "core-data" now passes through literally and
+  // isn't in TEMPLATE_ONLY_NAMES either, so it correctly does NOT throw.
+  it("an unrecognized name that used to be a `type` key passes through literally, no throw", () => {
+    expect(() => expandTemplates(["core-data"], "Time Profiler")).not.toThrow();
   });
 
   // PMT:ash-stone gap #1: an instruments-only recording has no base template

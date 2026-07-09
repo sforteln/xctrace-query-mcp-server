@@ -50,9 +50,7 @@ import { getConfig, updateConfig, configPath, defaultFallbackCacheDir, defaultRe
 import { getServerInfo } from "./core/serverInfo.js";
 import { listTraces, findTrace, builtInRootPaths } from "./core/discovery.js";
 import {
-  RECORDING_INTENTS,
   tryOpenTrace,
-  resolveTemplateName,
 } from "./core/recording.js";
 import {
   startSession,
@@ -146,14 +144,14 @@ const LENSES: Lens[] = [
   hangsLens,
   timeProfilerLens,
   thermalLens,
-  // Run Loops has no RECORDING_INTENTS type of its own — like Thermal State,
-  // it's only ever composed onto another recording for a specific diagnostic
-  // purpose (e.g. alongside Foundation Models or a Hangs investigation), never
-  // the sole reason for a recording — so it sits last, same tier as thermal.
+  // Run Loops has no template of its own — like Thermal State, it's only
+  // ever composed onto another recording for a specific diagnostic purpose
+  // (e.g. alongside Foundation Models or a Hangs investigation), never the
+  // sole reason for a recording — so it sits last, same tier as thermal.
   runLoopsLens,
-  // os-log is never a recording intent's own headline instrument either
-  // (always composed bare — a caller's own choice or the Hangs-fidelity
-  // mitigation above) — same tier as runLoops/thermal.
+  // os-log is never a template's own headline instrument either (always
+  // composed bare — a caller's own choice or the Hangs-fidelity mitigation
+  // above) — same tier as runLoops/thermal.
   osLogLens,
   // Off-CPU classifier (syscall/thread-state) — the "dig" layer, only ever
   // composed onto another recording (System Trace) for a specific stall
@@ -1549,29 +1547,33 @@ export function createServer(): McpServer {
   // stop_recording sends SIGINT for graceful finalization and auto-opens the
   // resulting trace so the next action is list_instruments.
 
-  // Derive the type enum directly from RECORDING_INTENTS so adding a new intent
-  // there is the only change needed — this file never needs to be updated.
-  const intentKeys = Object.keys(RECORDING_INTENTS) as [string, ...string[]];
-  // Most intents just need their label here — full nuance lives in intent.note,
-  // surfaced in the response after the call. leaks-backtraces gets a short
-  // caveat inline instead, since attach-vs-launch is decided in THIS SAME call
-  // (alongside `type`) — by the time intent.note comes back in the response,
-  // the choice is already made and can't be changed without restarting.
-  const INTENT_UPFRONT_CAVEATS: Partial<Record<string, string>> = {
-    "leaks-backtraces": " (prefer launch over attach if you need to see WHERE a leak came from — attach can't symbolicate objects already live before it attached)",
-  };
-  const intentDescriptions = Object.entries(RECORDING_INTENTS)
-    .map(([k, v]) => `"${k}" → ${v.label}${INTENT_UPFRONT_CAVEATS[k] ?? ""}`)
-    .join(", ");
-
   const INTERACTIVE_RECORD_INPUTS = {
-    type: z
-      .enum(intentKeys)
+    template: z
+      .union([z.string(), z.array(z.string())])
       .optional()
       .describe(
-        `Which Instruments template to record with. Options: ${intentDescriptions}. ` +
-        "Optional if `template`/`templates` is given instead, or if `instruments` alone is given " +
-        "for a template-less bare-instruments recording — one of the four is required."
+        "Which template(s) to record with. A single string is one base template (the exact real " +
+        "name from `xcrun xctrace list templates`, e.g. \"Time Profiler\", \"SwiftUI\" — or a " +
+        "recognized custom-template shortcut like \"memory-vm\"). An array's FIRST entry becomes " +
+        "the base; every entry after it is an ADDITIONAL whole template composed on top, each " +
+        "expanded to its full bundled instrument set plus any recording options it bakes in — e.g. " +
+        "template: [\"Data Persistence\", \"SwiftUI\"] attributes SwiftData fetches to the " +
+        "triggering SwiftUI update AND records SwiftUI's own Hangs + Time Profiler bundle and " +
+        "layout tracing, not just a bare instrument. ORDER MATTERS when a name has no bare " +
+        "`--instrument` form (e.g. \"Data Persistence\", \"Network\", \"App Launch\") — those MUST " +
+        "be first/base; composing one as a later/extra entry fails outright (check the response's " +
+        "compositionNote and fidelityAtRisk for what an array expansion actually resolved to). " +
+        "Omit entirely (with `instruments` non-empty) for a template-less, instruments-only " +
+        "recording — xctrace's own implicit \"Blank template\" fallback; one of `template` or " +
+        "`instruments` is required.\n\n" +
+        "KNOWN-GOOD COMBINATIONS worth knowing up front (not obvious from the names alone): " +
+        "template: [\"Allocations\", \"Leaks\"] together gives leaked objects their responsible " +
+        "call frames — Leaks alone gives only a leak list, no backtraces (prefer launch over " +
+        "attach when you need to see WHERE a leak came from — attach can't symbolicate objects " +
+        "already live before it attached). template: [\"Data Persistence\", \"SwiftUI\"] (Data " +
+        "Persistence FIRST) attributes Core Data/SwiftData activity to the UI event that triggered " +
+        "it. \"memory-vm\" is a custom shipped template (Allocations + VM Tracker Automatic " +
+        "Snapshotting) with no real xctrace name of its own."
       ),
     instruments: z
       .array(z.string())
@@ -1581,47 +1583,12 @@ export function createServer(): McpServer {
         "named — never expanded, even if the name is also a template. Use this for a " +
         "standalone instrument with no template of its own (e.g. \"GCD Performance\", " +
         "\"Data Fetches\"), or when you deliberately want only that instrument's raw signal. " +
-        "Names must match `xcrun xctrace list instruments` exactly. If you name something " +
-        "that IS also a richer template (e.g. \"Time Profiler\", \"SwiftUI\"), you get only " +
-        "its bare instrument, not the bundle — the response's compositionNote will point you " +
-        "at `templates` instead if that's what you meant. Use `templates`, not this, to " +
-        "compose a whole second template."
-      ),
-    templates: z
-      .array(z.string())
-      .optional()
-      .describe(
-        "One or more WHOLE templates to compose into one recording, each expanded to its full " +
-        "bundled instrument set plus any recording options it bakes in. Two ways to use this: " +
-        "(1) alongside `type`/`template` — composes ADDITIONAL templates on top of that base, " +
-        "e.g. templates: [\"SwiftUI\"] on type: \"core-data\" attributes SwiftData fetches to " +
-        "the triggering SwiftUI update AND records SwiftUI's own Hangs + Time Profiler bundle " +
-        "and layout tracing, not just a bare instrument; (2) ALONE, with no `type`/`template` " +
-        "at all — a flat, symmetric list of 2+ templates with no privileged \"base\", e.g. " +
-        "templates: [\"Swift Concurrency\", \"SwiftUI\"] to start both together directly. " +
-        "Entries are normally the REAL xctrace template name, properly cased/spaced (\"Swift " +
-        "Concurrency\", \"SwiftUI\", \"Time Profiler\") — matching `xcrun xctrace list " +
-        "templates` — but a `type` enum key (e.g. \"swift-concurrency\") also works here and " +
-        "resolves to its real template automatically, so don't worry about getting the exact " +
-        "spelling/casing right for anything already covered by `type`. For a template `type` " +
-        "doesn't cover, use the exact name from `xcrun xctrace list templates`. " +
-        "Check the response's compositionNote for exactly what each name expanded to, and its " +
-        "fidelityAtRisk list for which composed instruments were added bare (no template backing " +
-        "them) — their tuned configuration and any template-only behavior (e.g. a Hangs " +
-        "threshold, os-log's subsystem/category scope) isn't guaranteed to match a real template " +
-        "recording. Composing onto a base that already covers the same instruments (e.g. " +
-        "templates: [\"SwiftUI\"] on type: \"swift-concurrency\", since Swift Concurrency's own " +
-        "bundle already includes Hangs) keeps full fidelity for free — fidelityAtRisk is only " +
-        "non-empty when there's no such overlap."
-      ),
-    template: z
-      .string()
-      .optional()
-      .describe(
-        "Raw `--template <name|path>` override for a custom or uncurated template `type` " +
-        "doesn't cover. Overrides the base template while keeping type's other behavior " +
-        "(privacy notice, launchRequired) when both are given. Provide this, `type`, or a " +
-        "`templates` array (used alone) — one of the three is required."
+        "Names must match `xcrun xctrace list instruments` exactly — they are NEVER template " +
+        "names (that's what `template` is for); passing a template-only name here (e.g. \"System " +
+        "Trace\") fails outright since it isn't a real instrument. If you name something that IS " +
+        "also a richer template (e.g. \"Time Profiler\", \"SwiftUI\"), you get only its bare " +
+        "instrument, not the bundle — the response's compositionNote will point you at `template` " +
+        "instead if that's what you meant."
       ),
     attach: z
       .string()
@@ -1671,77 +1638,47 @@ export function createServer(): McpServer {
         "flushes data and writes a valid .trace. Then pass the tracePath to open_trace.\n\n" +
         "For time-limited recordings, set timeLimit and the process auto-stops; " +
         "stop_recording still works (it will see the recording is already done).\n\n" +
-        "Pass `instruments` to compose bare extra instruments onto `type`'s base template " +
-        "(e.g. cross-instrument causation questions like \"did this SwiftUI update cause " +
-        "this SwiftData fetch\"), `templates` to compose one or more WHOLE templates — " +
-        "either on top of `type`/`template`, or used ALONE (no `type` needed) to start two " +
-        "or more templates together, e.g. templates: [\"Swift Concurrency\", \"SwiftUI\"] — " +
-        "or `template` for a single fully custom/uncurated base template. `templates` entries " +
-        "are normally real xctrace template names (\"Swift Concurrency\", properly cased/" +
-        "spaced) — a `type` enum key (\"swift-concurrency\") also works there and resolves " +
-        "automatically, so don't worry about exact spelling for anything `type` already covers.\n\n" +
-        "`instruments` ALONE (no type/template/templates at all) is also valid — a template-less " +
-        "recording of just those bare instruments, xctrace's own implicit \"Blank template\" " +
-        "fallback. Useful for a standalone instrument with no template of its own. Names in " +
-        "`instruments` must match `xcrun xctrace list instruments` exactly — they are NEVER " +
-        "template names (that's what `templates`/`type`/`template` are for); passing a template-" +
-        "only name here (e.g. \"System Trace\") fails outright since it isn't a real instrument.\n\n" +
+        "Pass `template` for the base template — a single name/path, or an array where the " +
+        "first entry is the base and the rest are additional whole templates composed on top " +
+        "(each expanded to its full bundle, not just a bare instrument). Pass `instruments` to " +
+        "compose bare extra instruments (recorded exactly as named, never expanded) alongside " +
+        "that base — e.g. cross-instrument causation questions like \"did this SwiftUI update " +
+        "cause this SwiftData fetch\". `instruments` ALONE (no `template` at all) is also valid " +
+        "— a template-less recording of just those bare instruments, xctrace's own implicit " +
+        "\"Blank template\" fallback; one of `template` or `instruments` is required.\n\n" +
+        "See `template`'s own description for the exact array-ordering rules and a short list " +
+        "of known-good multi-template combinations worth knowing before you start (Allocations+" +
+        "Leaks for backtraces, Data Persistence+SwiftUI for attribution).\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
-    async ({ type, instruments, templates, template, attach, launch, timeLimit, device }) =>
+    async ({ instruments, template, attach, launch, timeLimit, device }) =>
       safeToolWithLog(
         "start_recording",
-        { type, instruments, templates, template, attach, launch, timeLimit, device },
+        { instruments, template, attach, launch, timeLimit, device },
         async () => {
-          // `templates` alone (no type/template) is valid too — the flat,
-          // symmetric "start with N templates" shape, no privileged base.
-          // xctrace itself still needs exactly one --template value, so the
-          // first entry fills that role; the rest are additional templates
-          // to compose on top, same as if they'd been passed alongside a
-          // real `type`/`template`.
-          //
-          // `instruments` alone (no type/template/templates at all) is ALSO
-          // valid — PMT:ash-stone gap #1: xctrace has an implicit "Blank
-          // template" fallback when --template is never passed, verified
-          // live (`xcrun xctrace record --instrument "HTTP Traffic" --attach
-          // <pid> ...` with no --template flag works and prints "Starting
-          // recording with the Blank template and HTTP Traffic Instrument").
-          // This is a self-imposed far-swan restriction being relaxed, not
-          // new xctrace behavior.
-          const hasBase = type !== undefined || template !== undefined || (templates !== undefined && templates.length > 0);
+          // PMT:ash-stone gap #1: `instruments` alone (no `template` at all)
+          // is valid — xctrace has an implicit "Blank template" fallback when
+          // --template is never passed, verified live (`xcrun xctrace record
+          // --instrument "HTTP Traffic" --attach <pid> ...` with no
+          // --template flag works and prints "Starting recording with the
+          // Blank template and HTTP Traffic Instrument"). This is a self-
+          // imposed far-swan restriction being relaxed, not new xctrace
+          // behavior.
+          const hasBase = template !== undefined && (!Array.isArray(template) || template.length > 0);
           const hasInstruments = instruments !== undefined && instruments.length > 0;
           if (!hasBase && !hasInstruments) {
             return text(
               JSON.stringify({
-                error: "one of `type`, `template`, `templates`, or `instruments` is required",
-                hint: `Pass type (one of: ${intentKeys.join(", ")}), a raw template name/path, templates: [...] with at least one real template name, or instruments: [...] alone for a template-less bare-instruments recording.`,
+                error: "one of `template` or `instruments` is required",
+                hint: "Pass template: \"<real xctrace template name>\" (or an array for multiple), or instruments: [...] alone for a template-less bare-instruments recording.",
               })
             );
           }
-          // Only treat `templates` as the BASE-supplying path when it's
-          // actually non-empty — otherwise (instruments-only, hasBase false
-          // via templates) this must NOT try to read templates![0].
-          const usingTemplatesAsBase = type === undefined && template === undefined && templates !== undefined && templates.length > 0;
-          // resolveTemplateName tolerates a `type` key landing here by mistake
-          // (e.g. "swift-concurrency" instead of "Swift Concurrency") — same
-          // normalization expandTemplates() applies to every other entry.
-          const baseTemplate = template ?? (usingTemplatesAsBase ? resolveTemplateName(templates![0]) : undefined);
-          const additionalTemplates = usingTemplatesAsBase ? templates!.slice(1) : templates;
-          const intent =
-            type !== undefined
-              ? RECORDING_INTENTS[type as keyof typeof RECORDING_INTENTS]
-              : {
-                  label: baseTemplate ?? "Blank template (instruments-only)",
-                  template: baseTemplate,
-                  launchRequired: false,
-                };
           const result = await startSession({
-            intent,
             instruments,
-            templates: additionalTemplates,
             template,
             attach,
             launch,

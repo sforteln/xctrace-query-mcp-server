@@ -32,7 +32,12 @@ import {
   defaultPointsOfInterest,
   deviceOnlyInstrumentWarning,
   knownBrokenInstrumentWarning,
-  type RecordingIntent,
+  resolveCustomTemplateName,
+  CUSTOM_TEMPLATE_NOTES,
+  TEMPLATE_NOTES,
+  TEMPLATE_RECORDING_OPTIONS,
+  LAUNCH_REQUIRED_TEMPLATES,
+  allocationsLeaksNote,
 } from "./recording.js";
 import { XctraceError } from "../engine/xctrace.js";
 import type { ChildProcess } from "node:child_process";
@@ -46,7 +51,6 @@ interface ActiveRecording {
   tracePath: string;
   template: string;
   instrumentsUsed: string;
-  note?: string;
   status: RecordingStatus;
   startedAt: number;
   process: ChildProcess | null;
@@ -84,41 +88,37 @@ const activeRecordings = new Map<string, ActiveRecording>();
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 export interface StartSessionOptions {
-  intent: RecordingIntent;
   attach?: string;
   launch?: string;
   device?: string;
   timeLimit?: string;
   /**
-   * BARE extra instruments to compose on top of intent.template, via repeated
-   * `--instrument <name>` — recorded exactly as named, never expanded even
-   * when the name is ALSO a richer template (see bareInstrumentTemplateNotes
-   * in recording.ts) — merged with any extraInstruments the intent itself
-   * already declares (e.g. leaks-backtraces' built-in "Leaks"). Use this for
-   * a genuinely standalone instrument, or when you deliberately want only
-   * that instrument's raw signal without its template's extras. Use
-   * `templates` instead when you want a whole second template's full bundle.
+   * BARE extra instruments to compose on top of the base template, via
+   * repeated `--instrument <name>` — recorded exactly as named, never
+   * expanded even when the name is ALSO a richer template (see
+   * bareInstrumentTemplateNotes in recording.ts). Use this for a genuinely
+   * standalone instrument, or when you deliberately want only that
+   * instrument's raw signal without its template's extras. Use `template`'s
+   * array form instead when you want a whole second template's full bundle.
    */
   instruments?: string[];
   /**
-   * Additional WHOLE templates to compose on top of intent.template — each
-   * name is expanded to its full bundled instrument set (per TEMPLATE_BUNDLES)
-   * plus any recordingOptions it bakes in, so e.g. templates: ["SwiftUI"] on
-   * type: "core-data" records the complete SwiftUI template (+ its Hangs +
-   * Time Profiler bundle + layout tracing), not just the bare instrument.
-   * This is the explicit way to start a session with two templates at once —
-   * deliberately a separate param from `instruments` so the caller states
-   * which one they meant instead of the server guessing from an overloaded
-   * name that is both a template and a standalone instrument.
+   * Which template(s) to record with (PMT:stubborn-beck — collapsed from the
+   * old separate `template`/`templates` params, one polymorphic param
+   * instead of two spellings of the same "what's my base" decision). A
+   * single string is a straightforward base template (real xctrace name, or
+   * a recognized custom-template shortcut like "memory-vm" — see
+   * CUSTOM_TEMPLATE_PATHS in recording.ts). An array's FIRST entry becomes
+   * the base (passed via --template); every entry after it is an ADDITIONAL
+   * whole template composed on top, each expanded to its full bundled
+   * instrument set (per TEMPLATE_BUNDLES) plus any recordingOptions it bakes
+   * in — so template: ["Data Persistence", "SwiftUI"] records the complete
+   * union of both templates, not Data Persistence's template plus a bare,
+   * bundle-less SwiftUI instrument. Omit entirely (with `instruments`
+   * non-empty) for a template-less recording — xctrace's own implicit
+   * "Blank template".
    */
-  templates?: string[];
-  /**
-   * Raw `--template <name|path>` override, for a custom or uncurated
-   * template the `type` enum doesn't cover. Overrides intent.template but
-   * keeps the intent's other metadata (label, note, launchRequired,
-   * recordingOptions) — pass a minimal ad-hoc intent if you don't want that.
-   */
-  template?: string;
+  template?: string | string[];
 }
 
 export interface StartSessionResult {
@@ -127,8 +127,16 @@ export interface StartSessionResult {
   tracePath: string;
   template: string;
   instrumentsUsed: string;
-  note?: string;
   privacyNotice?: string;
+  /**
+   * Every piece of curated guidance about this recording, joined together:
+   * the resolved base template's own note (TEMPLATE_NOTES), the Allocations/
+   * Leaks recipe note when relevant, what any additional composed templates
+   * expanded to, bare-instrument steering, and the Hangs os-log / Points of
+   * Interest auto-add notes. Previously split across a separate `note`
+   * (intent-level) and `compositionNote` (composition-level) field — merged
+   * since there's no more "intent" object to justify keeping that distinction.
+   */
   compositionNote?: string;
   /**
    * Instruments added bare via `templates` composition that are NOT part of
@@ -187,12 +195,50 @@ export function isAppLaunchPath(launch: string | undefined): boolean {
 export async function startSession(
   opts: StartSessionOptions
 ): Promise<StartSessionResult> {
-  const { intent, attach, launch, device, timeLimit, instruments, templates, template } = opts;
+  const { attach, launch, device, timeLimit, instruments, template } = opts;
 
-  if (intent.launchRequired && launch === undefined) {
+  // `template` is a single string (one base) or an array (first entry is the
+  // base, passed via --template; the rest are additional whole templates
+  // composed on top, same as the old templates-alone shape). Each entry
+  // tolerates a recognized custom-template shortcut (e.g. "memory-vm").
+  const templateList = (template === undefined ? [] : Array.isArray(template) ? template : [template]).map(
+    resolveCustomTemplateName
+  );
+  const resolvedTemplate = templateList[0];
+  const additionalTemplates = templateList.slice(1);
+
+  const expanded = expandTemplates(additionalTemplates, resolvedTemplate);
+  const literalInstruments = instruments ?? [];
+  const baseExtraInstruments = [
+    ...new Set([...literalInstruments, ...expanded.instruments].filter((i) => i !== resolvedTemplate)),
+  ];
+  // PMT:birch-river: compensate for Hangs' os-log coverage not surviving a
+  // bare composition — see mitigateHangsOsLogFidelity's own doc for the
+  // verified cost/scope tradeoffs behind making this automatic.
+  const hangsMitigation = mitigateHangsOsLogFidelity(expanded.fidelityAtRisk, baseExtraInstruments);
+  const withHangsMitigation = hangsMitigation.instrument
+    ? [...baseExtraInstruments, hangsMitigation.instrument]
+    : baseExtraInstruments;
+  // PMT:plain-creek: default bare "Points of Interest" onto every recording
+  // whose resolved template doesn't already bundle it — see the function's
+  // own doc for the cost/fidelity evidence behind making this unconditional.
+  const poiDefault = defaultPointsOfInterest(resolvedTemplate, withHangsMitigation);
+  const resolvedExtraInstruments = poiDefault.instrument
+    ? [...withHangsMitigation, poiDefault.instrument]
+    : withHangsMitigation;
+
+  // Every resolved name (base + composed extras) — what launchRequired,
+  // curated notes, and the Allocations/Leaks recipe all key off, regardless
+  // of which "role" (base vs. extra) a given name played to get there.
+  const resolvedNames = new Set<string>([
+    ...(resolvedTemplate !== undefined ? [resolvedTemplate] : []),
+    ...resolvedExtraInstruments,
+  ]);
+
+  if ([...resolvedNames].some((n) => LAUNCH_REQUIRED_TEMPLATES.has(n)) && launch === undefined) {
     throw new XctraceError(
       "record-failed",
-      `${intent.label} requires a launch path (--launch). ${intent.note ?? ""}`,
+      `"App Launch" requires a launch path (--launch). ${TEMPLATE_NOTES["App Launch"] ?? ""}`,
       {}
     );
   }
@@ -217,65 +263,40 @@ export async function startSession(
   // already wasted on a session that was dead from the start.
   await assertUnambiguousDevice(device);
 
-  // `template` overrides intent.template (a raw passthrough for custom/
-  // uncurated templates). Two DISTINCT composition params, deliberately not
-  // merged into one: `instruments` are bare additions (recorded exactly as
-  // named, merged with the intent's own curated extraInstruments, e.g.
-  // leaks-backtraces' built-in "Leaks"); `templates` names WHOLE additional
-  // templates and is expanded via expandTemplates() into each one's full
-  // bundle + recordingOptions, so type: "core-data" + templates: ["SwiftUI"]
-  // records the complete union of both templates, not core-data's template
-  // plus a bare, bundle-less SwiftUI instrument.
-  const resolvedTemplate = template ?? intent.template;
-  const expanded = expandTemplates(templates ?? [], resolvedTemplate);
-  const literalInstruments = [...(intent.extraInstruments ?? []), ...(instruments ?? [])];
-  const baseExtraInstruments = [
-    ...new Set([...literalInstruments, ...expanded.instruments].filter((i) => i !== resolvedTemplate)),
-  ];
-  // PMT:birch-river: compensate for Hangs' os-log coverage not surviving a
-  // bare composition — see mitigateHangsOsLogFidelity's own doc for the
-  // verified cost/scope tradeoffs behind making this automatic.
-  const hangsMitigation = mitigateHangsOsLogFidelity(expanded.fidelityAtRisk, baseExtraInstruments);
-  const withHangsMitigation = hangsMitigation.instrument
-    ? [...baseExtraInstruments, hangsMitigation.instrument]
-    : baseExtraInstruments;
-  // PMT:plain-creek: default bare "Points of Interest" onto every recording
-  // whose resolved template doesn't already bundle it — see the function's
-  // own doc for the cost/fidelity evidence behind making this unconditional.
-  const poiDefault = defaultPointsOfInterest(resolvedTemplate, withHangsMitigation);
-  const resolvedExtraInstruments = poiDefault.instrument
-    ? [...withHangsMitigation, poiDefault.instrument]
-    : withHangsMitigation;
   const resolvedLabel = [
-    intent.label,
-    ...(templates ?? []).map((t) => `template:${t}`),
-    ...(instruments ?? []),
+    resolvedTemplate ?? "Blank template (instruments-only)",
+    ...additionalTemplates.map((t) => `template:${t}`),
+    ...literalInstruments,
   ].join(" + ");
-  // intent.privacyNotice already covers intent.template (curated, detailed
-  // text) — only scan ad-hoc additions here. Still de-duped below since a
-  // caller-supplied `template` that happens to match the intent's own can
-  // otherwise show the identical notice twice.
   const adHocNotices = collectPrivacyNotices([
-    ...(instruments ?? []),
-    ...(templates ?? []),
-    ...(template ? [template] : []),
+    ...literalInstruments,
+    ...additionalTemplates,
+    ...(resolvedTemplate !== undefined ? [resolvedTemplate] : []),
   ]);
-  const resolvedPrivacyNotice =
-    [...new Set([intent.privacyNotice, ...adHocNotices].filter((n): n is string => Boolean(n)))].join("\n\n") ||
-    undefined;
+  const resolvedPrivacyNotice = adHocNotices.length > 0 ? [...new Set(adHocNotices)].join("\n\n") : undefined;
+  // CUSTOM_TEMPLATE_NOTES is checked against the RAW (pre-resolution) name —
+  // a custom template's short name ("memory-vm") is what's discoverable, not
+  // its resolved absolute path.
+  const rawBaseName = template === undefined ? undefined : Array.isArray(template) ? template[0] : template;
+  const customNote = rawBaseName !== undefined ? CUSTOM_TEMPLATE_NOTES[rawBaseName] : undefined;
+  const templateNote = customNote ?? (resolvedTemplate !== undefined ? TEMPLATE_NOTES[resolvedTemplate] : undefined);
+  const leaksNote = allocationsLeaksNote(resolvedNames);
   const resolvedCompositionNote =
     [
+      ...(templateNote ? [templateNote] : []),
+      ...(leaksNote ? [leaksNote] : []),
       ...expanded.notes,
       ...bareInstrumentTemplateNotes(resolvedTemplate, instruments),
       ...(hangsMitigation.note ? [hangsMitigation.note] : []),
       ...(poiDefault.note ? [poiDefault.note] : []),
     ].join("\n\n") || undefined;
-  // intent.recordingOptions (the base template's own curated options) wins on
-  // key collision — expanded options come from ADDITIONAL composed
-  // templates, so the base template's explicit choice takes precedence.
+  // The base template's own curated options win on key collision — expanded
+  // options come from ADDITIONAL composed templates, so the base template's
+  // explicit choice takes precedence.
+  const baseRecordingOptions = resolvedTemplate !== undefined ? TEMPLATE_RECORDING_OPTIONS[resolvedTemplate] : undefined;
   const resolvedRecordingOptions =
-    Object.keys(expanded.recordingOptions).length > 0 || intent.recordingOptions
-      ? { ...expanded.recordingOptions, ...intent.recordingOptions }
+    Object.keys(expanded.recordingOptions).length > 0 || baseRecordingOptions
+      ? { ...expanded.recordingOptions, ...baseRecordingOptions }
       : undefined;
 
   // No base template at all (instruments-only recording) — derive the output
@@ -363,7 +384,6 @@ export async function startSession(
     tracePath,
     template: templateLabel,
     instrumentsUsed: resolvedLabel,
-    note: intent.note,
     status: "recording",
     startedAt: Date.now(),
     process: handle.process,
@@ -434,7 +454,6 @@ export async function startSession(
     tracePath,
     template: templateLabel,
     instrumentsUsed: resolvedLabel,
-    ...(intent.note ? { note: intent.note } : {}),
     ...(resolvedPrivacyNotice ? { privacyNotice: resolvedPrivacyNotice } : {}),
     ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
     ...(expanded.fidelityAtRisk.length > 0 ? { fidelityAtRisk: expanded.fidelityAtRisk } : {}),

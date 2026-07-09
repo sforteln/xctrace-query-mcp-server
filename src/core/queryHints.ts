@@ -88,7 +88,7 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
   ],
   "hang-risks": [
     {
-      note: "If this is empty but 'potential-hangs' has rows, that's expected, not a data problem: hang-risks only populates from the FULL Hangs template; Hangs composed BARE (e.g. via templates:[...]'s fidelityAtRisk, common when composing Hangs onto another base) produces potential-hangs but not hang-risks. Use call_tree(schema:\"time-profile\", view:\"hot\", timeRange: <a potential-hangs row's [start, start+duration]>) to get the hang's call stack instead. Verified live, PMT:onyx-spark.",
+      note: "If this is empty but 'potential-hangs' has rows, that's expected, not a data problem: hang-risks only populates from the FULL Hangs template; Hangs composed BARE (e.g. via template's array-composition fidelityAtRisk, common when composing Hangs onto another base) produces potential-hangs but not hang-risks. Use call_tree(schema:\"time-profile\", view:\"hot\", timeRange: <a potential-hangs row's [start, start+duration]>) to get the hang's call stack instead. Verified live, PMT:onyx-spark.",
     },
   ],
   "core-data-fetch": [

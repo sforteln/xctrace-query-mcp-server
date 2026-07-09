@@ -1,14 +1,27 @@
 /**
- * Recording intent map — translates friendly verb intents into xctrace templates.
+ * Recording composition helpers — curated knowledge about xctrace templates
+ * and instruments, keyed by their REAL names (PMT:stubborn-beck).
  *
- * Agents and users think in intents ("profile CPU", "find leaks") not xctrace
- * template strings. This layer encodes the non-obvious rules — most importantly
- * the two-Leaks behavior: Leaks alone yields no backtraces; Allocations+Leaks
- * together gives leaked objects their responsible frames.
+ * Earlier versions of this file routed all of this through a `type` enum of
+ * friendly intent keys ("cpu", "leaks-backtraces", ...) that resolved to a
+ * real template internally. That layer was removed: its curated knowledge
+ * (which templates need launch not attach, which combinations need a
+ * specific note, which template bakes in which recordingOptions) is real and
+ * stays — but it now fires off the ACTUAL resolved template/instrument names
+ * a caller ends up with, regardless of how they got there, rather than
+ * requiring a specific enum key to unlock it. Two things justified the
+ * change: (1) hiding this behind a friendly-label translation layer stopped
+ * an agent from using its own genuine Instruments/xctrace domain knowledge to
+ * reason about what to do; (2) most of the curated behavior (privacy
+ * notices, recordingOptions) was ALREADY keyed off real names independent of
+ * the enum, so the enum's only genuinely unique value was a handful of
+ * multi-template recipes (most importantly: Leaks alone yields no
+ * backtraces; Allocations+Leaks together gives leaked objects their
+ * responsible frames) — which fire just as well keyed off the resolved set.
  *
  * The interactive start_recording/stop_recording MCP tools (recordingSession.ts)
- * call startSession() with the resolved intent. The output path is
- * auto-generated in the server-owned recordings directory.
+ * call startSession() with the caller's `template`/`instruments`. The output
+ * path is auto-generated in the server-owned recordings directory.
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";
@@ -18,51 +31,7 @@ import { openTrace } from "../engine/session.js";
 import type { RunSummary, InstrumentSummary, TimeRange } from "../engine/session.js";
 import { resolveAssetPath } from "./assetPaths.js";
 
-// ─── Intent model ─────────────────────────────────────────────────────────────
-
-export interface RecordingIntent {
-  /** Friendly name shown in the response so the agent knows what was recorded. */
-  label: string;
-  /**
-   * xctrace --template value. Undefined only for the synthetic ad-hoc intent
-   * start_recording builds for an instruments-only recording (no type/
-   * template/templates) — every REAL curated entry below always has one.
-   */
-  template?: string;
-  /**
-   * Extra instruments to add on top of the template via repeated
-   * `--instrument <name>`. Built-in templates are single-instrument — e.g.
-   * "Allocations" and "Leaks" are separate templates with no built-in
-   * combination — so this is the only way to record both in one pass.
-   */
-  extraInstruments?: string[];
-  /**
-   * When true, --launch is required and --attach is not accepted.
-   * App Launch is the only built-in intent with this constraint — its sole
-   * purpose is capturing the startup sequence from process creation.
-   */
-  launchRequired: boolean;
-  /** Extra explanation surfaced in the recording result. */
-  note?: string;
-  /**
-   * Privacy warning surfaced to the agent and user before recording starts.
-   * Set this for any template that captures user-generated content (prompts,
-   * network payloads, database records, etc.) that could contain PII or secrets.
-   */
-  privacyNotice?: string;
-  /**
-   * Per-instrument recording options applied via `xctrace record --recording-options`.
-   * Keys/values must match what `xcrun xctrace record --template <template>
-   * --show-recording-options` reports for that template — xctrace silently
-   * ignores unrecognised keys, so verify against that output before adding any.
-   * These are baked-in defaults, not agent-tunable: the intent layer's whole
-   * point is to keep raw xctrace knobs out of the tool surface, so only set
-   * this when there's no real tradeoff (e.g. layout tracing is strictly more
-   * data for free) — a genuine cost/benefit knob should stay at Apple's
-   * per-template default rather than becoming a one-off param.
-   */
-  recordingOptions?: Record<string, Record<string, unknown>>;
-}
+// ─── Template bundles ─────────────────────────────────────────────────────────
 
 /**
  * Which extra instruments a built-in xctrace TEMPLATE bundles for free, beyond
@@ -76,13 +45,14 @@ export interface RecordingIntent {
  * Why this matters: most of these template names are ALSO valid standalone
  * `--instrument` names (e.g. "Time Profiler" is both a template and an
  * instrument). The two composition params below (see StartSessionOptions in
- * recordingSession.ts) exist BECAUSE of this overlap: `templates` explicitly
- * asks for a name's full bundle (expandTemplates() below uses this table);
- * `instruments` explicitly asks for the bare instrument only, and is never
- * auto-promoted — an `instruments` entry that happens to match a key here
- * only gets a steer-to-`templates` note, never silent expansion. Naming was
- * deliberately picked to make the two knobs impossible to confuse: you say
- * which one you meant instead of the server guessing from an overloaded name.
+ * recordingSession.ts) exist BECAUSE of this overlap: an ARRAY entry in
+ * `template` (beyond the first/base one) explicitly asks for a name's full
+ * bundle (expandTemplates() below uses this table); `instruments` explicitly
+ * asks for the bare instrument only, and is never auto-promoted — an
+ * `instruments` entry that happens to match a key here only gets a
+ * steer-to-`template` note, never silent expansion. Naming was deliberately
+ * picked to make the two knobs impossible to confuse: you say which one you
+ * meant instead of the server guessing from an overloaded name.
  */
 export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"],
@@ -107,30 +77,67 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   // Hitches/Display/Time Profiler/Thread Activity/Thermal State/Hangs — no
   // signpost instrument at all): Animation Hitches' own os-signpost coverage is
   // a BARE 'os-signpost' schema only (no OSSignpostIntervals/os-signpost-arg/
-  // PointsOfInterestEvents) — see the "hitches" RECORDING_INTENTS note for the
+  // PointsOfInterestEvents) — see TEMPLATE_NOTES["Animation Hitches"] for the
   // caller-facing guidance this correction feeds into.
   "Animation Hitches": ["Hangs", "Time Profiler"],
   "Swift Concurrency": ["Hangs", "Points of Interest", "Time Profiler"],
 };
 
 /**
- * Look up the curated `recordingOptions` a RECORDING_INTENTS entry bakes in
- * for its own template (e.g. swiftui's `enableLayoutTracing`), keyed by
- * template name instead of intent name. Composing that template's name via
- * `templates` should carry these along too — otherwise expandTemplates would
- * correctly add the SwiftUI instrument + its Hangs + Time Profiler bundle,
- * but silently drop layout tracing, which is exactly the same
- * "looks complete, isn't" trap one level down.
+ * Curated `recordingOptions` a template needs baked in, keyed by its real
+ * name (e.g. SwiftUI's `enableLayoutTracing`). Composing that template's
+ * name via `template`'s array form should carry these along too — otherwise
+ * expandTemplates would correctly add the SwiftUI instrument + its Hangs +
+ * Time Profiler bundle, but silently drop layout tracing, which is exactly
+ * the same "looks complete, isn't" trap one level down. Keys/values must
+ * match what `xcrun xctrace record --template <template> --show-recording-
+ * options` reports for that template — xctrace silently ignores unrecognised
+ * keys, so verify against that output before adding any. These are baked-in
+ * defaults, not agent-tunable — only set one when there's no real tradeoff
+ * (e.g. layout tracing is strictly more data for free); a genuine cost/
+ * benefit knob should stay at Apple's per-template default rather than
+ * becoming a one-off param.
  */
-function templateRecordingOptions(
-  templateName: string
-): Record<string, Record<string, unknown>> | undefined {
-  for (const intent of Object.values(RECORDING_INTENTS) as RecordingIntent[]) {
-    if (intent.template === templateName && intent.recordingOptions) {
-      return intent.recordingOptions;
-    }
-  }
-  return undefined;
+export const TEMPLATE_RECORDING_OPTIONS: Record<string, Record<string, Record<string, unknown>>> = {
+  SwiftUI: { SwiftUI: { enableLayoutTracing: true } },
+};
+
+/**
+ * Custom, non-guessable shipped .tracetemplate assets — the ONE category of
+ * "friendly name" that survives the removal of the old `type` enum, because
+ * unlike every former `type` key (which was purely an ALIAS for a real,
+ * independently-discoverable xctrace template name — the caller could always
+ * have just used the real name directly), this has no real name at all: it's
+ * an absolute file path resolved at runtime relative to this package's
+ * install location, which a caller has no way to guess or discover via
+ * `xcrun xctrace list templates`. Resolved transparently wherever a
+ * `template` entry is given, same tolerant-alias spirit as before, just
+ * scoped down to genuinely unguessable resources instead of every recipe.
+ */
+export const CUSTOM_TEMPLATE_PATHS: Record<string, string> = {
+  // PMT:gold-haven: offline-validated custom template — VM Tracker's
+  // "Automatic Snapshotting" (3s interval) is baked in because it's
+  // template-only configuration xctrace's own --recording-options can't
+  // reach (verified live: --show-recording-options returns {} for VM
+  // Tracker — it has no exposed configurable options at all, not "nothing
+  // to configure"). Without this, VM Tracker's 'Regions Map' schema comes
+  // back EMPTY under both attach and launch.
+  "memory-vm": resolveAssetPath("AllocVMTrackerAuto3s.tracetemplate"),
+};
+
+/** Rich guidance for a custom template, keyed by its SHORT name (checked before path resolution). */
+export const CUSTOM_TEMPLATE_NOTES: Record<string, string> = {
+  "memory-vm":
+    "Custom template built via Instruments.app's GUI, not a stock xctrace template — VM Tracker's " +
+    "\"Automatic Snapshotting\" (3s interval) is baked in (see CUSTOM_TEMPLATE_PATHS' doc comment for why " +
+    "xctrace's own --recording-options can't reach this). Bundles VM Tracker's Regions Map for free " +
+    "alongside standard Allocations tracking — Points of Interest is NOT bundled (this template only " +
+    "composes Allocations + VM Tracker), so it's added automatically like any other POI-less template. " +
+    "Use template: \"Allocations\" instead for plain Allocations without the VM Tracker regions breakdown.",
+};
+
+export function resolveCustomTemplateName(name: string): string {
+  return CUSTOM_TEMPLATE_PATHS[name] ?? name;
 }
 
 export interface ExpandedTemplates {
@@ -160,34 +167,18 @@ export interface ExpandedTemplates {
 }
 
 /**
- * A caller reaching for `templates` sometimes writes a `type` enum key
- * (e.g. "swift-concurrency") instead of the real xctrace template name
- * ("Swift Concurrency") the two are easy to confuse — verified live, this
- * exact mistake happened in a real cross-AI conversation. Every `type` key
- * already knows its own real template name, so there's no reason to make
- * the caller get the casing/spelling exactly right for anything already
- * curated — resolve a recognized `type` key transparently. Anything else
- * passes through unchanged, assumed to already be a real template name
- * (e.g. an uncurated one no `type` covers) — if it's wrong, that's now a
- * genuine "check `xcrun xctrace list templates`" case, not a trap we set.
- */
-export function resolveTemplateName(name: string): string {
-  const intent = (RECORDING_INTENTS as Record<string, RecordingIntent>)[name];
-  return intent?.template ?? name;
-}
-
-/**
  * PMT:calm-starling: template names that do NOT also exist as a bare
  * `--instrument` name — confirmed live against every key in TEMPLATE_BUNDLES
  * via `xcrun xctrace list instruments` (2026-07-08). This matters because
- * expandTemplates() below composes an EXTRA `templates` entry by pushing its
- * own headline name into the bare-instrument list (`[name, ...bundle]`) — the
- * BASE template is always safe (passed via `--template`, never `--instrument`),
- * but composing one of THESE names as an extra tries `--instrument "<name>"`,
- * which xctrace rejects outright. Reproduced live: `xctrace record --template
- * "Time Profiler" --instrument "Data Persistence" ...` fails with "Instrument
- * with name 'Data Persistence' cannot be found" (exit 56) — previously an
- * opaque generic `record-failed`, not caught before ever shelling out.
+ * expandTemplates() below composes an EXTRA `template` array entry by pushing
+ * its own headline name into the bare-instrument list (`[name, ...bundle]`) —
+ * the BASE template is always safe (passed via `--template`, never
+ * `--instrument`), but composing one of THESE names as an extra tries
+ * `--instrument "<name>"`, which xctrace rejects outright. Reproduced live:
+ * `xctrace record --template "Time Profiler" --instrument "Data Persistence"
+ * ...` fails with "Instrument with name 'Data Persistence' cannot be found"
+ * (exit 56) — previously an opaque generic `record-failed`, not caught
+ * before ever shelling out.
  *
  * Every other TEMPLATE_BUNDLES key (Time Profiler, SwiftUI, Foundation Models,
  * CPU Profiler, Leaks, Allocations, Power Profiler, Core AI, Core ML,
@@ -204,7 +195,7 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
 ]);
 
 /**
- * Expand a caller's explicit `templates` list — additional WHOLE templates to
+ * Expand a caller's explicit additional-template names — WHOLE templates to
  * layer onto the base one — into the real union of instruments xctrace needs,
  * plus any recordingOptions those templates bake in. Each name is expanded to
  * `[name, ...TEMPLATE_BUNDLES[name]]`; a name with no known bundle still
@@ -222,7 +213,7 @@ export function expandTemplates(
   resolvedTemplate: string | undefined
 ): ExpandedTemplates {
   // `resolvedTemplate` is undefined only for an instruments-only recording
-  // (no type/template/templates at all, xctrace's implicit "Blank template")
+  // (no template/instruments at all, xctrace's implicit "Blank template")
   // — there's no base to seed `seen`/`baseCovered` with in that case.
   const baseLabel = resolvedTemplate ?? "(no base template — instruments-only)";
   const seen = new Set<string>(resolvedTemplate !== undefined ? [resolvedTemplate] : []);
@@ -240,14 +231,14 @@ export function expandTemplates(
   const fidelityAtRisk = new Set<string>();
 
   for (const rawName of names) {
-    const name = resolveTemplateName(rawName);
+    const name = resolveCustomTemplateName(rawName);
     if (name !== resolvedTemplate && TEMPLATE_ONLY_NAMES.has(name)) {
       throw new XctraceError(
         "template-only-name",
-        `"${name}" is a TEMPLATE name with no matching bare \`--instrument\` — composing it via ` +
-          `\`templates\` (as an extra on top of "${resolvedTemplate}") is not supported by xctrace: ` +
-          `confirmed live that this fails outright ("Instrument with name '${name}' cannot be found"). ` +
-          `Use it as your BASE template instead (the \`template\`/\`type\` param), or check ` +
+        `"${name}" is a TEMPLATE name with no matching bare \`--instrument\` — composing it as an extra ` +
+          `(on top of "${resolvedTemplate}") is not supported by xctrace: confirmed live that this fails ` +
+          `outright ("Instrument with name '${name}' cannot be found"). Use it as your BASE template ` +
+          `instead (the first entry when \`template\` is an array, or a bare \`template\` string), or check ` +
           `\`xcrun xctrace list instruments\` for a real bare-instrument alternative.`
       );
     }
@@ -263,7 +254,7 @@ export function expandTemplates(
         // Only the AUXILIARY bundle instruments are a fidelity concern — the
         // composed template's own headline instrument (`name`) is what the
         // caller explicitly asked for, and its own tuned recordingOptions (if
-        // any) are already separately preserved via templateRecordingOptions()
+        // any) are already separately preserved via TEMPLATE_RECORDING_OPTIONS
         // regardless of bare-vs-template addition (e.g. SwiftUI's
         // enableLayoutTracing). It's the bundle items riding along implicitly
         // (e.g. Hangs, Time Profiler) whose tuned config/auxiliary behavior
@@ -275,10 +266,10 @@ export function expandTemplates(
         }
       }
     }
-    const opts = templateRecordingOptions(name);
+    const opts = TEMPLATE_RECORDING_OPTIONS[name];
     if (opts) Object.assign(recordingOptions, opts);
 
-    const resolvedNote = name !== rawName ? ` ("${rawName}" is a \`type\` key — resolved to its real template)` : "";
+    const resolvedNote = name !== rawName ? ` ("${rawName}" is a custom template shortcut — resolved to its real path)` : "";
     const fidelityNote =
       addedAtRisk.length > 0
         ? ` ${addedAtRisk.join(", ")} ${addedAtRisk.length === 1 ? "was" : "were"} added bare (not part of ` +
@@ -305,7 +296,7 @@ export function expandTemplates(
  * is recorded exactly as named — no expansion — since a caller reaching for
  * `instruments` may deliberately want just that one bare signal (e.g. to
  * avoid a second CPU-sampling instrument already covered elsewhere). This
- * only adds a note pointing at `templates` in case the caller actually meant
+ * only adds a note pointing at `template` in case the caller actually meant
  * "the whole template" and picked the wrong param.
  */
 export function bareInstrumentTemplateNotes(
@@ -320,7 +311,7 @@ export function bareInstrumentTemplateNotes(
       notes.push(
         `instruments: ["${name}"] was recorded as that BARE instrument only — it does NOT include ` +
         `what the "${name}" TEMPLATE bundles for free (${bundle.join(" + ")}). If you wanted the ` +
-        `whole template, pass templates: ["${name}"] instead (or the matching \`type\`, if one exists).`
+        `whole template, pass template: ["${name}"] instead.`
       );
     }
   }
@@ -372,33 +363,6 @@ export function mitigateHangsOsLogFidelity(
   };
 }
 
-/**
- * PMT:plain-creek: default bare "Points of Interest" onto every recording
- * whose resolved template doesn't already bundle it — unconditional, not
- * gated on a risk signal the way mitigateHangsOsLogFidelity is, because the
- * two confirmed facts that justify Hangs' conditional/compensating shape
- * don't apply here: (1) fidelity — calm-starling already confirmed composing
- * "Points of Interest" bare has NO fidelity loss (unlike os_log for Hangs,
- * the full instrument's own default capture is already complete); (2) cost —
- * re-verified live (2026-07-08) at 60s against a quiet target (Finder) and
- * 30s against a busier one (Xcode): POI's OWN schemas (os-signpost,
- * OSSignpostIntervals, os-signpost-arg, PointsOfInterestEvents) stayed at 0
- * rows in every run, quiet or busy — this Mac's live targets never called
- * os_signpost during the test windows, so genuine signpost-VOLUME cost is
- * still unmeasured. Bundle-size deltas that showed up between runs (e.g.
- * +21% Xcode base-vs-POI) traced entirely to OTHER already-present schemas
- * (kdebug/cpu-profile/runloop-events), and a base-vs-base control (no POI
- * instrument at all) reproduced comparable or larger swings in those same
- * schemas — confirming the deltas are ordinary run-to-run noise on a live,
- * uncontrolled process, not a POI-attributable cost. Net: near-zero cost
- * confirmed for the common (no-signpost) case; near-zero cost for a genuine
- * signpost-heavy target remains a reasoned expectation (signposts are just
- * unified-logging entries, architecturally same cost family as birch-river's
- * already-measured small-per-line os_log cost), not something this session
- * could measure directly. That asymmetry — free when unused, valuable when
- * used, worst case small and never worse than the caller could get by adding
- * it explicitly — is why it defaults on rather than waiting to be asked.
- */
 /**
  * PMT:stormy-coast: curated device-only instrument map, keyed by hardware
  * dependency. xctrace does NOT expose Simulator compatibility — only the
@@ -517,12 +481,12 @@ export const KNOWN_BROKEN_INSTRUMENTS: Record<string, KnownBrokenInstrumentEntry
         "Every OTHER instrument in the Network template records fine; only Network Connections crashes.",
       mitigation:
         "Retry with instruments: [\"HTTP Traffic\"] (or other Network-template members) individually " +
-        "instead of type: \"network\" / templates: [\"Network\"], which pulls in Network Connections as " +
-        "part of its bundle. The SAME \"Document Missing Template Error\" symptom was also reproduced " +
-        "with a completely different pairing (templates: [\"File Activity\"] + Time Profiler/Hangs on " +
-        "this same beta) — evidence this is a broader unstable-COMBINATION pattern on this Xcode version, " +
-        "not specific to Network Connections alone, so retrying with FEWER composed instruments generally " +
-        "is the safer move, not just swapping out this one name.",
+        "instead of template: \"Network\", which pulls in Network Connections as part of its bundle. The " +
+        "SAME \"Document Missing Template Error\" symptom was also reproduced with a completely different " +
+        "pairing (template: [\"File Activity\"] + Time Profiler/Hangs on this same beta) — evidence this " +
+        "is a broader unstable-COMBINATION pattern on this Xcode version, not specific to Network " +
+        "Connections alone, so retrying with FEWER composed instruments generally is the safer move, not " +
+        "just swapping out this one name.",
       verifiedAt:
         "2026-07-08, PMT:ash-stone (HTTPTraffic.trace device recording + manual Instruments.app GUI " +
         "repro that isolated Network Connections as the crashing instrument).",
@@ -582,246 +546,191 @@ export function defaultPointsOfInterest(
   };
 }
 
-export const RECORDING_INTENTS = {
-  cpu: {
-    label: "Time Profiler",
-    template: "Time Profiler",
-    launchRequired: false,
-    note:
-      "The Time Profiler template already bundles Hangs + Points of Interest + Thermal State " +
-      "for free — after opening, query 'potential-hangs'/'hitches' and points-of-interest " +
-      "schemas alongside the CPU samples, no extra instruments needed.",
-  },
-  memory: {
-    label: "Allocations",
-    template: "Allocations",
-    launchRequired: false,
-    note: "The Allocations template already bundles Points of Interest for free.",
-  },
-  "memory-vm": {
-    label: "Allocations + VM Tracker (Automatic Snapshotting)",
-    // A custom, offline-validated .tracetemplate (PMT:gold-haven) shipped with
-    // this package — NOT a stock xctrace template name. start_recording's
-    // `template` param already accepts a raw path with no code changes
-    // (passed straight through to `xctrace --template <value>`); resolving it
-    // here means the caller never has to know that.
-    template: resolveAssetPath("AllocVMTrackerAuto3s.tracetemplate"),
-    launchRequired: false,
-    note:
-      "Custom template built via Instruments.app's GUI, not a stock xctrace template — VM Tracker's " +
-      "\"Automatic Snapshotting\" (3s interval) is baked in because it's template-only configuration " +
-      "xctrace's own --recording-options can't reach (verified live: --show-recording-options returns " +
-      "{} for VM Tracker — it has no exposed configurable options at all, not \"nothing to configure\"). " +
-      "Without this, VM Tracker's 'Regions Map' schema comes back EMPTY under both attach and launch. " +
-      "Bundles VM Tracker's Regions Map for free alongside standard Allocations tracking — Points of " +
-      "Interest is NOT bundled (this template only composes Allocations + VM Tracker), so it's added " +
-      "automatically like any other POI-less template. Use type: \"memory\" instead for plain " +
-      "Allocations without the VM Tracker regions breakdown.",
-  },
-  network: {
-    label: "Network",
-    template: "Network",
-    launchRequired: false,
-    note:
-      "The Network template already bundles Points of Interest for free. It fuses TWO independent " +
-      "sources with DIFFERENT scoping: (1) per-process CFNetwork/URLSession client tables — respect " +
-      "attach/launch, but only capture OUTBOUND URLSession/CFNetwork client activity, so they're empty " +
-      "for a socket server or any non-URLSession networking (verified live: empty for an MCP server " +
-      "that only accepts inbound connections). (2) NetworkConnectionStats/network-connection-update/" +
-      "network-connection-detected — a system-wide interface tap that IGNORES attach/launch entirely " +
-      "and records every process on the interface; scope these with a pid/process filter via " +
-      "find/aggregate instead. Also: loopback traffic (localhost/127.0.0.1/::1) is NEVER captured — " +
-      "the tap is bound to physical interfaces (e.g. en0/Wi-Fi), not loopback. To profile a localhost-" +
-      "only client+server pair, drive the traffic from ANOTHER host on the same network so it crosses " +
-      "a physical interface instead.",
-    privacyNotice:
-      "Network recordings capture all HTTP/HTTPS traffic including request bodies, " +
-      "response payloads, cookies, and authorization headers. " +
-      "API keys, session tokens, and user data may be stored in the trace.",
-  },
-  launch: {
-    label: "App Launch",
-    template: "App Launch",
-    launchRequired: true,
-    note:
-      "App Launch requires --launch: its purpose is capturing the startup sequence from " +
-      "process creation. Use record_cpu with attach for CPU profiling of a running app. " +
-      "The App Launch template already bundles Time Profiler for free. IMPORTANT — if the " +
-      "target app is ALREADY RUNNING, --launch does NOT start a fresh process: most macOS/" +
-      "iOS apps are effectively singleton, so the OS just activates/foregrounds the existing " +
-      "instance instead of launching a new one — there is no real launch event for this " +
-      "template to capture, so the recording silently produces no startup data (not an error, " +
-      "just an empty/uninteresting trace). Verified live (PMT:loam-merlin, FileActivity " +
-      "session): fully quit the target app first, THEN start this recording, so --launch " +
-      "triggers a genuine process-creation event.",
-  },
-  leaks: {
-    label: "Leaks",
-    template: "Leaks",
-    launchRequired: false,
-    note:
-      "Records Leaks only — fast, gives the leak list without responsible call frames. " +
-      'Use "leaks-backtraces" to also capture stack frames (records Allocations + Leaks). ' +
-      "The Leaks template already bundles Points of Interest for free.",
-  },
-  "leaks-backtraces": {
-    label: "Allocations + Leaks (with backtraces)",
-    template: "Allocations",
-    extraInstruments: ["Leaks"],
-    launchRequired: false,
-    note:
-      "Records Allocations + Leaks together so leaked objects carry responsible frames. " +
-      'Use "leaks" for a faster Leaks-only recording (leak list, no stacks). ' +
-      "Prefer launch over attach when you actually need to see WHERE a leaked object " +
-      "came from: malloc stack logging only captures allocations made DURING the " +
-      "recording, so with attach, anything already live when Instruments attaches has " +
-      "no stack in principle, not from a symbolication failure — confirmed both by " +
-      "get_row's PRE-ATTACHMENT label on Leaks/Leaks (join to Allocations/Allocations " +
-      'List shows timestamp 0) and by Instruments.app\'s own UI ("No stack trace is ' +
-      'available for this leak. It may have been allocated before the recording ' +
-      'started."). Attach is fine when you only need the leak list/counts, not the callsite. ' +
-      "The Allocations base template already bundles Points of Interest for free.",
-  },
-  hangs: {
-    label: "CPU Profiler (Hangs, low overhead)",
-    template: "CPU Profiler",
-    launchRequired: false,
-    note:
-      "Records hangs and hang-risk events at low overhead — verified live: this template's real " +
-      "schemas are 'potential-hangs' and 'hang-risks' (NOT 'hitches' — that schema only comes from " +
-      "type: \"hitches\"/Animation Hitches; if you're chasing frame drops during scrolling/animation " +
-      "specifically, use that instead). Points of Interest is already bundled for free. " +
-      "IMPORTANT — decide this NOW, not after recording: 'potential-hangs' carries start/duration/" +
-      "thread/process but NO backtrace column — it tells you WHEN a hang happened, never WHAT was " +
-      "running, and this template has no CPU-sampling instrument to correlate against (its own " +
-      "'cpu-profile' schema is a lightweight counter-based profile, not the tagged-backtrace " +
-      "'time-profile' schema call_tree/correlate need). If you already know you'll want to see what " +
-      "the app was doing during a hang, don't compose templates: [\"Time Profiler\"] onto this — " +
-      "use type: \"cpu\" instead: Time Profiler's own template already bundles Hangs + Points of " +
-      "Interest + Thermal State for free, so it's a strict superset of this recording plus full CPU " +
-      "attribution, in one pass, without running two separate CPU-sampling instruments side by side. " +
-      "Reach for type: \"hangs\" specifically when you want lower-overhead hang-watching over a long " +
-      "session and don't need CPU attribution. To confirm whether the main thread was GENUINELY " +
-      "busy during a hang investigation (rather than just parked waiting on a mach port, which a " +
-      "sampled thread can look identical to), compose instruments: [\"Run Loops\"] into the recording " +
-      "— its 'runloop-intervals' schema's interval-type: \"Busy\" rows are a direct, explicit signal " +
-      "for real main-thread work, distinct from benign \"Waiting For Events\" idle time. " +
-      "TRYING TO CAPTURE A SEVERE HANG specifically (not routine profiling)? This template's low " +
-      "overhead is exactly what you want — a heavier instrument (e.g. full SwiftUI tracing) adds " +
-      "real load that can worsen the exact condition you're trying to capture (verified live, " +
-      "PMT:onyx-spark: an 852K-row swiftui-updates stream measurably worsened an already-severe hang " +
-      "during capture). Pair with a bounded timeLimit rather than open-ended interactive recording " +
-      "— auto-finalize can preserve bundle structure even if the recording host itself freezes mid-" +
-      "session, which open-ended recording can't. See aidocs/howRecordingWorks.md for the full case, " +
-      "including the harder limit: a hang severe enough to freeze the IDE hosting BOTH the target " +
-      "and this recorder's own connection may not be reliably capturable from inside that same host " +
-      "at all, regardless of instrument choice or timeLimit.",
-  },
-  hitches: {
-    label: "Animation Hitches",
-    template: "Animation Hitches",
-    launchRequired: false,
-    note:
-      "Records animation hitches (frame drops during scrolling, animations, and transitions). " +
-      "After opening, query the 'hitches' schema — like 'potential-hangs', it carries no " +
-      "backtrace of its own, but UNLIKE 'hangs' (type: \"hangs\"), you don't need to compose " +
-      "anything extra to find out what was running: the Animation Hitches template already " +
-      "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
-      "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
-      "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
-      "timeRange: <the hitch's window>), no re-recording needed. Its OWN os_signpost coverage is " +
-      "partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, missing " +
-      "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — if the app calls os_signpost " +
-      "and you need the full picture, compose instruments: [\"Points of Interest\"] explicitly " +
-      "(safe to add bare — unlike Hangs/os-log, the full instrument's own default capture is " +
-      "already complete, no fidelity loss from composing it this way).",
-  },
-  "swift-concurrency": {
-    label: "Swift Concurrency",
-    template: "Swift Concurrency",
-    launchRequired: false,
-    note:
-      "Records Swift Task and Actor lifetimes, executor queue depth, and task state transitions. " +
-      "After opening, query SwiftTaskLifetime, SwiftActorLifetime, SwiftActorQueueSize, " +
-      "SwiftTaskCreationEvent, and SwiftTaskStateTable schemas. The Swift Concurrency template " +
-      "already bundles Hangs + Points of Interest + Time Profiler for free.",
-  },
-  swiftui: {
-    label: "SwiftUI",
-    template: "SwiftUI",
-    launchRequired: false,
-    note:
-      "Records SwiftUI view body re-evaluations, state changes, and layout passes " +
-      "(layout tracing is enabled by default). After opening, query 'swiftui-updates' " +
-      "and 'swiftui-changes' for update/cause events, or 'swiftui-layout-updates' / " +
-      "'SwiftUILayoutUpdates2' for per-view layout pass timing. The SwiftUI template already " +
-      "bundles Hangs + Time Profiler for free (with highFrequencySampling enabled) — query " +
-      "Time Profiler's schemas directly for CPU cost alongside the view-update data, no " +
-      "extra instruments or a separate recording needed.",
-    recordingOptions: {
-      SwiftUI: { enableLayoutTracing: true },
-    },
-  },
-  "core-data": {
-    label: "Data Persistence (Core Data / SwiftData)",
-    template: "Data Persistence",
-    launchRequired: false,
-    note:
-      "Records Core Data and SwiftData object faults, relationship faults, fetches, and saves. " +
-      "After opening, query 'core-data-fault', 'core-data-relationship-fault', " +
-      "'core-data-fetch', and 'core-data-save' schemas. " +
-      "To attribute this activity to the UI event that triggered it, pass " +
-      "templates: [\"SwiftUI\"] to start_recording — each row's Caller backtrace already " +
-      "resolves the full call chain (e.g. a SwiftUI view body update through AttributeGraph " +
-      "into the fetch), readable directly via get_row, no extra correlation step needed. " +
-      "templates (not instruments) is what you want here: it records the COMPLETE SwiftUI " +
-      "template — its own Hangs + Time Profiler bundle, layout tracing enabled — alongside " +
-      "Data Persistence, in one recording. instruments: [\"SwiftUI\"] would give you only " +
-      "the bare SwiftUI instrument, missing that bundle. ORDER MATTERS: type:\"core-data\" must " +
-      "be the BASE — the reverse (type:\"swiftui\" + templates:[\"core-data\"]) fails outright " +
-      "(\"Data Persistence\" has no bare --instrument form xctrace can compose as an extra; " +
-      "verified live, error kind \"template-only-name\"). Data Persistence's OWN os_signpost " +
-      "coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, " +
-      "missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — compose " +
-      "instruments: [\"Points of Interest\"] explicitly if the app calls os_signpost and you " +
-      "need the full picture (safe to add bare — no fidelity loss from composing it this way).",
-    privacyNotice:
-      "Data Persistence recordings capture entity names, fetch predicates, and object contents. " +
-      "Database records including user-generated content may be stored in the trace.",
-  },
-  "foundation-models": {
-    label: "Foundation Models",
-    template: "Foundation Models",
-    launchRequired: false,
-    note:
-      "Records all on-device Foundation Models inference calls: prompts, responses, " +
-      "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable. " +
-      "To confirm inference actually ran on the Neural Engine (rather than falling back to CPU/GPU) " +
-      "and measure real hardware utilization, compose instruments: [\"Neural Engine\"] into this " +
-      "recording — verified live: it adds the 'ane-hw-intervals' schema (start/duration per ANE-busy " +
-      "interval, no thread/backtrace column), which correlate can pair against ModelInferenceTable's " +
-      "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
-      "this inference' — a provable hardware fact, not an assumption. Foundation Models' OWN " +
-      "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare " +
-      "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — " +
-      "compose instruments: [\"Points of Interest\"] explicitly if you need the full signpost " +
-      "picture (safe to add bare — no fidelity loss from composing it this way).",
-    privacyNotice:
-      "This recording captures ALL Foundation Models prompts and responses in unencrypted form, " +
-      "including any sensitive or personally identifying information such as emails, messages, " +
-      "phone numbers, usernames, access tokens, and passwords. " +
-      "Inform the user before starting — xctrace will also log this data to system logs.",
-  },
-} satisfies Record<string, RecordingIntent>;
+/**
+ * Whether a resolved base template requires --launch (App Launch's sole
+ * purpose is capturing the startup sequence from process creation, which
+ * only a genuine process-creation event — not an --attach to an already-
+ * running process — can produce). Checked against the ACTUAL resolved
+ * template/instrument set rather than a `type` key, so it applies whether
+ * "App Launch" was reached as the base template or (structurally possible,
+ * though unusual) as a composed extra.
+ */
+export const LAUNCH_REQUIRED_TEMPLATES = new Set<string>(["App Launch"]);
 
 /**
- * Privacy notices keyed by template OR instrument name. Distinct from
- * RecordingIntent.privacyNotice above (which is the curated, more detailed
- * text for a whole intent's base template): this covers ad-hoc composition —
- * extraInstruments, a caller-supplied `instruments` or `templates` list, or a
- * raw `template` override — so e.g. composing `templates: ["Foundation
- * Models"]` on top of an unrelated intent still surfaces a warning, not just
- * the built-in foundation-models intent itself.
+ * Curated guidance notes, keyed by REAL template name — migrated verbatim
+ * (PMT:stubborn-beck) from the old per-`type` RECORDING_INTENTS notes. Fires
+ * for the resolved BASE template only (matching the old behavior: a
+ * composed EXTRA template via `template`'s array form only ever got
+ * expandTemplates' generic "expanded to X+Y" note, never a `type`-specific
+ * one either) — see allocationsLeaksNote() below for the one recipe
+ * (Allocations+Leaks) that genuinely needs to consider the full resolved
+ * set, not just the base.
+ */
+export const TEMPLATE_NOTES: Record<string, string> = {
+  "Time Profiler":
+    "The Time Profiler template already bundles Hangs + Points of Interest + Thermal State " +
+    "for free — after opening, query 'potential-hangs'/'hitches' and points-of-interest " +
+    "schemas alongside the CPU samples, no extra instruments needed.",
+  Network:
+    "The Network template already bundles Points of Interest for free. It fuses TWO independent " +
+    "sources with DIFFERENT scoping: (1) per-process CFNetwork/URLSession client tables — respect " +
+    "attach/launch, but only capture OUTBOUND URLSession/CFNetwork client activity, so they're empty " +
+    "for a socket server or any non-URLSession networking (verified live: empty for an MCP server " +
+    "that only accepts inbound connections). (2) NetworkConnectionStats/network-connection-update/" +
+    "network-connection-detected — a system-wide interface tap that IGNORES attach/launch entirely " +
+    "and records every process on the interface; scope these with a pid/process filter via " +
+    "find/aggregate instead. Also: loopback traffic (localhost/127.0.0.1/::1) is NEVER captured — " +
+    "the tap is bound to physical interfaces (e.g. en0/Wi-Fi), not loopback. To profile a localhost-" +
+    "only client+server pair, drive the traffic from ANOTHER host on the same network so it crosses " +
+    "a physical interface instead.",
+  "App Launch":
+    "App Launch requires --launch: its purpose is capturing the startup sequence from process " +
+    "creation. Use template: \"Time Profiler\" with attach for CPU profiling of an already-running " +
+    "app. The App Launch template already bundles Time Profiler for free. IMPORTANT — if the target " +
+    "app is ALREADY RUNNING, --launch does NOT start a fresh process: most macOS/iOS apps are " +
+    "effectively singleton, so the OS just activates/foregrounds the existing instance instead of " +
+    "launching a new one — there is no real launch event for this template to capture, so the " +
+    "recording silently produces no startup data (not an error, just an empty/uninteresting trace). " +
+    "Verified live (PMT:loam-merlin, FileActivity session): fully quit the target app first, THEN " +
+    "start this recording, so --launch triggers a genuine process-creation event.",
+  "CPU Profiler":
+    "Records hangs and hang-risk events at low overhead — verified live: this template's real " +
+    "schemas are 'potential-hangs' and 'hang-risks' (NOT 'hitches' — that schema only comes from " +
+    "template: \"Animation Hitches\"; if you're chasing frame drops during scrolling/animation " +
+    "specifically, use that instead). Points of Interest is already bundled for free. " +
+    "IMPORTANT — decide this NOW, not after recording: 'potential-hangs' carries start/duration/" +
+    "thread/process but NO backtrace column — it tells you WHEN a hang happened, never WHAT was " +
+    "running, and this template has no CPU-sampling instrument to correlate against (its own " +
+    "'cpu-profile' schema is a lightweight counter-based profile, not the tagged-backtrace " +
+    "'time-profile' schema call_tree/correlate need). If you already know you'll want to see what " +
+    "the app was doing during a hang, don't compose \"Time Profiler\" onto this — use template: " +
+    "\"Time Profiler\" instead: its own template already bundles Hangs + Points of Interest + " +
+    "Thermal State for free, so it's a strict superset of this recording plus full CPU attribution, " +
+    "in one pass, without running two separate CPU-sampling instruments side by side. Reach for " +
+    "template: \"CPU Profiler\" specifically when you want lower-overhead hang-watching over a long " +
+    "session and don't need CPU attribution. To confirm whether the main thread was GENUINELY " +
+    "busy during a hang investigation (rather than just parked waiting on a mach port, which a " +
+    "sampled thread can look identical to), compose instruments: [\"Run Loops\"] into the recording " +
+    "— its 'runloop-intervals' schema's interval-type: \"Busy\" rows are a direct, explicit signal " +
+    "for real main-thread work, distinct from benign \"Waiting For Events\" idle time. " +
+    "TRYING TO CAPTURE A SEVERE HANG specifically (not routine profiling)? This template's low " +
+    "overhead is exactly what you want — a heavier instrument (e.g. full SwiftUI tracing) adds " +
+    "real load that can worsen the exact condition you're trying to capture (verified live, " +
+    "PMT:onyx-spark: an 852K-row swiftui-updates stream measurably worsened an already-severe hang " +
+    "during capture). Pair with a bounded timeLimit rather than open-ended interactive recording " +
+    "— auto-finalize can preserve bundle structure even if the recording host itself freezes mid-" +
+    "session, which open-ended recording can't. See aidocs/howRecordingWorks.md for the full case, " +
+    "including the harder limit: a hang severe enough to freeze the IDE hosting BOTH the target " +
+    "and this recorder's own connection may not be reliably capturable from inside that same host " +
+    "at all, regardless of instrument choice or timeLimit.",
+  "Animation Hitches":
+    "Records animation hitches (frame drops during scrolling, animations, and transitions). " +
+    "After opening, query the 'hitches' schema — like 'potential-hangs', it carries no " +
+    "backtrace of its own, but UNLIKE CPU Profiler's hang-only recording, you don't need to compose " +
+    "anything extra to find out what was running: the Animation Hitches template already " +
+    "bundles Hangs + Time Profiler for free (with a tighter 33ms hang threshold tuned for " +
+    "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
+    "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
+    "timeRange: <the hitch's window>), no re-recording needed. Its OWN os_signpost coverage is " +
+    "partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, missing " +
+    "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — if the app calls os_signpost " +
+    "and you need the full picture, compose instruments: [\"Points of Interest\"] explicitly " +
+    "(safe to add bare — unlike Hangs/os-log, the full instrument's own default capture is " +
+    "already complete, no fidelity loss from composing it this way).",
+  "Swift Concurrency":
+    "Records Swift Task and Actor lifetimes, executor queue depth, and task state transitions. " +
+    "After opening, query SwiftTaskLifetime, SwiftActorLifetime, SwiftActorQueueSize, " +
+    "SwiftTaskCreationEvent, and SwiftTaskStateTable schemas. The Swift Concurrency template " +
+    "already bundles Hangs + Points of Interest + Time Profiler for free.",
+  SwiftUI:
+    "Records SwiftUI view body re-evaluations, state changes, and layout passes " +
+    "(layout tracing is enabled by default). After opening, query 'swiftui-updates' " +
+    "and 'swiftui-changes' for update/cause events, or 'swiftui-layout-updates' / " +
+    "'SwiftUILayoutUpdates2' for per-view layout pass timing. The SwiftUI template already " +
+    "bundles Hangs + Time Profiler for free (with highFrequencySampling enabled) — query " +
+    "Time Profiler's schemas directly for CPU cost alongside the view-update data, no " +
+    "extra instruments or a separate recording needed.",
+  "Data Persistence":
+    "Records Core Data and SwiftData object faults, relationship faults, fetches, and saves. " +
+    "After opening, query 'core-data-fault', 'core-data-relationship-fault', " +
+    "'core-data-fetch', and 'core-data-save' schemas. " +
+    "To attribute this activity to the UI event that triggered it, pass " +
+    "template: [\"Data Persistence\", \"SwiftUI\"] to start_recording — each row's Caller backtrace " +
+    "already resolves the full call chain (e.g. a SwiftUI view body update through AttributeGraph " +
+    "into the fetch), readable directly via get_row, no extra correlation step needed. " +
+    "template's array form (not instruments) is what you want here: it records the COMPLETE SwiftUI " +
+    "template — its own Hangs + Time Profiler bundle, layout tracing enabled — alongside " +
+    "Data Persistence, in one recording. instruments: [\"SwiftUI\"] would give you only " +
+    "the bare SwiftUI instrument, missing that bundle. ORDER MATTERS: \"Data Persistence\" must " +
+    "be FIRST in the template array (the base) — the reverse (template: [\"SwiftUI\", \"Data " +
+    "Persistence\"]) fails outright (\"Data Persistence\" has no bare --instrument form xctrace can " +
+    "compose as an extra; verified live, error kind \"template-only-name\"). Data Persistence's OWN " +
+    "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' " +
+    "schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — compose " +
+    "instruments: [\"Points of Interest\"] explicitly if the app calls os_signpost and you " +
+    "need the full picture (safe to add bare — no fidelity loss from composing it this way).",
+  "Foundation Models":
+    "Records all on-device Foundation Models inference calls: prompts, responses, " +
+    "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable. " +
+    "To confirm inference actually ran on the Neural Engine (rather than falling back to CPU/GPU) " +
+    "and measure real hardware utilization, compose instruments: [\"Neural Engine\"] into this " +
+    "recording — verified live: it adds the 'ane-hw-intervals' schema (start/duration per ANE-busy " +
+    "interval, no thread/backtrace column), which correlate can pair against ModelInferenceTable's " +
+    "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
+    "this inference' — a provable hardware fact, not an assumption. Foundation Models' OWN " +
+    "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare " +
+    "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents — " +
+    "compose instruments: [\"Points of Interest\"] explicitly if you need the full signpost " +
+    "picture (safe to add bare — no fidelity loss from composing it this way).",
+};
+
+/**
+ * Migrated from RECORDING_INTENTS' old "memory"/"leaks"/"leaks-backtraces"
+ * entries (PMT:stubborn-beck) — the two-Leaks behavior (Leaks alone yields
+ * no backtraces; Allocations+Leaks together gives leaked objects their
+ * responsible frames) was previously reachable only via picking the right
+ * `type` key. It now fires off the ACTUAL resolved template/instrument set
+ * (base + composed extras, whichever role each played), so it's correct
+ * regardless of how the caller arrived at that combination — e.g. Leaks
+ * composed as a bare extra instrument on an Allocations base (the old
+ * "leaks-backtraces" shape) triggers the exact same guidance as Allocations
+ * and Leaks both passed as a `template` array.
+ */
+export function allocationsLeaksNote(resolvedNames: Set<string>): string | undefined {
+  const hasAllocations = resolvedNames.has("Allocations");
+  const hasLeaks = resolvedNames.has("Leaks");
+  if (hasAllocations && hasLeaks) {
+    return (
+      "Allocations + Leaks together: leaked objects carry responsible frames. Prefer launch over attach " +
+      "when you actually need to see WHERE a leaked object came from: malloc stack logging only captures " +
+      "allocations made DURING the recording, so with attach, anything already live when Instruments " +
+      "attaches has no stack in principle, not from a symbolication failure — confirmed both by get_row's " +
+      "PRE-ATTACHMENT label on Leaks/Leaks (join to Allocations/Allocations List shows timestamp 0) and by " +
+      "Instruments.app's own UI (\"No stack trace is available for this leak. It may have been allocated " +
+      "before the recording started.\"). Attach is fine when you only need the leak list/counts, not the " +
+      "callsite. The Allocations base template already bundles Points of Interest for free."
+    );
+  }
+  if (hasLeaks) {
+    return (
+      "Leaks alone — fast, gives the leak list without responsible call frames. Compose template: " +
+      "[\"Allocations\", \"Leaks\"] together to also capture stack frames. The Leaks template already " +
+      "bundles Points of Interest for free."
+    );
+  }
+  if (hasAllocations) {
+    return "The Allocations template already bundles Points of Interest for free.";
+  }
+  return undefined;
+}
+
+/**
+ * Privacy notices keyed by template OR instrument name — covers BOTH the
+ * resolved base template and any ad-hoc composition (extraInstruments, a
+ * caller-supplied `instruments` or additional-`template` entry), so e.g.
+ * composing "Foundation Models" as an extra on an unrelated base still
+ * surfaces the warning, not just when it's the base itself.
  */
 const SENSITIVE_NAME_NOTICES: Record<string, string> = {
   Network:
@@ -849,10 +758,9 @@ const SENSITIVE_NAME_NOTICES: Record<string, string> = {
 
 /**
  * Collect distinct privacy notices for a set of template/instrument names,
- * in first-seen order. Callers typically pass extraInstruments/instruments/
- * a raw template override — NOT the base intent's own template, since that's
- * already covered by RecordingIntent.privacyNotice (more detailed, curated
- * text) and would otherwise show a redundant second notice.
+ * in first-seen order. Pass every resolved name (base template + composed
+ * extras + bare instruments) — there's no separate "intent-level" notice
+ * layer anymore, this is the single source of truth.
  */
 export function collectPrivacyNotices(names: (string | undefined)[]): string[] {
   const notices: string[] = [];
@@ -903,9 +811,9 @@ export async function defaultOutputPath(template: string): Promise<string> {
 }
 
 /**
- * Write an intent's recordingOptions to a JSON file alongside the trace output
- * (same directory, same base name) so xctrace's --recording-options can find it.
- * Returns undefined when the intent has no recordingOptions — callers skip the flag.
+ * Write recordingOptions to a JSON file alongside the trace output (same
+ * directory, same base name) so xctrace's --recording-options can find it.
+ * Returns undefined when there are no recordingOptions — callers skip the flag.
  */
 export async function writeRecordingOptionsFile(
   outputPath: string,

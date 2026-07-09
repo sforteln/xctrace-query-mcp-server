@@ -92,10 +92,10 @@ function offCpuClassificationAction(sessionId: string, run: number, allSchemas: 
   }
   return {
     tool: "start_recording",
-    args: { type: "hitches" },
+    args: { template: "Animation Hitches" },
     description:
       "hitches has no backtrace of its own, and this trace has no Time Profiler samples to correlate " +
-      "against — re-record with type: \"hitches\" (Animation Hitches already bundles Time Profiler) " +
+      "against — re-record with template: \"Animation Hitches\" (already bundles Time Profiler) " +
       "before concluding a hitch's duration reflects real compute cost rather than an off-CPU idle hold.",
   };
 }

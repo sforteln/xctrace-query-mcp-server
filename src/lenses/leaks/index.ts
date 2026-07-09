@@ -171,7 +171,7 @@ function unattributableFractionHint(
 
   return {
     tool: "start_recording",
-    args: { type: "leaks-backtraces" },
+    args: { template: ["Allocations", "Leaks"] },
     description:
       `${unattributable}/${matched} leaks have no recoverable stack — most were already ` +
       "allocated before this recording started capturing (a signature of an attach-mode " +

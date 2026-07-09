@@ -20,9 +20,9 @@ const THERMAL_WEIGHT = hintFor(THERMAL_SCHEMA)!.primaryWeight!;
  * standalone template (confirmed: absent from `xcrun xctrace list
  * templates`, only in `list instruments`) — it's always composed onto some
  * other template, or bundled for free (e.g. by Time Profiler's own
- * template). So there's no per-`type` RECORDING_INTENTS note to attach an
- * upfront warning to the way hangs/hitches got one; this auto-derived
- * nextActions check is the only practical hook point.
+ * template). So there's no TEMPLATE_NOTES entry of its own to attach an
+ * upfront warning to the way "CPU Profiler"/"Animation Hitches" got one; this
+ * auto-derived nextActions check is the only practical hook point.
  */
 function timeProfileCorrelationHint(
   sessionId: string,
@@ -47,11 +47,11 @@ function timeProfileCorrelationHint(
 
   return {
     tool: "start_recording",
-    args: { type: "cpu" },
+    args: { template: "Time Profiler" },
     description:
       "device-thermal-state-intervals has no signal of its own about WHY the state changed, and " +
-      "this trace has no Time Profiler samples to correlate against — re-record with type: \"cpu\" " +
-      "(Time Profiler already bundles Thermal State for free) to see what was driving CPU load.",
+      "this trace has no Time Profiler samples to correlate against — re-record with template: " +
+      "\"Time Profiler\" (already bundles Thermal State for free) to see what was driving CPU load.",
   };
 }
 

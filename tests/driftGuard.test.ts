@@ -20,7 +20,7 @@ import { join, basename } from "node:path";
 import { Readable } from "node:stream";
 import { createServer } from "../src/index.js";
 import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
-import { RECORDING_INTENTS } from "../src/core/recording.js";
+import { TEMPLATE_NOTES } from "../src/core/recording.js";
 import type { SchemaCol } from "../src/engine/parseTable.js";
 import { parseTableStream } from "../src/engine/parseTable.js";
 import { parseTrackDetailStream } from "../src/engine/parseTrackDetail.js";
@@ -84,7 +84,7 @@ const NOT_FOR_EXEMPT = new Set([
 ]);
 
 // Shared by both "single-quoted schema names" checks below (tool descriptions
-// and RECORDING_INTENTS notes) — same convention, same reference data, just a
+// and TEMPLATE_NOTES) — same convention, same reference data, just a
 // different source string each time.
 function staleSchemaRefs(text: string): string[] {
   const quoted = [...text.matchAll(/'([A-Za-z][A-Za-z0-9-]+)'/g)].map((m) => m[1]);
@@ -171,20 +171,21 @@ describe("Identifier integrity: no stale references", () => {
   }
 });
 
-// RECORDING_INTENTS[type].note fields name specific schemas in prose just as
-// confidently as tool descriptions do (e.g. hangs' note: "this template's
-// real schemas are 'potential-hangs' and 'hang-risks'") but were never
-// covered by the scan above, which only reads registered tool.description
+// TEMPLATE_NOTES[template] entries name specific schemas in prose just as
+// confidently as tool descriptions do (e.g. "CPU Profiler"'s note: "this
+// template's real schemas are 'potential-hangs' and 'hang-risks'") but were
+// never covered by the scan above, which only reads registered tool.description
 // strings — a real, previously-flagged gap (see PMT:clear-crow). Same
-// reference data (VERIFIED_PAIRS + exemptions), no new machinery.
-describe("Identifier integrity: RECORDING_INTENTS notes don't reference stale schemas", () => {
-  for (const [type, intent] of Object.entries(RECORDING_INTENTS)) {
-    if (!intent.note) continue;
-    it(`${type}: single-quoted schema names in its note are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
-      const stale = staleSchemaRefs(intent.note!);
+// reference data (VERIFIED_PAIRS + exemptions), no new machinery. Migrated
+// from RECORDING_INTENTS[type].note (PMT:stubborn-beck) — same guard,
+// keyed by real template name instead of a `type` enum key now.
+describe("Identifier integrity: TEMPLATE_NOTES don't reference stale schemas", () => {
+  for (const [templateName, note] of Object.entries(TEMPLATE_NOTES)) {
+    it(`${templateName}: single-quoted schema names in its note are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
+      const stale = staleSchemaRefs(note);
       expect(
         stale,
-        `RECORDING_INTENTS["${type}"].note references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
+        `TEMPLATE_NOTES["${templateName}"] references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
         `  If the schema was renamed, update the note to match.\n` +
         `  If this is an intentional reference to an unfixtureed schema, add it to SCHEMA_REF_EXEMPTIONS with a comment.`
       ).toEqual([]);
