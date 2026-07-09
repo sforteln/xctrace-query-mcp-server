@@ -1,5 +1,7 @@
 /**
- * Snapshot tests for parseTableXml and parseTrackDetailXml.
+ * Snapshot tests for parseTableStream and parseTrackDetailStream — the only
+ * XML-to-object parsing path since PMT:black-jay removed DOM/fast-xml-parser
+ * row parsing (parseTableXml/parseTrackDetailXml).
  *
  * Fixtures live in tests/fixtures/<xcode-version>/{schema-table,track-detail}/<name>.xml.
  * The xcode version in the path is informational — tests always run against
@@ -10,10 +12,11 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, basename, relative } from "node:path";
+import { Readable } from "node:stream";
 import { describe, it, expect } from "vitest";
 
-import { parseTableXml } from "../src/engine/parseTable.js";
-import { parseTrackDetailXml } from "../src/engine/parseTrackDetail.js";
+import { parseTableStream } from "../src/engine/parseTable.js";
+import { parseTrackDetailStream } from "../src/engine/parseTrackDetail.js";
 
 // ─── Fixture discovery ────────────────────────────────────────────────────────
 
@@ -67,11 +70,11 @@ const fixtures = collectFixtures(FIXTURES_ROOT);
 
 describe("parser snapshots", () => {
   for (const fixture of fixtures) {
-    it(fixture.label, () => {
+    it(fixture.label, async () => {
       const result =
         fixture.kind === "schema-table"
-          ? parseTableXml(fixture.xml)
-          : parseTrackDetailXml(fixture.xml, fixture.schema);
+          ? await parseTableStream(Readable.from([fixture.xml]))
+          : await parseTrackDetailStream(Readable.from([fixture.xml]), fixture.schema);
 
       expect(result).toMatchSnapshot();
     });

@@ -2,7 +2,7 @@
 
 ## What this is
 
-Snapshot tests for `parseTableXml` (schema-table format) and `parseTrackDetailXml` (track-detail format). Tests live in `tests/parsers.test.ts`. Snapshots are auto-managed by Vitest in `tests/__snapshots__/parsers.test.ts.snap`.
+Snapshot tests for `parseTableStream` (schema-table format) and `parseTrackDetailStream` (track-detail format) — the only XML-to-object parsing path since PMT:black-jay removed DOM/fast-xml-parser row parsing. Tests live in `tests/parsers.test.ts`. Snapshots are auto-managed by Vitest in `tests/__snapshots__/parsers.test.ts.snap`.
 
 Fixtures are in `tests/fixtures/xcode-27.0/` (Xcode 27.0 beta, the version that produced these traces).
 
@@ -10,7 +10,7 @@ Fixtures are in `tests/fixtures/xcode-27.0/` (Xcode 27.0 beta, the version that 
 
 ```
 tests/fixtures/xcode-27.0/
-  schema-table/          ← parseTableXml() — /data/table format
+  schema-table/          ← parseTableStream() — /data/table format
     ModelInferenceTable.xml       SYNTHETIC — real data contained private app content
     ModelLoadingTable.xml         from model.trace run 1
     SessionTable.xml              from model.trace run 1
@@ -50,7 +50,7 @@ tests/fixtures/xcode-27.0/
                                    constant 1ns sentinel in the real export, NOT the inter-vsync interval —
                                    frameBudget.ts's vsync-cadence path derives cadence from consecutive
                                    `timestamp` gaps instead (see its header comment).
-  track-detail/          ← parseTrackDetailXml() — /tracks/track/details/detail format
+  track-detail/          ← parseTrackDetailStream() — /tracks/track/details/detail format
     Leaks__Leaks.xml              from AllocAndLeaksWithBacktraces.trace run 1
     VM-Tracker__Regions-Map.xml   SYNTHETIC — real column shape (verified live against allocWithVM2.trace),
                                   fake path/address values; exists specifically to regression-test the

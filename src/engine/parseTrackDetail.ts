@@ -20,7 +20,6 @@
  * Engineering types are inferred from values (all-digit → "uint-64",
  * "timestamp" attr → "start-time", everything else → "string").
  */
-import { XMLParser } from "fast-xml-parser";
 // Default import — see the comment in parseTable.ts for why `import * as sax`
 // resolves to an empty namespace object at runtime under NodeNext/ESM output.
 import sax from "sax";
@@ -33,16 +32,6 @@ import { XctraceError } from "./xctrace.js";
 import { assertMemoryBudget, MEMORY_CHECK_INTERVAL } from "./memoryGuard.js";
 import { SqliteTableWriter } from "./sqliteStore.js";
 import type { Cell, NormalizedRow, SchemaCol, ParsedTable, ResolvedFrame, SchemaMeta } from "./parseTable.js";
-
-// ─── XML parser ───────────────────────────────────────────────────────────────
-
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  parseTagValue: false,
-  parseAttributeValue: false,
-  allowBooleanAttributes: true,
-});
 
 function asArray<T>(v: T | T[] | undefined): T[] {
   if (v === undefined || v === null) return [];
@@ -377,19 +366,6 @@ function buildSchemaMetaFromDiscovery(discovery: ColumnDiscovery, rowCount: numb
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Parse track-detail XML (from exportXPath on a track-detail path) into a
- * ParsedTable — same shape as parseTableXml() output.
- *
- * @param xml            Raw XML string from exportXPath.
- * @param syntheticSchema The synthesized schema name ("Allocations/Allocations List", etc.)
- */
-export function parseTrackDetailXml(xml: string, syntheticSchema: string): ParsedTable {
-  const doc = parser.parse(xml) as Record<string, any>;
-  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
-  return buildParsedTable(nodes, syntheticSchema);
-}
-
-/**
  * Rewrites every literal `%` OUTSIDE a quoted attribute value to
  * {@link PERCENT_PLACEHOLDER} before the bytes reach sax's STRICT tokenizer.
  *
@@ -397,10 +373,11 @@ export function parseTrackDetailXml(xml: string, syntheticSchema: string): Parse
  * plain, unquoted attribute NAME containing `%` (`resident-%="100.00"`) —
  * `%` is not a legal XML NameChar, so sax's strict mode throws "Invalid
  * attribute name" the instant it reads that byte, before ever emitting an
- * opentag event we could patch after the fact. fast-xml-parser (the
- * non-streaming path, parseTrackDetailXml) tolerates this fine — Apple ships
- * it and Instruments.app reads it, so this is a strict-tokenizer-specific
- * gap, not genuinely malformed data. `%` inside a QUOTED attribute value
+ * opentag event we could patch after the fact. A DOM-style parse (fast-xml-
+ * parser, the row-level path this codebase no longer has — PMT:black-jay)
+ * tolerated this fine — Apple ships it and Instruments.app reads it, so this
+ * is a strict-tokenizer-specific gap, not genuinely malformed data. `%`
+ * inside a QUOTED attribute value
  * (e.g. a percentage string like "16.5%") was never the problem — quoted
  * content already parses fine — so this only rewrites the unquoted regions
  * where attribute/tag names live, tracked with a single quote-state flag

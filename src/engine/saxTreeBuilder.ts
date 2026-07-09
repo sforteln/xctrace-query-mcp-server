@@ -1,21 +1,41 @@
 /**
- * SAX-driven mini-tree builder.
+ * SAX-driven mini-tree builder — the ONLY XML-to-object reconstruction this
+ * codebase uses (PMT:black-jay removed the old DOM/fast-xml-parser row-level
+ * path entirely; it had zero production callers and, being deliberately
+ * shape-matched to this builder, shared this same class of bug rather than
+ * catching it).
  *
  * Streaming xctrace exports one bounded subtree at a time (one <row>, one
  * <schema>) instead of the whole multi-GB document. This builder reconstructs
- * a single subtree from a flat stream of open/text/close events into the SAME
- * object shape fast-xml-parser produces for that subtree — `@_`-prefixed
+ * a single subtree from a flat stream of open/text/close events into an
+ * object shape close to what fast-xml-parser produces — `@_`-prefixed
  * attributes, `#text` for leaf text content, repeated child tags collapsed
- * into arrays — so the existing (already-correct, fixture-tested) cell/row
- * resolution functions in parseTable.ts / parseTrackDetail.ts can consume it
- * completely unchanged. The only new code is this reconstruction + the
- * outer path-tracking loop that decides when to start/stop capturing.
+ * into arrays — PLUS one addition fast-xml-parser's default mode never gave
+ * us: `__childOrder`, each frame's own children's tag names in TRUE document
+ * order (see BuilderFrame.childOrder). parseTable.ts's parseRow walks that
+ * list to match a row's children against schema columns by true position,
+ * not by blind per-engineering-type FIFO queues — the queue approach silently
+ * misattributed a value to the wrong column whenever an EARLIER column
+ * sharing that column's engineering-type was null (a `<sentinel/>`, invisible
+ * to the type-bucket) while a LATER one was present.
  */
 
 interface BuilderFrame {
   tagName: string;
   obj: Record<string, unknown>;
   textChunks: string[];
+  /**
+   * Tag names of this frame's OWN children, in TRUE document order — one
+   * entry per child close, including a `<sentinel/>` and including repeats.
+   * Stamped onto `obj.__childOrder` when this frame itself closes (only when
+   * it has children — a leaf has nothing to order). PMT:black-jay: this is
+   * what lets parseRow walk a row's children by true position instead of
+   * blind per-engineering-type FIFO queues — a `<sentinel/>` sitting at one
+   * position used to be invisible to a same-typed LATER column's queue, so
+   * that column silently consumed a value that actually belonged to a
+   * different, unrelated column later in the row.
+   */
+  childOrder: string[];
 }
 
 /**
@@ -54,7 +74,7 @@ export class MiniXmlBuilder {
       // space in the XML) comes out the same "Suspended for" both parsers give.
       obj["@_" + unsanitize(k)] = unsanitize(v.trim());
     }
-    this.stack.push({ tagName: unsanitize(tag), obj, textChunks: [] });
+    this.stack.push({ tagName: unsanitize(tag), obj, textChunks: [], childOrder: [] });
   }
 
   onText(text: string): void {
@@ -77,6 +97,9 @@ export class MiniXmlBuilder {
     if (!hasChildren) {
       text = frame.textChunks.join("").trim();
       if (text.length > 0) frame.obj["#text"] = text;
+    } else {
+      // See BuilderFrame.childOrder's doc comment.
+      frame.obj.__childOrder = frame.childOrder;
     }
 
     if (this.stack.length === 0) {
@@ -92,6 +115,7 @@ export class MiniXmlBuilder {
     const value: unknown = !hasAttrs && !hasChildren ? text : frame.obj;
 
     const parent = this.stack[this.stack.length - 1];
+    parent.childOrder.push(frame.tagName);
     const existing = parent.obj[frame.tagName];
     if (existing === undefined) {
       parent.obj[frame.tagName] = value;

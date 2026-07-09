@@ -11,7 +11,6 @@
  *   - Column role classification (time/weight/backtrace/thread/…) → src/engine/roleInference.ts
  *   - Cross-call caching keyed by (tracePath, run, schema) → src/engine/session.ts
  */
-import { XMLParser } from "fast-xml-parser";
 // Default import, not `import * as sax` — sax is a CJS module whose exports
 // (createStream etc.) are assigned inside an IIFE that Node's static
 // named-export detection can't see, so a namespace import resolves to an
@@ -79,21 +78,6 @@ export interface ParsedTable {
  * per-(tracePath,run,schema) cache in for cross-call reuse.
  */
 export type RefCache = Map<number, Cell | null>;
-
-// ─── XML parser ──────────────────────────────────────────────────────────────
-
-const parser = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "@_",
-  // Preserve tag names as-is; we need the engineering-type tag name per cell.
-  parseTagValue: false,
-  // Keep text content; we'll coerce numerics ourselves.
-  parseAttributeValue: false,
-  // Don't collapse single-child arrays — we handle asArray() ourselves.
-  isArray: () => false,
-  // Preserve all nodes including sentinel (empty elements).
-  allowBooleanAttributes: true,
-});
 
 function asArray<T>(v: T | T[] | undefined): T[] {
   if (v === undefined || v === null) return [];
@@ -255,9 +239,15 @@ function parseCell(
   }
 
   // Collect child nodes (anything not starting with @_ is either a child tag
-  // or the "#text" key for text content).
+  // or the "#text" key for text content). __childOrder is MiniXmlBuilder's
+  // own bookkeeping (PMT:black-jay), not a real XML child — excluding it
+  // here matters: left in, it's an array of tag-name strings that this
+  // branch would try to recurse into as if it were compound cell data,
+  // eventually recursing into individual characters of a string and blowing
+  // the call stack (verified live: every compound-cell fixture, e.g.
+  // swiftui-layout-updates, hit "Maximum call stack size exceeded").
   const childKeys = Object.keys(attrs).filter(
-    (k) => !k.startsWith("@_") && k !== "#text"
+    (k) => !k.startsWith("@_") && k !== "#text" && k !== "__childOrder"
   );
 
   let raw: number | string;
@@ -298,102 +288,71 @@ function parseCell(
 // ─── Row parsing ──────────────────────────────────────────────────────────────
 
 /**
- * Parse one <row> element into a NormalizedRow, mapping children positionally
- * onto the schema columns.
+ * Parse one <row> element into a NormalizedRow, mapping children onto the
+ * schema columns by TRUE DOCUMENT POSITION (PMT:black-jay) — there is always
+ * exactly one XML child per schema column, in schema-declaration order, and
+ * that child is either the column's real engineering-type tag or `sentinel`
+ * (null). `rowNode.__childOrder` (stamped by MiniXmlBuilder.onCloseTag) is
+ * that position → tag-name sequence.
+ *
+ * The bug this replaces: the old algorithm bucketed a row's children by
+ * ENGINEERING-TYPE TAG into shared FIFO queues, then walked columns pulling
+ * "whatever's next in this type's queue." A `<sentinel/>` doesn't share a
+ * type's queue (it has its own "sentinel" tag), so it was invisible to that
+ * check — an EARLIER column sharing a type with a LATER one, when the
+ * earlier was null, would silently steal the queue slot that document-order-
+ * wise belonged to the later column. Verified live, twice: CFNetwork's
+ * http-path came back as a boolean ("Yes"/"No") stolen from the unrelated
+ * later `successful` column; fetch-type came back as a duration string
+ * stolen from one of nine duration-typed columns. Position-based walking
+ * doesn't need a "does the tag match what I expected" check or a fallback at
+ * all — the tag AT that position tells us directly which real queue (if any)
+ * to pull the value from, or that this column is genuinely null.
  */
 function parseRow(
   rowNode: Record<string, any>,
   cols: SchemaCol[],
   cache: RefCache
 ): NormalizedRow {
-  // fast-xml-parser gives us the row's child elements as keys on rowNode.
-  // Children map positionally to cols, so we need them in document order.
-  // We reconstruct order by collecting all non-@ keys and iterating cols.
-  //
-  // Strategy: build an ordered list of (tagName, node) pairs by walking cols
-  // and consuming matching keys in order. Because the same tag can appear
-  // multiple times (e.g. two sentinels, two strings), we track a per-tag index.
+  const childOrder = rowNode.__childOrder as string[] | undefined;
+  if (!childOrder) {
+    throw new Error(
+      "parseRow: rowNode is missing __childOrder — every row must come from " +
+        "MiniXmlBuilder (the only XML-to-object path since PMT:black-jay " +
+        "removed DOM/fast-xml-parser row parsing)."
+    );
+  }
 
-  const tagCounts: Record<string, number> = {};
+  // Per-tag-name queues to pull the ACTUAL value nodes from, in the order
+  // they appear under that tag — repeated tags collapse into arrays keyed by
+  // tag name (both MiniXmlBuilder and fast-xml-parser's shape do this).
+  // childOrder tells us WHICH queue to pull from at each position; we never
+  // ask "does any queue still have something" (that guessing is the bug).
   const tagQueues: Record<string, Array<Record<string, any>>> = {};
-
-  for (const key of Object.keys(rowNode).filter((k) => !k.startsWith("@_"))) {
+  for (const key of Object.keys(rowNode)) {
+    if (key.startsWith("@_") || key === "__childOrder") continue;
     tagQueues[key] = asArray<Record<string, any>>(rowNode[key]);
   }
 
   const result: NormalizedRow = {};
-
-  for (const col of cols) {
-    // The XML tag for a column is its engineering-type, not its mnemonic.
-    // We don't have that here directly, but the engineering-type is stored in
-    // col.engineeringType. However xctrace uses the engineering-type as the
-    // XML element tag name with one caveat: some types have hyphens and map
-    // directly (e.g. "start-time" → <start-time>). We look for that first,
-    // then fall back to iterating remaining tags in order.
-    const expectedTag = col.engineeringType;
-    const queue = tagQueues[expectedTag];
-
-    if (queue && queue.length > 0) {
-      const node = queue.shift()!;
-      result[col.mnemonic] = parseCell(expectedTag, node, cache);
-    } else {
-      // Tag not found by engineering-type name — try positional fallback:
-      // pick the first non-empty remaining queue in key order.
-      const fallbackKey = Object.keys(tagQueues).find(
-        (k) => tagQueues[k].length > 0
-      );
-      if (fallbackKey) {
-        const node = tagQueues[fallbackKey].shift()!;
-        result[col.mnemonic] = parseCell(fallbackKey, node, cache);
-      } else {
-        result[col.mnemonic] = null;
-      }
+  for (let i = 0; i < cols.length; i++) {
+    const col = cols[i];
+    const tag = childOrder[i];
+    // Missing position (row has fewer children than the schema has columns —
+    // a genuine structural surprise, not the ordinary null-cell case, which
+    // is a real "sentinel" entry in childOrder) or an explicit sentinel: null.
+    if (tag === undefined || tag === "sentinel") {
+      result[col.mnemonic] = null;
+      continue;
     }
+    const node = tagQueues[tag]?.shift();
+    result[col.mnemonic] = node ? parseCell(tag, node, cache) : null;
   }
 
   return result;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Parse the raw --xpath table XML into a {@link ParsedTable}.
- *
- * A schema can appear as more than one `<table>` in a single run (e.g. `tick`
- * at frequency 1 and 10, or `os-signpost` filtered by different subsystems), so
- * an xpath addressing a schema can return multiple `<node>` elements. We use the
- * first node's columns (all share the same schema) and UNION the rows across
- * nodes into one logical table.
- *
- * Ref-id namespaces are scoped PER NODE — ids restart at 1 in each `<node>` —
- * so every node gets its own fresh RefCache. (This is why there is no
- * cross-call/shared cache: the meaningful cache is the parsed-table cache the
- * session holds, not the transient ref map.)
- *
- * @param tableXml  The full XML string returned by exportXPath().
- */
-export function parseTableXml(tableXml: string): ParsedTable {
-  const doc = parser.parse(tableXml) as Record<string, any>;
-  const nodes = asArray<Record<string, any>>(doc?.["trace-query-result"]?.node);
-  if (nodes.length === 0) {
-    return { schema: "", cols: [], rows: [] };
-  }
-
-  const schemaNode = nodes[0].schema as Record<string, any>;
-  const schemaName = String(schemaNode?.["@_name"] ?? "");
-  const cols = parseSchemaCols(schemaNode);
-
-  const rows: NormalizedRow[] = [];
-  for (const node of nodes) {
-    // Fresh ref cache per node — ids are node-local.
-    const cache: RefCache = new Map();
-    for (const r of asArray<Record<string, any>>(node.row)) {
-      rows.push(parseRow(r, cols, cache));
-    }
-  }
-
-  return { schema: schemaName, cols, rows };
-}
 
 /** Column definitions plus a row count, with no row data materialized at all. */
 export interface SchemaMeta {

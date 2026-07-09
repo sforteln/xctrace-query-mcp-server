@@ -17,12 +17,13 @@
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
+import { Readable } from "node:stream";
 import { createServer } from "../src/index.js";
 import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
 import { RECORDING_INTENTS } from "../src/core/recording.js";
 import type { SchemaCol } from "../src/engine/parseTable.js";
-import { parseTableXml } from "../src/engine/parseTable.js";
-import { parseTrackDetailXml } from "../src/engine/parseTrackDetail.js";
+import { parseTableStream } from "../src/engine/parseTable.js";
+import { parseTrackDetailStream } from "../src/engine/parseTrackDetail.js";
 import { classifyWithHints } from "../src/engine/roleHints.js";
 import { primaryTime as relatePrimaryTime } from "../src/core/relate.js";
 import {
@@ -214,7 +215,7 @@ describe("Identifier integrity: RECORDING_INTENTS notes don't reference stale sc
 // schema-table: "foo__bar.xml" → "foo/bar". track-detail names carry spaces, so
 // its filenames also encode "-" for a space: "Allocations__Allocations-List" →
 // "Allocations/Allocations List".
-function loadFixtureCols(): Map<string, SchemaCol[]> {
+async function loadFixtureCols(): Promise<Map<string, SchemaCol[]>> {
   const root = new URL("./fixtures/xcode-27.0", import.meta.url).pathname;
   const map = new Map<string, SchemaCol[]>();
   for (const kind of ["schema-table", "track-detail"] as const) {
@@ -224,14 +225,17 @@ function loadFixtureCols(): Map<string, SchemaCol[]> {
       let schema = basename(f, ".xml").replace(/__/g, "/");
       if (kind === "track-detail") schema = schema.replace(/-/g, " ");
       const xml = readFileSync(join(dir, f), "utf8");
-      const parsed = kind === "schema-table" ? parseTableXml(xml) : parseTrackDetailXml(xml, schema);
+      const parsed =
+        kind === "schema-table"
+          ? await parseTableStream(Readable.from([xml]))
+          : await parseTrackDetailStream(Readable.from([xml]), schema);
       map.set(schema, parsed.cols);
     }
   }
   return map;
 }
 
-const FIXTURE_COLS = loadFixtureCols();
+const FIXTURE_COLS = await loadFixtureCols();
 const FIXTURE_SCHEMAS = [...FIXTURE_COLS.entries()].map(([schema, cols]) => ({ schema, cols }));
 
 const roleOf = (schema: string, col: string): string | undefined =>
