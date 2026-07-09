@@ -210,6 +210,54 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "emit-location": detail,
     },
   },
+  // ── File Activity (PMT:harsh-mantle) ─────────────────────────────────────────
+  // Both schemas carry a real `end` column alongside `start` (fs-syscall's
+  // `end` is engineering-type "event-time", genuinely time-shaped, not just
+  // start+duration) — without this pin, the auto-derived primaryTime falls
+  // back to firstWithRole(), which is ARRAY-ORDER-DEPENDENT whenever more
+  // than one column classifies as role "time". Verified live: adding these
+  // fixtures without a pin broke driftGuard's order-invariant-derivation
+  // check (reversed column order picked "end" over "start"). `start` is the
+  // correct canonical anchor, matching every other interval-shaped schema's
+  // own convention in this file.
+  "detected-fs-antipattern": {
+    instrument: "File Activity (anomaly detector)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      end: t,
+      duration: ns,
+      process: thread,
+      thread: thread,
+      type: label,
+      significance: label,
+      syscall: label,
+      path: detail,
+      description: detail,
+      suggestion: detail,
+      backtrace: bt,
+    },
+  },
+  "fs-syscall": {
+    instrument: "File Activity (raw syscalls)",
+    primaryTime: "start",
+    primaryWeight: "duration",
+    columns: {
+      start: t,
+      end: t,
+      duration: ns,
+      process: thread,
+      thread: thread,
+      syscall: label,
+      type: label,
+      vnode: detail,
+      path: detail,
+      bytes: bytes,
+      errno: detail,
+      backtrace: bt,
+    },
+  },
   OSSignpostIntervals: {
     instrument: "Points of Interest (intervals)",
     primaryTime: "start",

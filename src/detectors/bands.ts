@@ -10,13 +10,24 @@
  * relative-to-frame-budget pattern"). Apple's own load-bearing signal is
  * `duration` measured in units of the display's frame budget, never absolute
  * ms — bands: >1x frame budget = Moderate (a dropped frame), >2x = High.
- * aidocs #2 (FileActivity's excessive-writes, a rate-per-second band) is
- * DELIBERATELY not included: verified against the codebase — no detector's
- * requiredSchemas, no test fixture, and no parser anywhere references a
- * FileActivity/disk-io-routine/fs-syscall schema, so this server cannot even
- * ingest that domain yet. Wiring a band for a schema it can't read would be
- * inventing an untested name. Add its band here, beside a real ingestion
- * path, when that lands — never start a second, driftable band map.
+ * aidocs #2 (FileActivity's excessive-writes/suboptimal-caching, both rate-
+ * or-recency-window rules) is DELIBERATELY not included, but for a different
+ * reason than it once was — PMT:harsh-mantle added real ingestion (fixtures,
+ * a File Activity lens, roleHints) for `fs-syscall`/`detected-fs-antipattern`,
+ * so "this server cannot even ingest that domain" is no longer true. What's
+ * still true: there's nothing for THIS module to compute. Unlike hitches
+ * (Apple ships a raw `duration`, no severity — bands.ts derives it from the
+ * harvested frame-budget rule), FileActivity's xctrace-side detector already
+ * ships the classification pre-computed: `detected-fs-antipattern`'s own
+ * `type` ("Excessive Writes"/"Suboptimal Caching"/...) and `significance`
+ * ("High"/"Moderate"/"Low") columns ARE aidocs #2's rate-per-window and
+ * same-key-correlation rules, already evaluated by Apple before the row
+ * ever reaches this server — there's no raw metric here for a far-swan band
+ * to threshold. The real gotcha (verified live, documented in the File
+ * Activity lens/TEMPLATE_NOTES instead of here) is that `significance`
+ * itself doesn't reliably track `duration` — a "Moderate" row can dwarf
+ * every "High" row combined — but that's a caveat about trusting Apple's
+ * own label, not a missing band this module should add.
  *
  * Frame-budget caveat, UPDATED by PMT:still-hail: the hitches table itself
  * still carries only start/duration/process/is-system/swap-id/label/display/

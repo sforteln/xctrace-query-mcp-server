@@ -24,6 +24,12 @@ tests/fixtures/xcode-27.0/
     network-connection-detected.xml   from network.trace run 1
     NetworkConnectionStats.xml        from network.trace run 1
     network-connection-update.xml     from network.trace run 1
+    detected-fs-antipattern.xml   from 2026-07-08T20-10-45-file-activity.trace run 1 — real data, ALL
+                                   43 rows (small, curated anomaly detector — no truncation needed)
+    fs-syscall.xml                 from 2026-07-08T20-10-45-file-activity.trace run 1 — real data,
+                                   first 10 of 42,616 rows (a raw kdebug-derived syscall firehose,
+                                   too large in full — same "first N of a firehose" precedent as
+                                   display-vsyncs-interval.xml)
     core-data-save.xml            from SwiftData.trace run 1
     core-data-fetch.xml           from SwiftData.trace run 1
     core-data-fault.xml           from SwiftData.trace run 1

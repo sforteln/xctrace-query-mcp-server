@@ -37,6 +37,7 @@ import swiftConcurrencyLens from "./lenses/swiftConcurrency/index.js";
 import swiftUILens from "./lenses/swiftUI/index.js";
 import coreDataLens from "./lenses/coreData/index.js";
 import allocationsLens from "./lenses/allocations/index.js";
+import fileActivityLens from "./lenses/fileActivity/index.js";
 import thermalLens from "./lenses/thermal/index.js";
 import runLoopsLens from "./lenses/runLoops/index.js";
 import osLogLens from "./lenses/osLog/index.js";
@@ -135,6 +136,7 @@ const LENSES: Lens[] = [
   swiftUILens,
   coreDataLens,
   allocationsLens,
+  fileActivityLens,
   // Animation Hitches' own template bundles Hangs + Time Profiler + Points of
   // Interest for free (TEMPLATE_BUNDLES) — same "specific intent beats
   // auto-bundled auxiliary" reasoning as hangsLens/timeProfilerLens below, so

@@ -572,6 +572,23 @@ export const LAUNCH_REQUIRED_TEMPLATES = new Set<string>(["App Launch"]);
  * set, not just the base.
  */
 export const TEMPLATE_NOTES: Record<string, string> = {
+  "File Activity":
+    "Records file-system activity: query 'detected-fs-antipattern' first — a small, curated anomaly " +
+    "detector (typically ~40 rows even in a multi-GB trace) that flags Suboptimal Caching/Excessive " +
+    "Writes/Failed System Calls with a `significance` label, but verified live: significance does NOT " +
+    "track duration (a single \"Moderate\" row ran ~9.5s while 28 \"High\" rows summed to under 10 " +
+    "microseconds) — sort by duration, don't trust the label. 'fs-syscall' is the underlying raw " +
+    "syscall firehose (tens of thousands of rows) for a specific time-window/process drill-down once " +
+    "an antipattern row points you at one. A 'path' reading \"unknown (vnode 0x...)\" needs a two-hop " +
+    "resolve: query fs-syscall in that row's window (same process) for a real vnode value, then " +
+    "relate(schemaA: \"fs-syscall\", schemaB: \"vnode-to-path\", joinCondition: \"equality\", " +
+    "on: [{fromCol: \"vnode\", toCol: \"vnode\"}]) against it — vnode-to-path is a real schema here but " +
+    "isn't ingested until queried. IMPORTANT (PMT:loam-merlin FileActivity session): attach to an " +
+    "ALREADY-RUNNING process only, never launch — matches the standard \"attach to a dev-started app\" " +
+    "workflow. On this Xcode 27 beta specifically, do NOT compose Time Profiler or Hangs alongside " +
+    "this template — corroborating evidence (PMT:ash-stone, see KNOWN_BROKEN_INSTRUMENTS' Network " +
+    "Connections entry) reproduced the identical \"Document Missing Template Error\" trace-corrupting " +
+    "crash with this exact pairing; record File Activity alone.",
   "Time Profiler":
     "The Time Profiler template already bundles Hangs + Points of Interest + Thermal State " +
     "for free — after opening, query 'potential-hangs'/'hitches' and points-of-interest " +

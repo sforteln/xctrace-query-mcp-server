@@ -34,6 +34,7 @@ import swiftConcurrencyLens from "../src/lenses/swiftConcurrency/index.js";
 import swiftUILens from "../src/lenses/swiftUI/index.js";
 import coreDataLens from "../src/lenses/coreData/index.js";
 import allocationsLens from "../src/lenses/allocations/index.js";
+import fileActivityLens from "../src/lenses/fileActivity/index.js";
 import thermalLens from "../src/lenses/thermal/index.js";
 import runLoopsLens from "../src/lenses/runLoops/index.js";
 import osLogLens from "../src/lenses/osLog/index.js";
@@ -50,6 +51,7 @@ const LENSES: Array<{ label: string; lens: Lens }> = [
   { label: "swiftUI", lens: swiftUILens },
   { label: "coreData", lens: coreDataLens },
   { label: "allocations", lens: allocationsLens },
+  { label: "fileActivity", lens: fileActivityLens },
   { label: "hangs", lens: hangsLens },
   { label: "timeProfiler", lens: timeProfilerLens },
   { label: "thermal", lens: thermalLens },
@@ -81,6 +83,8 @@ const SYNTHETIC_ROW: Record<string, CellDetail | null> = {
   start: cell(1_000_000),
   duration: cell(50_000),
   address: cell("0x1000", "string"),
+  path: cell("unknown (vnode 0x8d58a8f1bd01721f)", "string"),
+  process: cell("PromptManager (34205)", "string"),
 };
 
 interface ActionLike {
