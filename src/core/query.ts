@@ -33,6 +33,7 @@ import {
 import { buildFieldResolver } from "../engine/fieldRef.js";
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { emptyResultNote } from "./emptyResultNote.js";
+import { sanitizeCellText } from "./getRow.js";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 500;
@@ -244,7 +245,17 @@ export async function queryTable(
   const rows: QueryRow[] = sqlRows.map((sqlRow, pageIdx) => {
     const cells: Record<string, string | null> = {};
     for (const mnemonic of columnsShown) {
-      cells[mnemonic] = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
+      const raw = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
+      // A "summary" cell can still resolve to an unbounded blob (a large
+      // interned value, a full prompt/response text field) — verified live
+      // (a Foundation Models + SwiftUI retrospective session, 2026-07-09): a
+      // 12-row ModelInferenceTable query() returned 163,000 characters,
+      // forcing the caller to work around it by saving to a file and reading
+      // in chunks. query()'s own contract is "summary rows, full detail via
+      // get_row" — cap + redact the same way get_row already does (PMT:loam-
+      // merlin), so a caller who genuinely needs the full value reaches for
+      // get_row instead of query silently handing back a multi-hundred-KB response.
+      cells[mnemonic] = raw !== null ? sanitizeCellText(mnemonic, raw).text : null;
     }
     return {
       index: offset + pageIdx,

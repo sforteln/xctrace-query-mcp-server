@@ -18,6 +18,7 @@
  */
 import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
+import { sanitizeCellText } from "./getRow.js";
 import { firstWithRole } from "../engine/roleInference.js";
 import { callCacheKey, getCachedCall, setCachedCall } from "./callCache.js";
 import {
@@ -251,7 +252,11 @@ export async function findRows(
   const rows: FindRow[] = sqlRows.map((sqlRow, pageIdx) => {
     const cells: Record<string, string | null> = {};
     for (const mnemonic of columnsShown) {
-      cells[mnemonic] = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
+      // Cap + redact the same way query()/get_row do — see query.ts's matching
+      // comment for the verified live case (a 163,000-char query() response
+      // from just 12 rows) this protects against.
+      const raw = (sqlRow[`__out_${mnemonic}`] as string | null) ?? null;
+      cells[mnemonic] = raw !== null ? sanitizeCellText(mnemonic, raw).text : null;
     }
     return {
       index: offset + pageIdx,
