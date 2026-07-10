@@ -31,6 +31,7 @@ import {
   mitigateHangsOsLogFidelity,
   defaultPointsOfInterest,
   deviceOnlyInstrumentWarning,
+  hostArchInstrumentWarning,
   knownBrokenInstrumentWarning,
   resolveCustomTemplateName,
   CUSTOM_TEMPLATE_NOTES,
@@ -175,6 +176,17 @@ export interface StartSessionResult {
    * actual outcome. See PMT:stormy-coast.
    */
   deviceOnlyWarning?: string;
+  /**
+   * Present when the resolved template/instruments include one or more
+   * instruments the CURRENT HOST Mac's CPU architecture can't support (see
+   * HOST_ARCH_ONLY_INSTRUMENTS in recording.ts) — e.g. "Processor Trace" on
+   * any Apple Silicon Mac (needs Intel PT hardware). Unlike deviceOnlyWarning
+   * this is NOT about the target (device/Simulator) — it fails the same way
+   * regardless of what's being profiled, because the limit is the machine
+   * running Instruments itself. A WARNING, not a block — record()'s
+   * partial-success runIssues handling remains the backstop.
+   */
+  hostArchWarning?: string;
   /**
    * Present when the resolved template/instruments match a curated known-
    * broken combination on the CURRENT Xcode version (see
@@ -384,6 +396,13 @@ export async function startSession(
       ? deviceOnlyInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, true)
       : undefined;
 
+  // PMT:flint-crystal follow-up: warn (never block) when the resolved
+  // template/instruments need a CPU architecture this HOST Mac doesn't have
+  // (e.g. Processor Trace needs Intel PT — permanently absent on Apple
+  // Silicon) — unlike deviceOnlyWarning this is unconditional on the target,
+  // since the limit is the machine running Instruments, not what's profiled.
+  const hostArchWarning = hostArchInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, process.arch);
+
   // PMT:ash-stone gap #2: warn (never block) when the CURRENT Xcode matches a
   // curated known-broken instrument/combination — unlike deviceOnlyWarning
   // this isn't sim-specific, since the confirmed repro was a device recording.
@@ -500,6 +519,7 @@ export async function startSession(
     ...(resolvedCompositionNote ? { compositionNote: resolvedCompositionNote } : {}),
     ...(expanded.fidelityAtRisk.length > 0 ? { fidelityAtRisk: expanded.fidelityAtRisk } : {}),
     ...(deviceOnlyWarning ? { deviceOnlyWarning } : {}),
+    ...(hostArchWarning ? { hostArchWarning } : {}),
     ...(knownBrokenWarning ? { knownBrokenWarning } : {}),
   };
 }

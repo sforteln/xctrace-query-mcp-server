@@ -16,6 +16,10 @@ describe("defaultPointsOfInterest", () => {
     expect(defaultPointsOfInterest("Leaks", [])).toEqual({});
     expect(defaultPointsOfInterest("Network", [])).toEqual({});
     expect(defaultPointsOfInterest("Swift Concurrency", [])).toEqual({});
+    // PMT:flint-crystal: the decoder confirmed Processor Trace's archive
+    // bundles a real Points of Interest instrument (moved from POI-less to
+    // this list — see TEMPLATE_BUNDLES in recording.ts).
+    expect(defaultPointsOfInterest("Processor Trace", [])).toEqual({});
   });
 
   it("does nothing when the resolved template IS Points of Interest", () => {
@@ -29,8 +33,8 @@ describe("defaultPointsOfInterest", () => {
     expect(result.note).toMatch(/auto-added/);
   });
 
-  it("fires for other POI-less templates too (Animation Hitches, Power Profiler, Core AI/ML, Processor Trace)", () => {
-    for (const t of ["Animation Hitches", "Power Profiler", "Core AI", "Core ML", "Processor Trace"]) {
+  it("fires for other POI-less templates too (Animation Hitches, Power Profiler, Core AI/ML)", () => {
+    for (const t of ["Animation Hitches", "Power Profiler", "Core AI", "Core ML"]) {
       expect(defaultPointsOfInterest(t, []).instrument).toBe("Points of Interest");
     }
   });

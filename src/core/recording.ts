@@ -91,15 +91,16 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Leaks": ["Points of Interest"], // decoder-confirmed complete
   "Core AI": ["GPU", "Neural Engine", "Time Profiler"], // flint-crystal +GPU, +Neural Engine
   "Core ML": ["GPU", "Metal Application", "Neural Engine", "Time Profiler"], // flint-crystal +GPU, +Metal Application, +Neural Engine
-  // Processor Trace: LEFT EMPTY despite the decoder showing the TEMPLATE archive
-  // declares Points of Interest + Thread Activity + Processor Trace. PMT:calm-
-  // starling deliberately set this to [] on a SCHEMA-level "no signpost schema
-  // recorded" finding that CANNOT be re-verified here (this Mac's Apple Silicon
-  // CPU does not support Processor Trace at all). Not overriding a documented
-  // decision that can't be re-tested — flagged for hardware-enabled re-check: if
-  // POI schemas do appear on supporting hardware, this becomes
-  // ["Points of Interest", "Thread Activity"].
-  "Processor Trace": [],
+  // Trusted from the decoder: the archive declares a full, standard Points of
+  // Interest stub (identical shape to every other POI-bundling template) plus
+  // Thread Activity. PMT:calm-starling's earlier [] was based on a SCHEMA-level
+  // "no signpost schema recorded" finding — but that's consistent with "the
+  // profiled app never called os_signpost" (no data => no schema), not with
+  // "POI isn't bundled". Could not record-verify this directly (Processor Trace
+  // needs Intel PT hardware; this Mac is Apple Silicon and the CPU check below
+  // — hostArchInstrumentWarning — fires for it) — see
+  // aidocs/templateBundlesAudit.md for the reasoning.
+  "Processor Trace": ["Points of Interest", "Thread Activity"],
   "Network": ["HTTP Traffic", "Network Connections", "Points of Interest"], // flint-crystal +HTTP Traffic, +Network Connections (base-only, see TEMPLATE_ONLY_NAMES)
   "App Launch": ["dyld Activity", "Thread Activity", "Time Profiler"], // flint-crystal +dyld Activity, +Thread Activity (base-only)
   // PMT:calm-starling + flint-crystal: the decoder CONFIRMS no "Points of
@@ -451,9 +452,12 @@ export const DEVICE_ONLY_INSTRUMENTS: Record<string, string> = {
   "Thermal State": "real thermal sensors",
   // hardware PMU / ANE — needs real performance-monitoring hardware
   "CPU Counters": "real CPU performance-counter hardware",
-  "Processor Trace": "real CPU performance-counter hardware",
   "Neural Engine": "real ANE hardware",
   "Core AI": "real ANE hardware",
+  // NOTE: "Processor Trace" is deliberately NOT here — its incompatibility
+  // isn't Simulator-vs-device (it fails identically on a REAL Apple Silicon
+  // Mac/device recording), it's a host-CPU-ARCHITECTURE fact (needs Intel PT
+  // hardware). See HOST_ARCH_ONLY_INSTRUMENTS / hostArchInstrumentWarning below.
 };
 
 /**
@@ -485,6 +489,63 @@ export function deviceOnlyInstrumentWarning(
       (name) =>
         `"${name}" is device-only (needs ${DEVICE_ONLY_INSTRUMENTS[name]}) — it won't capture on a ` +
         `Simulator; the rest of the recording will still work. Use a physical device for "${name}".`
+    )
+    .join("\n\n");
+}
+
+/**
+ * Curated instrument→reason map for instruments that depend on the HOST MAC's
+ * CPU architecture — a genuinely different axis from DEVICE_ONLY_INSTRUMENTS
+ * (Simulator vs. device target). These fail identically on a real device
+ * recording, a Simulator recording, or a Mac-only recording, because the
+ * constraint is the architecture of the machine Instruments itself is running
+ * on, not what's being profiled — confirmed live: recording "Processor Trace"
+ * on an Apple Silicon Mac fails with "<hostname> does not have a CPU that
+ * supports Processor Trace" regardless of target. Only affects macOS hosts;
+ * doesn't apply to iOS/iPadOS/watchOS targets as a category (those are ARM
+ * either way and irrelevant to this specific instrument's host-CPU dependency).
+ *
+ * Deliberately narrow: `arm64` is checked because EVERY Apple Silicon Mac
+ * permanently lacks Intel PT (a hardware fact, not a driver/OS gap). Intel
+ * hosts are NOT checked the other way (i.e. this never warns on `x86_64`) —
+ * PT support varies by Intel CPU generation and there's no simple, reliable
+ * signal for that short of asking the CPU directly, which is out of scope
+ * here; the record() partial-success runIssues backstop (extractRunIssues
+ * already captures this exact "[Error] ... does not have a CPU..." line)
+ * remains the correctness net for an unsupported-even-on-Intel case.
+ */
+export const HOST_ARCH_ONLY_INSTRUMENTS: Record<string, string> = {
+  "Processor Trace": "Intel Processor Trace (Intel PT) hardware — permanently unavailable on any Apple Silicon Mac",
+};
+
+/**
+ * WARN (never block — same philosophy as deviceOnlyInstrumentWarning; the
+ * record() partial-success runIssues handling is the real backstop for the
+ * actual outcome) when the CURRENT HOST's CPU architecture can't support a
+ * resolved template/instrument, whether requested directly or pulled in via
+ * the base template's own bundle (e.g. Processor Trace's own template records
+ * itself, so a bare `template: "Processor Trace"` on Apple Silicon should
+ * warn even though the caller never named the instrument explicitly).
+ */
+export function hostArchInstrumentWarning(
+  resolvedTemplate: string | undefined,
+  resolvedExtraInstruments: string[],
+  hostArch: string
+): string | undefined {
+  if (hostArch !== "arm64") return undefined;
+  const candidates = new Set([
+    ...(resolvedTemplate !== undefined ? [resolvedTemplate] : []),
+    ...(resolvedTemplate !== undefined ? TEMPLATE_BUNDLES[resolvedTemplate] ?? [] : []),
+    ...resolvedExtraInstruments,
+  ]);
+  const flagged = [...candidates].filter((name) => name in HOST_ARCH_ONLY_INSTRUMENTS);
+  if (flagged.length === 0) return undefined;
+  return flagged
+    .map(
+      (name) =>
+        `"${name}" needs ${HOST_ARCH_ONLY_INSTRUMENTS[name]} — this Mac won't be able to record it; the rest ` +
+        `of the recording will still work. This is a host-machine hardware limit, not fixable by choosing a ` +
+        `different device/Simulator target.`
     )
     .join("\n\n");
 }

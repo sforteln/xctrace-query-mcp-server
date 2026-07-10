@@ -97,7 +97,7 @@ rejection. Changes applied to `src/core/recording.ts`:
 | Allocations / Leaks | none (complete) |
 | Core AI | +GPU, +Neural Engine |
 | Core ML | +GPU, +Metal Application, +Neural Engine |
-| Processor Trace | **left `[]`** — see below |
+| Processor Trace | +Points of Interest, +Thread Activity (see below) |
 | Network | +HTTP Traffic, +Network Connections |
 | App Launch | +dyld Activity, +Thread Activity |
 | Animation Hitches | +Display, +Hitches, +Thermal State, +Thread Activity |
@@ -105,17 +105,51 @@ rejection. Changes applied to `src/core/recording.ts`:
 | RealityKit Trace | **NEW** (also added to TEMPLATE_ONLY_NAMES) |
 | Foundation Models | **NEW**, genuinely empty auxiliary bundle |
 
-Two entries were NOT blindly overridden by the decoder:
+One entry's initial decision was later revisited (see "Processor Trace
+resolution" below); one was NOT overridden:
 
-- **Processor Trace** — the decoder shows the archive declares `Points of
-  Interest` + `Thread Activity` + `Processor Trace`, but PMT:calm-starling
-  deliberately set it to `[]` on a SCHEMA-level "no signpost schema recorded"
-  finding that cannot be re-verified here (this Mac's Apple Silicon CPU does
-  not support Processor Trace). Left `[]`, flagged in-code for hardware-enabled
-  re-check.
 - **Animation Hitches** — the decoder CONFIRMS calm-starling's "no Points of
   Interest instrument" finding (POI is genuinely absent from the archive), so
   that correction stands; the other real bundle members were added.
+
+### Processor Trace resolution
+
+Initially left `[]` in this audit: the decoder shows the archive declares
+`Points of Interest` + `Thread Activity` + `Processor Trace`, but
+PMT:calm-starling had deliberately set it to `[]` on a SCHEMA-level "no
+signpost schema recorded" finding that couldn't be re-verified here (this
+Mac's Apple Silicon CPU doesn't support Processor Trace — confirmed live:
+recording it fails with "does not have a CPU that supports Processor Trace").
+
+**Resolved on user discussion**: the two sources aren't actually in conflict.
+calm-starling's finding is a downstream, confounded signal — "no signpost
+schema in the recorded TOC" is exactly what a POI instrument produces when the
+profiled app never calls `os_signpost`, regardless of whether POI is bundled.
+The decoder's `stubInfoByUUID` entry for POI here is a full, standard stub
+(identical shape to every other POI-bundling template), not a degenerate/UI
+stub — so it's trusted. **The bundle is restored** to
+`["Points of Interest", "Thread Activity"]`.
+
+The right fix for the untestable-here hardware dependency is NOT to hide the
+instrument from the bundle (that would silently under-report what the
+template actually records) — it's to warn proactively, the same way
+`DEVICE_ONLY_INSTRUMENTS`/`deviceOnlyInstrumentWarning` already do for
+Simulator-incompatible instruments. Added `HOST_ARCH_ONLY_INSTRUMENTS` +
+`hostArchInstrumentWarning()` (a new, orthogonal axis — host CPU architecture,
+not Simulator-vs-device; checked via `process.arch`, no subprocess needed) and
+removed the old, mis-scoped `"Processor Trace"` entry from
+`DEVICE_ONLY_INSTRUMENTS` (it fails identically on a REAL Apple Silicon
+device/Mac recording too, so "Simulator-only" was never the right framing).
+`record()`'s existing `extractRunIssues` backstop already captures the exact
+failure text as a `[Error] ...` run issue on a partial-success trace, so
+nothing was ever silently lost — this closes the proactive-warning gap only.
+
+**To test with real recording verification** (not required — the decoder +
+live failure-mode confirmation above is sufficient — but if ever wanted): an
+Intel Mac with PT-capable hardware, recording Processor Trace against a target
+that actually emits `os_signpost` calls, checking the resulting trace's TOC
+for POI schemas (`OSSignpostIntervals`/`PointsOfInterestEvents`). No Apple
+Silicon Mac can ever run this test — Intel PT is permanently absent there.
 
 Naming reconciliations needed: only `Runloops` → `Run Loops` (RealityKit
 Trace). `RealityKit Trace` itself is NOT a bare instrument (its instruments are
