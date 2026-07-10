@@ -342,7 +342,48 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
   // Trace" instrument (`xctrace list instruments`), so composing it as an extra
   // would fail; usable only as the BASE template.
   "RealityKit Trace",
+  // PMT:open-mantle: real live xcodeAI feedback — passed `instruments:
+  // ["System Trace"]` and got rejected (`xctrace list templates` has it,
+  // `xctrace list instruments` does not). Belongs in this set for the exact
+  // same reason as the others above.
+  "System Trace",
 ]);
+
+/** xctrace's own rejection text for an unrecognized bare `--instrument` name
+ *  — verified live: `Instrument with name 'System Trace' cannot be found`
+ *  (exit 56). Group 1 captures the rejected name, quote style tolerant
+ *  (xctrace has used both `'` and `"` across versions in other messages). */
+const INSTRUMENT_NOT_FOUND_RE = /Instrument with name ['"]([^'"]+)['"] cannot be found/i;
+
+/**
+ * PMT:open-mantle: when an `instruments` entry is rejected by xctrace, check
+ * whether the rejected name is actually a real TEMPLATE name (case-
+ * insensitive) — the caller likely meant to pass it via `template` instead.
+ * Live feedback: passing `instruments: ["System Trace"]` failed with xctrace's
+ * own opaque "Instrument with name 'System Trace' cannot be found", when
+ * "System Trace" IS a real, valid template name (`xctrace list templates`),
+ * just not a bare instrument. Cross-references the EXISTING template-name
+ * sources (TEMPLATE_ONLY_NAMES ∪ TEMPLATE_BUNDLES's keys) rather than
+ * introducing a new one — this reliably covers every template far-swan
+ * already curates, though it won't recognize a real template name that has
+ * never been added to either table (a genuinely unrecognized name, matching
+ * neither instruments nor known templates, correctly gets no hint at all).
+ *
+ * Returns undefined when `stderr` doesn't match the rejection pattern, or
+ * when the rejected name isn't a recognized template — callers should fall
+ * back to the plain error in either case, never attach a false-positive hint.
+ */
+export function instrumentNotFoundTemplateHint(stderr: string): string | undefined {
+  const match = stderr.match(INSTRUMENT_NOT_FOUND_RE);
+  if (!match) return undefined;
+  const rejectedName = match[1];
+  const knownTemplateNames = new Set([...TEMPLATE_ONLY_NAMES, ...Object.keys(TEMPLATE_BUNDLES)]);
+  const realName = [...knownTemplateNames].find((n) => n.toLowerCase() === rejectedName.toLowerCase());
+  if (!realName) return undefined;
+  return `Did you mean templates: ["${realName}"]? "${realName}" is a valid TEMPLATE name but has no matching ` +
+    `bare --instrument — pass it via \`template\` instead (the first entry when it's an array, or a bare ` +
+    `\`template\` string), not \`instruments\`.`;
+}
 
 /**
  * PMT:rough-bench item 4: fidelityAtRisk keeps flagging an instrument even

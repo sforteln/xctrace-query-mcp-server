@@ -33,6 +33,7 @@ import {
   deviceOnlyInstrumentWarning,
   hostArchInstrumentWarning,
   knownBrokenInstrumentWarning,
+  instrumentNotFoundTemplateHint,
   resolveCustomTemplateName,
   CUSTOM_TEMPLATE_NOTES,
   TEMPLATE_NOTES,
@@ -588,9 +589,14 @@ export async function stopSession(
     // with nothing to diagnose it from.
     const excerptSource = rec.stderr || rec.stdout;
     const excerpt = excerptSource ? ` ${excerptSource.slice(-500)}` : " (no output on stdout or stderr)";
+    // PMT:open-mantle: check the FULL stderr (not the truncated excerpt above)
+    // for xctrace's "Instrument with name '<X>' cannot be found" rejection —
+    // if <X> is actually a real template name, add the steer-to-`template`
+    // hint rather than leaving the caller with just xctrace's opaque message.
+    const templateHint = instrumentNotFoundTemplateHint(rec.stderr);
     throw new XctraceError(
       "record-failed",
-      `Recording failed (exit code ${rec.exitCode}).${excerpt}`,
+      `Recording failed (exit code ${rec.exitCode}).${excerpt}${templateHint ? ` ${templateHint}` : ""}`,
       { exitCode: rec.exitCode ?? null, stderr: rec.stderr, stdout: rec.stdout }
     );
   }
