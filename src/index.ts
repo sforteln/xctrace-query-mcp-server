@@ -27,6 +27,7 @@ import { findRows } from "./core/find.js";
 import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
 import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
+import { parsePsOutput } from "./core/listProcesses.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
@@ -1454,7 +1455,9 @@ export function createServer(): McpServer {
         "Find running processes to attach a recording to. " +
         "Pass a search term (app name, bundle ID substring, or path fragment) to filter results. " +
         "Omit search to list all user-owned non-system processes. " +
-        "Returns PID and command path — pass the PID or bare app name to the attach parameter of start_recording.",
+        "Returns PID, command path, and a `status` (running/sleeping/idle/stopped/waiting/zombie) — " +
+        "a zombie has already exited and comes with a `note` explaining it can't be attached to or " +
+        "killed; pick a different PID (or the live one, if this app has both a live and a stale entry).",
       inputSchema: {
         search: z
           .string()
@@ -1472,57 +1475,9 @@ export function createServer(): McpServer {
         const { userInfo } = await import("node:os");
         const execFileAsync = promisify(execFile);
 
-        let lines: string[];
-
-        if (search) {
-          // pgrep -f matches against the full command line; -l lists PID + command.
-          // Exit code 1 means no matches — not an error.
-          let raw = "";
-          try {
-            const out = await execFileAsync("pgrep", ["-fl", search]);
-            raw = out.stdout;
-          } catch (err: unknown) {
-            const e = err as { code?: number; stdout?: string };
-            if (e.code === 1) raw = ""; // no matches
-            else throw err;
-          }
-          lines = raw
-            .split("\n")
-            .map((l) => l.trim())
-            .filter(Boolean)
-            // strip xctrace and this server process from results
-            .filter((l) => !l.includes("xctrace") && !l.includes("instruments-mcp-server"));
-        } else {
-          // List all processes owned by the current user, skipping OS internals.
-          const me = userInfo().username;
-          const { stdout } = await execFileAsync("ps", ["-axo", "pid,user,args"]);
-          const SYSTEM_PREFIXES = ["/System/", "/usr/", "/sbin/", "/bin/", "sysmond", "launchd"];
-          lines = stdout
-            .split("\n")
-            .slice(1) // skip header
-            .filter((l) => {
-              const cols = l.trim().split(/\s+/);
-              const user = cols[1];
-              const cmd = cols.slice(2).join(" ");
-              return (
-                user === me &&
-                !SYSTEM_PREFIXES.some((p) => cmd.startsWith(p)) &&
-                !cmd.includes("xctrace") &&
-                !cmd.includes("instruments-mcp-server")
-              );
-            })
-            .map((l) => l.trim())
-            .filter(Boolean);
-        }
-
-        const processes = lines.map((l) => {
-          const spaceIdx = l.indexOf(" ");
-          const pid = l.slice(0, spaceIdx).trim();
-          const command = l.slice(spaceIdx + 1).trim();
-          // Extract the bare executable name for easy use as an attach value.
-          const name = command.split("/").pop()?.split(" ")[0] ?? command;
-          return { pid: Number(pid), name, command };
-        });
+        const { stdout } = await execFileAsync("ps", ["-axo", "pid,user,stat,args"]);
+        const processes = parsePsOutput(stdout, { currentUser: userInfo().username, search });
+        const zombieCount = processes.filter((p) => p.status === "zombie").length;
 
         return text(
           JSON.stringify(
@@ -1530,7 +1485,11 @@ export function createServer(): McpServer {
               count: processes.length,
               processes,
               hint: processes.length > 0
-                ? "Pass pid (number) or name (string) to the attach parameter of start_recording."
+                ? "Pass pid (number) or name (string) to the attach parameter of start_recording." +
+                  (zombieCount > 0
+                    ? ` ${zombieCount} ${zombieCount === 1 ? "entry is a zombie" : "entries are zombies"} — ` +
+                      "see its note; do not attach to or try to kill it."
+                    : "")
                 : search
                 ? `No processes matched "${search}". Try a shorter search term.`
                 : "No user processes found.",
