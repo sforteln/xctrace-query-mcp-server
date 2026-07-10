@@ -346,8 +346,27 @@ export async function startSession(
   // TEMPLATE_BUNDLES/TEMPLATE_RECORDING_OPTIONS sets os_signpost options
   // today anyway, so this collision is theoretical, not yet observed).
   const baseRecordingOptions = resolvedTemplate !== undefined ? TEMPLATE_RECORDING_OPTIONS[resolvedTemplate] : undefined;
+  // PMT-live-bug (2026-07-10): `--recording-options <file>` requires the
+  // COMPLETE real key set for every instrument it mentions — a partial
+  // object fails to LOAD at all, with the exact same misleading "The data
+  // couldn't be read because it is missing" error (verified live, same
+  // finding as PMT:rough-bench's TEMPLATE_RECORDING_OPTIONS entries, which
+  // this os_signpost path predates and never got updated to match). Real
+  // os_signpost schema (`xctrace record --instrument os_signpost
+  // --show-recording-options`) has TWO keys: dynamicTracingEnabledSubsystems
+  // AND recordAllProcessesInSingleProcessMode (bare default: false) — this
+  // object used to set only the first, so EVERY start_recording call using
+  // signpostSubsystems failed outright at record time, reproduced live with
+  // xctrace's real exit code 57. recordAllProcessesInSingleProcessMode:false
+  // is the bare default, not a behavior change — just closing the missing
+  // key that broke loading entirely.
   const signpostRecordingOptions = wantsSignpostSubsystems
-    ? { os_signpost: { dynamicTracingEnabledSubsystems: signpostSubsystems! } }
+    ? {
+        os_signpost: {
+          dynamicTracingEnabledSubsystems: signpostSubsystems!,
+          recordAllProcessesInSingleProcessMode: false,
+        },
+      }
     : undefined;
   const resolvedRecordingOptions =
     Object.keys(expanded.recordingOptions).length > 0 || baseRecordingOptions || signpostRecordingOptions

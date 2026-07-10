@@ -33,5 +33,9 @@
     "forceDevTrace",
     "ringBufferMode",
     "throttleEnabled"
+  ],
+  "os_signpost": [
+    "dynamicTracingEnabledSubsystems",
+    "recordAllProcessesInSingleProcessMode"
   ]
 }
