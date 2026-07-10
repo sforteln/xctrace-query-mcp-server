@@ -413,13 +413,36 @@ export async function getTable(
   //       (relate()'s Promise.all over A and B) can't both DROP/CREATE/INSERT
   //       on the one connection at once, so each ingestion awaits any prior
   //       one on this session before touching the db.
+  //
+  // PMT:harsh-brook: layer (2) used to serialize the ENTIRE pipeline,
+  // including the `xctrace export` subprocess's own startup/query-compile
+  // wait — measured live to be the DOMINANT cost for small/medium schemas
+  // (15-17s of a 15.6s total before a single byte arrives), while genuinely
+  // concurrent xctrace subprocesses do NOT contend with each other on this
+  // machine (measured: two exports spawned together finished within ~1s of
+  // each other, vs. today's fully-sequential relate()/correlate() case
+  // measured at 30.78s combined for a schema pair whose xctrace startup cost
+  // dominates and whose actual row counts — 1 and 19 — make parse+insert
+  // negligible). Below, `exportXPathStream` (the subprocess spawn) is called
+  // BEFORE awaiting `prior`, so it starts immediately regardless of what else
+  // is in flight on this session; only the step that actually WRITES to the
+  // shared connection (consuming stdout — parsing + inserting rows, which
+  // `sqliteStore.ts`'s `SqliteTableWriter` interleaves as ~5000-row
+  // transactions throughout the stream, not a separable final phase) still
+  // awaits `prior`. This is deliberately narrower than "split export from
+  // insert" — that split isn't safe (it would require buffering full row
+  // sets in JS memory while waiting for a turn, reintroducing the OOM crashes
+  // `memoryGuard.ts` exists to prevent). Here, a not-yet-its-turn export's
+  // unread stdout just backs up in the OS pipe/child process — memory the
+  // child already owned, not ours.
   const pendKey = `${sessionId}:${cacheKey}`;
   const inflight = pendingIngest.get(pendKey);
   if (inflight) return inflight;
 
   const prior = sessionIngestChain.get(sessionId) ?? Promise.resolve();
   const ingestion = (async (): Promise<SqliteTableHandle> => {
-    await prior.catch(() => {}); // serialize after any prior ingestion; its failure isn't ours
+    // Safe to open before `prior` — idempotent and cached on the session
+    // (getSchemaMeta already calls this unserialized today).
     const db = await getSessionDb(session);
 
     // PMT:ruby-peak reuse check — this exact (run,schema) table may already
@@ -430,12 +453,15 @@ export async function getTable(
     // no export, no parse, not even the track-detail schema's usual second
     // discovery pass. This is the actual "zero re-parse cost" this feature
     // exists to deliver — resolving WHERE the .db lives is necessary but not
-    // sufficient without this.
+    // sufficient without this. Synchronous (a single `.get()` call), so safe
+    // to run before `prior` too — it can't be caught mid another ingestion's
+    // open transaction (no await inside it to interleave on).
     const reusedCols = loadIngestedSchemaCols(db, cacheKey);
 
     let cols: SchemaCol[];
     let rowCount: number;
     if (reusedCols) {
+      await prior.catch(() => {}); // serialize after any prior ingestion; its failure isn't ours
       cols = reusedCols;
       rowCount = (db.prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(cacheKey)}`).get() as { n: number }).n;
     } else {
@@ -453,13 +479,22 @@ export async function getTable(
         // a second real export+pass ingests using those now-known columns. See
         // parseTrackDetailStreamToSqlite's own doc comment for why this is two
         // xctrace exports instead of one.
+        //
+        // The discovery pass never touches `db` (parseTrackDetailStreamMeta
+        // takes no db param) — safe to spawn AND fully consume with zero
+        // serialization (PMT:harsh-brook).
         const discoverExport = await exportXPathStream(session.tracePath, xpath);
         const meta = await raceParseAgainstExport(
           parseTrackDetailStreamMeta(discoverExport.stdout, schema),
           discoverExport.done
         );
         cols = meta.cols;
+        // Spawn immediately (PMT:harsh-brook) — the ingest pass re-runs the
+        // identical xpath and doesn't need `cols` to start the subprocess,
+        // only to parse its output. Only consuming its stdout (which writes
+        // rows) waits its turn.
         const ingestExport = await exportXPathStream(session.tracePath, xpath);
+        await prior.catch(() => {});
         const ingested = await raceParseAgainstExport(
           parseTrackDetailStreamToSqlite(ingestExport.stdout, cols, db, cacheKey),
           ingestExport.done
@@ -467,8 +502,13 @@ export async function getTable(
         rowCount = ingested.rowCount;
       } else {
         const xpath = buildTableXPath(run, schema);
-        const { stdout, done } = await exportXPathStream(session.tracePath, xpath);
-        const ingested = await raceParseAgainstExport(parseTableStreamToSqlite(stdout, db, cacheKey), done);
+        // Spawn immediately (PMT:harsh-brook) — see the layer-(2) comment above.
+        const exportHandle = await exportXPathStream(session.tracePath, xpath);
+        await prior.catch(() => {});
+        const ingested = await raceParseAgainstExport(
+          parseTableStreamToSqlite(exportHandle.stdout, db, cacheKey),
+          exportHandle.done
+        );
         cols = ingested.cols;
         rowCount = ingested.rowCount;
       }
