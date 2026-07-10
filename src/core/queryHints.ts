@@ -98,7 +98,18 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
     },
     {
       column: "fetch-entity",
-      note: "N+1 detection: aggregate(groupBy: \"fetch-entity\", op: \"count\") and compare the count for an entity (e.g. \"Prompt\") against that entity's real object count in the app (a query(schema, limit:1).totalRows on the entity's own store, or a known figure). fetch count ≫ object count is a strong N+1 signal — correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
+      note: "N+1 detection, self-contained (no external object-count needed — PMT:thick-gull): each row also carries `fetch-count`, the number of objects THAT ONE fetch call actually returned. aggregate(groupBy: \"fetch-entity\", measure: \"fetch-count\", op: \"avg\") alongside aggregate(groupBy: \"fetch-entity\", op: \"count\") — an entity with a HIGH call count and a LOW avg fetch-count (near 1) is a strong N+1 signal (many separate single-object fetches instead of one bulk query); verified live against a real trace: one entity fetched 830 times averaging 1.00 objects/call, a textbook case. The coreDataFetchNPlusOne detector already surfaces this automatically when both cross their bands. Correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
+    },
+  ],
+  "core-data-fault": [
+    {
+      column: "fault-object",
+      note: "No separate entity-name column — fault-object is a full description string embedding a `x-coredata://<UUID>/<EntityName>/p<N>` URI (e.g. \"0xa917... <x-coredata://166AEEB7.../Feature/p95>\"), verified live against a real fixture. To group/count by entity, extract the EntityName segment yourself (a regex like `x-coredata:\\/\\/[^/]+\\/([^/]+)\\/p\\d+` against the fmt string) before aggregating — there is no groupBy-able entity column on this schema directly. A raw row/object count from this schema is per-OBJECT-FAULT, not per-entity, until you do that extraction.",
+    },
+  ],
+  "core-data-save": [
+    {
+      note: "No zero-groupBy \"how many total saves\" shortcut — aggregate() requires a groupBy (verified: AggregateOptions.groupBy is non-optional). query(schema).totalRows already answers a bare count with no aggregate call needed. When you DO want to group (e.g. to see save latency), groupBy: \"thread\" is the standard first cut — it usually collapses to one \"Main Thread\" group for SwiftData's default container, so a non-main-thread save showing up is itself an anomaly worth a second look, not routine.",
     },
   ],
   OSSignpostIntervals: [

@@ -20,6 +20,7 @@ import { nearMissSweep } from "./nearMissSweep.js";
 import { renderHitchSweep } from "./renderHitchSweep.js";
 import { qosMismatch } from "./qosMismatch.js";
 import { priorityInversion } from "./priorityInversion.js";
+import { coreDataFetchNPlusOne } from "./coreDataFetchNPlusOne.js";
 
 export const DETECTORS: readonly Detector[] = [
   swiftuiOverInvalidation,
@@ -36,6 +37,7 @@ export const DETECTORS: readonly Detector[] = [
   renderHitchSweep,
   qosMismatch,
   priorityInversion,
+  coreDataFetchNPlusOne,
 ];
 
 export * from "./types.js";

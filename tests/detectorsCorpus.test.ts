@@ -1,11 +1,12 @@
 /**
- * PMT:flint-larch — unit tests for the 8 corpus detectors built on top of the
+ * PMT:flint-larch — unit tests for the corpus detectors built on top of the
  * PMT:pure-hail framework (swiftui-over-invalidation, detector #1, is already
  * covered by tests/detectors.test.ts). Follows that file's pattern exactly:
  * synthetic tables via SqliteTableWriter, a DetectorContext over an in-memory
  * db, one test that FIRES on data crossing the threshold and one that does
  * NOT fire below it. Expensive detectors are called directly (run(ctx)) since
- * runCheapDetectors only drives the cheap tier.
+ * runCheapDetectors only drives the cheap tier. core-data-fetch-n-plus-one
+ * (PMT:thick-gull) was added later, same pattern.
  */
 import { describe, it, expect } from "vitest";
 import { openSessionDb, SqliteTableWriter } from "../src/engine/sqliteStore.js";
@@ -20,6 +21,7 @@ import { leakAllocWithoutFree } from "../src/detectors/leakAllocWithoutFree.js";
 import { runloopContainsBodyEval } from "../src/detectors/runloopContainsBodyEval.js";
 import { fmPromptCachingMiss } from "../src/detectors/fmPromptCachingMiss.js";
 import { fmMainActorSaturation } from "../src/detectors/fmMainActorSaturation.js";
+import { coreDataFetchNPlusOne } from "../src/detectors/coreDataFetchNPlusOne.js";
 
 type Row = Record<string, { type: string; fmt: string | number; raw: string | number }>;
 
@@ -302,6 +304,44 @@ describe("fm-main-actor-saturation (cheap: single-table MAX + filtered count)", 
     const db = newDb();
     ingest(db, SCHEMA, COLS, rows(25, 3));
     const ranked = runCheapDetectors([fmMainActorSaturation], ctxFor(db), new Set([SCHEMA]));
+    expect(ranked).toEqual([]);
+  });
+});
+
+describe("core-data-fetch-n-plus-one (cheap: single-table GROUP BY + HAVING)", () => {
+  const SCHEMA = "core-data-fetch";
+  const COLS = colsOf({ "fetch-entity": "string", "fetch-count": "uint64" });
+
+  function fetchRows(entity: string, n: number, objectsPerCall: number): Row[] {
+    return Array.from({ length: n }, () => ({
+      "fetch-entity": cell("string", entity),
+      "fetch-count": cell("uint64", objectsPerCall),
+    }));
+  }
+
+  it("fires for many small fetches of the same entity (real-trace-calibrated: 830 calls avg 1.00)", () => {
+    const db = newDb();
+    ingest(db, SCHEMA, COLS, [
+      ...fetchRows("Prompt", 30, 1),
+      ...fetchRows("Project", 5, 8), // legitimate small bulk fetch — should not distract
+    ]);
+    const ranked = runCheapDetectors([coreDataFetchNPlusOne], ctxFor(db), new Set([SCHEMA]));
+    expect(ranked.length).toBe(1);
+    expect(ranked[0].summary).toContain("Prompt");
+    expect(ranked[0].criterion).toContain("fetch calls");
+  });
+
+  it("does not fire for a legitimate bulk fetch (many calls, but each returns plenty of objects)", () => {
+    const db = newDb();
+    ingest(db, SCHEMA, COLS, fetchRows("Project", 30, 8));
+    const ranked = runCheapDetectors([coreDataFetchNPlusOne], ctxFor(db), new Set([SCHEMA]));
+    expect(ranked).toEqual([]);
+  });
+
+  it("does not fire when call count is too low to be a storm, even at 1 object/call", () => {
+    const db = newDb();
+    ingest(db, SCHEMA, COLS, fetchRows("MediaAttachment", 5, 1));
+    const ranked = runCheapDetectors([coreDataFetchNPlusOne], ctxFor(db), new Set([SCHEMA]));
     expect(ranked).toEqual([]);
   });
 });

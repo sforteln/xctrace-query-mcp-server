@@ -695,7 +695,12 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "you PointsOfInterestEvents for emitEvent-style instants, but NOT OSSignpostIntervals — " +
     "custom beginInterval/endInterval calls need the separate os_signpost instrument + " +
     "dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: [\"your.subsystem\"] " +
-    "to start_recording — see PMT:vivid-rill).",
+    "to start_recording — see PMT:vivid-rill). IMPORTANT (PMT:thick-gull): all four core-data-* " +
+    "schemas coming back EMPTY does not mean SwiftData/Core Data isn't emitting probes — it's " +
+    "exactly what an idle trace looks like too (verified live: stopping immediately after attach " +
+    "with no app interaction produces this). Before concluding there's no Core Data activity, " +
+    "confirm the app was actually exercised during the recording (navigate, open a model, trigger " +
+    "a save) — re-record with real interaction rather than trusting an all-empty result as ground truth.",
   "Foundation Models":
     "Records all on-device Foundation Models inference calls: prompts, responses, " +
     "token counts, and latency. After opening, query ModelInferenceTable and ModelLoadingTable. " +
