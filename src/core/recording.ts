@@ -51,8 +51,9 @@ import { resolveAssetPath } from "./assetPaths.js";
  * --show-recording-options alone again; decode the archive. NOTE a decoder
  * display name is not always a valid bare --instrument name (RealityKit's
  * "Runloops" vs xctrace's "Run Loops"), so reconcile each against
- * `xctrace list instruments` before adding it. The systematic re-audit of
- * every entry here from that enumeration is PMT:flint-crystal's scope.
+ * `xctrace list instruments` before adding it. PMT:flint-crystal did that
+ * systematic re-audit — every entry below is reconciled to the decoder
+ * enumeration (see the per-entry notes and aidocs/templateBundlesAudit.md).
  *
  * Why this matters: most of these template names are ALSO valid standalone
  * `--instrument` names (e.g. "Time Profiler" is both a template and an
@@ -67,46 +68,63 @@ import { resolveAssetPath } from "./assetPaths.js";
  * meant instead of the server guessing from an overloaded name.
  */
 export const TEMPLATE_BUNDLES: Record<string, string[]> = {
-  "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"],
-  "SwiftUI": ["Hangs", "Time Profiler"],
-  "CPU Profiler": ["Hangs", "Points of Interest", "Thermal State"],
-  "CPU Counters": ["Time Profiler", "Points of Interest"],
-  // PMT:pine-basin: "Location Energy Model" added after the NSKeyedArchiver
-  // template decoder (src/core/tracetemplate.ts) authoritatively enumerated
-  // Power Profiler's real bundle from Power Profiler.tracetemplate's
-  // stubInfoByUUID — a no-configurable-options instrument invisible to
-  // --show-recording-options (how this table was originally built), hence the
-  // gap. Verified a bare `--instrument "Location Energy Model"` is a real,
-  // accepted name (`xctrace list instruments`). The decoder also shows this
-  // entry still under-lists Network Connections + Thermal State + the headline
-  // Power Profiler instrument; those, and the same authoritative re-audit of
-  // EVERY other entry here, are PMT:flint-crystal's scope (its decoded
-  // enumeration is committed at aidocs/templateBundlesAudit.md) — not folded
-  // in here, because a decoder DISPLAY name is not always a valid bare
-  // --instrument name (e.g. RealityKit's "Runloops" vs xctrace's "Run Loops"),
-  // so each addition needs the name reconciled before it's trusted.
-  "Power Profiler": ["Location Energy Model", "Metal Performance Overview", "Time Profiler"],
-  "Allocations": ["Points of Interest"],
-  "Leaks": ["Points of Interest"],
-  "Core AI": ["Time Profiler"],
-  "Core ML": ["Time Profiler"],
-  // PMT:calm-starling: does NOT bundle the full "Points of Interest" instrument —
-  // could not re-verify live (this Mac's Apple Silicon CPU doesn't support
-  // Processor Trace at all), but trusting the prior session's confirmed "no
-  // signpost-related schema at all" finding over the unverified prior claim here.
+  // PMT:flint-crystal: every entry below re-audited against the NSKeyedArchiver
+  // template decoder's authoritative stubInfoByUUID enumeration
+  // (src/core/tracetemplate.ts, full table at aidocs/templateBundlesAudit.md) —
+  // each instrument reconciled to a valid bare `--instrument` name via
+  // `xctrace list instruments` and the headline instrument dropped. Because a
+  // composed extra records `[name, ...bundle]` (expandTemplates below), every
+  // name here MUST be a real bare instrument; a decoder DISPLAY name is not
+  // always one (e.g. RealityKit's "Runloops" → xctrace's "Run Loops"), so each
+  // was name-checked, and the reconciled set spot-recorded to confirm it
+  // composes without rejection.
+  "Time Profiler": ["Hangs", "Points of Interest", "Thermal State"], // decoder-confirmed complete
+  "SwiftUI": ["Hangs", "Hitches", "Time Profiler"], // flint-crystal +Hitches
+  "CPU Profiler": ["Hangs", "Points of Interest", "Thermal State"], // decoder-confirmed complete
+  "CPU Counters": ["Points of Interest", "Thread Activity", "Time Profiler"], // flint-crystal +Thread Activity
+  // "Location Energy Model" (PMT:pine-basin) + "Network Connections"/"Thermal
+  // State" (PMT:flint-crystal) — all decoder-confirmed members of Power
+  // Profiler's real bundle, invisible to the --show-recording-options
+  // construction this table originally used.
+  "Power Profiler": ["Location Energy Model", "Metal Performance Overview", "Network Connections", "Thermal State", "Time Profiler"],
+  "Allocations": ["Points of Interest"], // decoder-confirmed complete
+  "Leaks": ["Points of Interest"], // decoder-confirmed complete
+  "Core AI": ["GPU", "Neural Engine", "Time Profiler"], // flint-crystal +GPU, +Neural Engine
+  "Core ML": ["GPU", "Metal Application", "Neural Engine", "Time Profiler"], // flint-crystal +GPU, +Metal Application, +Neural Engine
+  // Processor Trace: LEFT EMPTY despite the decoder showing the TEMPLATE archive
+  // declares Points of Interest + Thread Activity + Processor Trace. PMT:calm-
+  // starling deliberately set this to [] on a SCHEMA-level "no signpost schema
+  // recorded" finding that CANNOT be re-verified here (this Mac's Apple Silicon
+  // CPU does not support Processor Trace at all). Not overriding a documented
+  // decision that can't be re-tested — flagged for hardware-enabled re-check: if
+  // POI schemas do appear on supporting hardware, this becomes
+  // ["Points of Interest", "Thread Activity"].
   "Processor Trace": [],
-  "Network": ["Points of Interest"],
-  "App Launch": ["Time Profiler"],
-  // PMT:calm-starling: does NOT bundle the full "Points of Interest" instrument —
-  // re-verified live against a fresh target (Xcode, not previously used) and via
-  // the Instruments.app GUI's own "Add Instrument" list for this template (shows
-  // Hitches/Display/Time Profiler/Thread Activity/Thermal State/Hangs — no
-  // signpost instrument at all): Animation Hitches' own os-signpost coverage is
-  // a BARE 'os-signpost' schema only (no OSSignpostIntervals/os-signpost-arg/
-  // PointsOfInterestEvents) — see TEMPLATE_NOTES["Animation Hitches"] for the
-  // caller-facing guidance this correction feeds into.
-  "Animation Hitches": ["Hangs", "Time Profiler"],
-  "Swift Concurrency": ["Hangs", "Points of Interest", "Time Profiler"],
+  "Network": ["HTTP Traffic", "Network Connections", "Points of Interest"], // flint-crystal +HTTP Traffic, +Network Connections (base-only, see TEMPLATE_ONLY_NAMES)
+  "App Launch": ["dyld Activity", "Thread Activity", "Time Profiler"], // flint-crystal +dyld Activity, +Thread Activity (base-only)
+  // PMT:calm-starling + flint-crystal: the decoder CONFIRMS no "Points of
+  // Interest" in this template (consistent with calm-starling's "no signpost
+  // instrument" finding) — Animation Hitches' os-signpost coverage is a BARE
+  // 'os-signpost' schema only (see TEMPLATE_NOTES["Animation Hitches"]).
+  // flint-crystal added the decoder's other real bundle members. Base-only.
+  "Animation Hitches": ["Display", "Hangs", "Hitches", "Thermal State", "Thread Activity", "Time Profiler"],
+  "Swift Concurrency": ["Hangs", "Points of Interest", "Swift Actors", "Swift Executors", "Swift Tasks", "Time Profiler"], // flint-crystal +Swift Actors/Executors/Tasks (base-only)
+  // PMT:flint-crystal NEW. RealityKit Trace is a TEMPLATE with no matching bare
+  // instrument (added to TEMPLATE_ONLY_NAMES), so this bundle is used only for
+  // base-template fidelity tracking. "Run Loops" is the decoder's "Runloops"
+  // reconciled to xctrace's real name — GUI-picker-invisible but a valid bare
+  // instrument. Spot-recorded live: the full set composes; RealityKit
+  // Frames/Metrics are iOS/visionOS-only (they error on a macOS target — a
+  // platform limit of those instruments, not a bundle error).
+  "RealityKit Trace": ["GPU", "Hangs", "Metal Application", "RealityKit Frames", "RealityKit Metrics", "Run Loops", "Time Profiler"],
+  // PMT:flint-crystal NEW, genuinely EMPTY auxiliary bundle. The Foundation
+  // Models template bundles exactly ONE instrument — "Foundation Models" itself
+  // (a valid bare instrument, so composing it works with no auxiliaries). The
+  // many FM tables (ModelInferenceTable, SessionTable, InstructionsTable, …) are
+  // SCHEMAS that one instrument emits, NOT separately-bundled instruments —
+  // correcting PMT:amber-ibis's schemas-as-bundle framing. Listed explicitly
+  // (vs absent) to record that it was audited and the bundle is truly empty.
+  "Foundation Models": [],
 };
 
 /**
@@ -218,6 +236,11 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
   "App Launch",
   "Swift Concurrency",
   "Animation Hitches",
+  // PMT:flint-crystal: RealityKit Trace is a template whose instruments are
+  // "RealityKit Frames"/"RealityKit Metrics" — there is no bare "RealityKit
+  // Trace" instrument (`xctrace list instruments`), so composing it as an extra
+  // would fail; usable only as the BASE template.
+  "RealityKit Trace",
 ]);
 
 /**

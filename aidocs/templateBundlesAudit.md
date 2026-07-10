@@ -80,20 +80,77 @@ the template) is included here; `TEMPLATE_BUNDLES` stores only the auxiliaries.
 | TimerDiagnostics | System Call Trace, Thread State Trace |
 | iOSLocation | Location Energy Model |
 
-### Gaps vs. the current TEMPLATE_BUNDLES (for PMT:flint-crystal)
+### TEMPLATE_BUNDLES reconciliation — DONE (PMT:flint-crystal)
 
-- **Power Profiler** — was `[Metal Performance Overview, Time Profiler]`;
-  `Location Energy Model` added by PMT:pine-basin. Still under-lists
-  `Network Connections` + `Thermal State`.
-- **RealityKit Trace** — no entry at all; real bundle includes `Runloops`
-  (reconcile to `Run Loops`), `Metal Application`, `RealityKit Frames`,
-  `RealityKit Metrics`, `GPU`, `Hangs`, `Time Profiler`.
-- **Foundation Models** — no entry; the template bundles exactly ONE
-  instrument (`Foundation Models`), NOT a schema list. The many FM tables
-  (ModelInferenceTable, SessionTable, …) are what that single instrument
-  emits, not separately-bundled instruments. Its auxiliary bundle is empty.
-- Many other entries (Animation Hitches, Swift Concurrency, System Trace, …)
-  bundle more than currently recorded — see the table.
+Every entry was reconciled to the decoder enumeration above (display name →
+valid bare `--instrument` via `xctrace list instruments`, headline dropped).
+The reconciled set was spot-recorded live to confirm it composes without
+rejection. Changes applied to `src/core/recording.ts`:
+
+| Template | Change |
+|---|---|
+| Time Profiler | none (decoder-confirmed complete) |
+| SwiftUI | +Hitches |
+| CPU Profiler | none (complete) |
+| CPU Counters | +Thread Activity |
+| Power Profiler | +Location Energy Model (pine-basin), +Network Connections, +Thermal State |
+| Allocations / Leaks | none (complete) |
+| Core AI | +GPU, +Neural Engine |
+| Core ML | +GPU, +Metal Application, +Neural Engine |
+| Processor Trace | **left `[]`** — see below |
+| Network | +HTTP Traffic, +Network Connections |
+| App Launch | +dyld Activity, +Thread Activity |
+| Animation Hitches | +Display, +Hitches, +Thermal State, +Thread Activity |
+| Swift Concurrency | +Swift Actors, +Swift Executors, +Swift Tasks |
+| RealityKit Trace | **NEW** (also added to TEMPLATE_ONLY_NAMES) |
+| Foundation Models | **NEW**, genuinely empty auxiliary bundle |
+
+Two entries were NOT blindly overridden by the decoder:
+
+- **Processor Trace** — the decoder shows the archive declares `Points of
+  Interest` + `Thread Activity` + `Processor Trace`, but PMT:calm-starling
+  deliberately set it to `[]` on a SCHEMA-level "no signpost schema recorded"
+  finding that cannot be re-verified here (this Mac's Apple Silicon CPU does
+  not support Processor Trace). Left `[]`, flagged in-code for hardware-enabled
+  re-check.
+- **Animation Hitches** — the decoder CONFIRMS calm-starling's "no Points of
+  Interest instrument" finding (POI is genuinely absent from the archive), so
+  that correction stands; the other real bundle members were added.
+
+Naming reconciliations needed: only `Runloops` → `Run Loops` (RealityKit
+Trace). `RealityKit Trace` itself is NOT a bare instrument (its instruments are
+`RealityKit Frames`/`RealityKit Metrics`) → added to `TEMPLATE_ONLY_NAMES`.
+`Foundation Models` IS a bare instrument, so it is composable (empty bundle).
+Guarded by `tests/templateBundlesValidNames.test.ts` against a committed
+`xctrace list instruments` snapshot.
+
+Platform note: `RealityKit Frames`/`RealityKit Metrics` error on a macOS target
+("does not support the macOS platform") — RealityKit Trace is for
+iOS/visionOS apps. That's a runtime platform limit of those instruments, not a
+bundle-correctness problem.
+
+## Hangs threshold across templates (PMT:flint-crystal item 5 → hand to PMT:rough-bench)
+
+`hangsThreshold` in the archive is a **3-level enum**, not raw milliseconds. The
+enum→ms mapping (confirmed via `--show-recording-options`):
+
+| enum | ms | templates |
+|---|---|---|
+| 1 | 250 | Time Profiler, CPU Profiler, Swift Concurrency, System Trace, **SwiftUI** |
+| 2 | 100 | Metal System Trace, Game Performance, Audio System Trace |
+| 3 | 33 | **Animation Hitches, RealityKit Trace** |
+
+Finding (answers the prompt's question): **33ms is NOT Animation-Hitches-
+specific** — RealityKit Trace shares it. But it is **NOT a general
+"rendering-sensitive → 33ms" rule** either: it's a graded scale, and the axis
+is frame-pacing/hitch focus, not rendering per se. Notably SwiftUI — a UI
+template — sits at the default 250ms, while GPU/Metal/Audio system traces get
+the middle 100ms tier and only the two frame-hitch templates (Animation
+Hitches, RealityKit Trace) get the tightest 33ms. The bare-added default is
+100ms (PMT:gravel-falcon), so preserving a template's tuned Hangs threshold on
+bare composition needs, per template: Animation Hitches/RealityKit Trace → 33,
+Metal System Trace/Game Performance/Audio System Trace → 100, else → 250.
+Actual `TEMPLATE_RECORDING_OPTIONS` value edits are PMT:rough-bench's scope.
 
 ## Named-target findings (PMT:pine-basin items 3 & 4)
 

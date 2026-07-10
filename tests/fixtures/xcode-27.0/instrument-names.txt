@@ -1,0 +1,64 @@
+Activity Monitor
+Advanced Graphics Statistics
+Allocations
+Audio Client
+Audio Server
+Audio Statistics
+Core AI
+Core Animation Activity
+Core Animation Commits
+Core Animation FPS
+Core Animation Server
+Core ML
+CPU Counters
+CPU Profiler
+Data Faults
+Data Fetches
+Data Saves
+Disk I/O Latency
+Disk Usage
+Display
+dyld Activity
+Filesystem Activity
+Filesystem Suggestions
+Foundation Models
+Foveated Streaming Statistics
+Frame Lifetimes
+GCD Performance
+GPU
+Hangs
+Hitches
+HTTP Traffic
+Leaks
+Location Energy Model
+Metal Application
+Metal GPU Counters
+Metal Performance Overview
+Metal Resource Events
+Network Connections
+Neural Engine
+os_log
+os_signpost
+Points of Interest
+Power Profiler
+Processor Trace
+RealityKit Frames
+RealityKit Metrics
+Run Loops
+Sampler
+SceneKit Application
+stdout/stderr
+Swift Actors
+Swift Executors
+Swift Tasks
+SwiftUI
+System Call Trace
+System Load
+Thermal State
+Thread Activity
+Thread State Trace
+Time Profiler
+View Body (Legacy)
+View Properties (Legacy)
+Virtual Memory Trace
+VM Tracker
