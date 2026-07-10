@@ -46,7 +46,7 @@
  */
 import { WAIT_FRAME_NAMES } from "./callTree.js";
 
-export type OffCpuClass = "idle-in-runloop" | "blocked-on-work" | "scheduling-delay" | "unclassified";
+export type OffCpuClass = "idle-in-runloop" | "blocked-on-work" | "scheduling-delay" | "timer-wait" | "unclassified";
 
 export interface OffCpuClassification {
   class: OffCpuClass;
@@ -66,6 +66,8 @@ export interface OffCpuClassification {
   waitingOn?: string;
   /** For idle-in-runloop: the recognized idle marker (e.g. _DPSNextEvent). */
   idleMarker?: string;
+  /** For timer-wait: the recognized voluntary-sleep call (e.g. +[NSThread sleepForTimeInterval:]). */
+  timerMarker?: string;
 }
 
 // ─── Frame-name vocabularies (all matched by STACK POSITION, never trusted
@@ -179,6 +181,39 @@ function findIdleMarker(frames: string[]): string | null {
   return IDLE_MARKER_PRIORITY.find((m) => present.has(m)) ?? null;
 }
 
+/**
+ * A thread deliberately pausing ITSELF for a fixed duration — distinct from
+ * idle-in-runloop (parked waiting for an EXTERNAL event) and blocked-on-work
+ * (waiting on ANOTHER thread's work): nothing else could complete this call
+ * faster, so its presence alone (once the block/callout checks above have
+ * already ruled those out) is sufficient — unlike idle-in-runloop, there's no
+ * "marker→leaf path must be callout-free" nuance to check, since a sleep call
+ * doesn't call out into arbitrary app code the way a run loop does.
+ *
+ * Verified live against the real off-CPU retrospective's Session 2 trace
+ * (2026-07-09T03-31-24-system-trace.trace): `+[NSThread sleepForTimeInterval:]`
+ * (Thread.sleep's ObjC bridge) sits directly above `nanosleep` above the
+ * `__semwait_signal` leaf. `nanosleep`/`usleep`/`sleep` are included too, for
+ * the same pattern without the NSThread wrapper (a raw C-level sleep).
+ *
+ * Priority-ordered like IDLE_MARKER_PRIORITY, for the same reason: report the
+ * human-recognizable caller-level name (`+[NSThread sleepForTimeInterval:]`)
+ * over the lower-level libc primitive it calls into (`nanosleep`), when both
+ * are present in the same stack.
+ */
+const TIMER_WAIT_MARKER_PRIORITY: readonly string[] = [
+  "+[NSThread sleepForTimeInterval:]",
+  "-[NSThread sleepUntilDate:]",
+  "thread_sleep",
+  "nanosleep",
+  "usleep",
+  "sleep",
+];
+function findTimerMarker(frames: string[]): string | null {
+  const present = new Set(frames);
+  return TIMER_WAIT_MARKER_PRIORITY.find((m) => present.has(m)) ?? null;
+}
+
 /** Internal plumbing to skip when naming WHAT a block is waiting on — we want
  *  the first real app/framework frame above the wait mechanism, not the GCD/
  *  pthread/kernel internals that implement the wait. */
@@ -261,7 +296,27 @@ export function classifyOffCpuBacktrace(
     };
   }
 
-  // ── 2. IDLE — positive allowlist only, and only if the marker→leaf path
+  // ── 2. TIMER-WAIT — a deliberate, self-initiated sleep, checked after the
+  //       block checks above (so a real block can never be mislabeled a
+  //       benign sleep) and before IDLE (more specific than the generic
+  //       run-loop-parked pattern) ──
+  const timerMarker = findTimerMarker(frames);
+  if (timerMarker) {
+    const waitMsText = waittimeNs != null ? ` for ${(waittimeNs / 1e6).toFixed(1)}ms` : "";
+    return {
+      class: "timer-wait",
+      headline: `Off-CPU TIMER-WAIT — deliberately sleeping in ${timerMarker}${waitMsText} (voluntary, not a stall)`,
+      evidence:
+        `stack shows ${timerMarker} above the ${deepestWaitFrame ?? "wait"} leaf — a deliberate, self-initiated ` +
+        `pause (Thread.sleep-style), not a stall waiting on another thread's work or an event-loop park. If this ` +
+        `sleep is unexpectedly long or on a latency-sensitive thread (e.g. Main), that's the actual finding — the ` +
+        `class itself is not evidence of a bug.${cpuNote}`,
+      deepestWaitFrame,
+      timerMarker,
+    };
+  }
+
+  // ── 3. IDLE — positive allowlist only, and only if the marker→leaf path
   //       has no work callout (already ruled out above) ──
   const idleMarker = findIdleMarker(frames);
   if (idleMarker && deepestWaitFrame && isWaitFrame(deepestWaitFrame)) {
@@ -277,7 +332,7 @@ export function classifyOffCpuBacktrace(
     };
   }
 
-  // ── 3. UNCLASSIFIED — the safe default: show the evidence, claim nothing ──
+  // ── 4. UNCLASSIFIED — the safe default: show the evidence, claim nothing ──
   return {
     class: "unclassified",
     headline: `Off-CPU, UNCLASSIFIED — deepest wait ${deepestWaitFrame ?? "(unknown)"}; read the stack`,

@@ -225,7 +225,16 @@ export async function explainOffCpuInterval(
     summary:
       `explain off-CPU [${fmtMs(startNs)}, ${fmtMs(endNs)}]${thread ? ` thread~${thread}` : ""} → dominant wait: ` +
       `${dominant.syscall ?? "?"} for ${(dominant.waitNs / 1e6).toFixed(1)}ms → classified ${classification.class} ` +
-      `(${classification.headline})`,
+      `(${classification.headline})` +
+      // PMT:serene-elk: verified live that a co-occurring scheduling delay was
+      // ALREADY attached (schedulingDelay), but this one-line narration never
+      // mentioned it — an agent skimming just this line had no cue to look for
+      // it, which is the real mechanism behind the retrospective's "a Thread.sleep
+      // buried a real scheduling-delay finding" failure (not literal data loss).
+      (scheduling
+        ? ` — NOTE: thread-state ALSO shows a ${scheduling.runnableMs.toFixed(1)}ms scheduling delay overlapping ` +
+          "this window (see schedulingDelay)"
+        : ""),
   };
 }
 
