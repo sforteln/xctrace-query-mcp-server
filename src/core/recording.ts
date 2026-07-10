@@ -129,22 +129,122 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
 };
 
 /**
- * Curated `recordingOptions` a template needs baked in, keyed by its real
- * name (e.g. SwiftUI's `enableLayoutTracing`). Composing that template's
- * name via `template`'s array form should carry these along too — otherwise
- * expandTemplates would correctly add the SwiftUI instrument + its Hangs +
- * Time Profiler bundle, but silently drop layout tracing, which is exactly
- * the same "looks complete, isn't" trap one level down. Keys/values must
- * match what `xcrun xctrace record --template <template> --show-recording-
- * options` reports for that template — xctrace silently ignores unrecognised
- * keys, so verify against that output before adding any. These are baked-in
- * defaults, not agent-tunable — only set one when there's no real tradeoff
- * (e.g. layout tracing is strictly more data for free); a genuine cost/
- * benefit knob should stay at Apple's per-template default rather than
- * becoming a one-off param.
+ * Curated `recordingOptions` a composed EXTRA template needs baked in, keyed
+ * by its real name, then by the affected instrument's name. Two distinct
+ * purposes share this one table (expandTemplates applies both the same way):
+ *
+ *   1. OPINIONATED default — SwiftUI's own `enableLayoutTracing: true` isn't
+ *      SwiftUI's native default (verified: the real template reports it
+ *      FALSE) — it's baked in because it's strictly more data for free, a
+ *      deliberate choice, not fidelity restoration. Only add one of these
+ *      when there's no real tradeoff; a genuine cost/benefit knob should stay
+ *      at Apple's per-template default rather than becoming a one-off param.
+ *   2. FIDELITY RESTORATION (PMT:rough-bench) — an AUXILIARY bundle
+ *      instrument's tuned value, matching exactly what the template's own
+ *      real `--template` invocation applies, so a bare-added copy of that
+ *      instrument (fidelityAtRisk, PMT:gravel-falcon) doesn't silently fall
+ *      back to the generic bare default. e.g. SwiftUI's real invocation tunes
+ *      Hangs to 250ms (bare default is 100ms) — composing SwiftUI as an extra
+ *      on a base that doesn't already bundle Hangs should still get 250ms.
+ *
+ * Keys/values must match what `xcrun xctrace record --template <template>
+ * --show-recording-options` reports for that REAL template, DIFFED against
+ * the same instrument's BARE `--instrument <name> --show-recording-options`
+ * defaults (a value that merely REPEATS the bare default is noise, not a real
+ * tuning, though see below — it still has to be LISTED) — verify against both
+ * outputs before adding any.
+ *
+ * ⚠️ CRITICAL, verified live (PMT:rough-bench) — unlike `--show-recording-
+ * options`' OWN preview output (which xctrace happily prints as a partial-
+ * looking diff), the `--recording-options <file>` LOADER requires the
+ * COMPLETE key set for every instrument it mentions. A partial object (e.g.
+ * just `{"hangsThreshold": 250}`, omitting Hangs' OTHER real key
+ * `detectPriorityInversions`) fails to load AT ALL — xctrace's own error is
+ * badly misleading ("The data couldn't be read because it is missing", which
+ * reads like a missing FILE, not a missing KEY). Confirmed by feeding
+ * xctrace's own `--show-recording-options` output back in verbatim (works)
+ * vs. a hand-trimmed partial version of the exact same object (fails
+ * identically to the misleading error) — every entry below lists ALL of that
+ * instrument's real keys, not just the ones that differ from bare default.
+ * This is exactly the failure mode item 3's real-recording verification
+ * (rather than trusting the preview command) exists to catch.
+ *
+ * ONLY templates that can actually be composed as an EXTRA need an entry here
+ * — expandTemplates only ever looks up `TEMPLATE_RECORDING_OPTIONS[name]` for
+ * names in the caller's EXTRA `templates` array, never for the base (the base
+ * is passed straight to `--template`, which already applies ALL of its own
+ * real tuning natively — there is no bare-instrument fidelity gap to restore
+ * for a base at all). Concretely: Animation Hitches/RealityKit Trace (both
+ * tune Hangs to 33ms) and Swift Concurrency/App Launch are ALL in
+ * TEMPLATE_ONLY_NAMES — expandTemplates throws if any of them is composed as
+ * an extra, so they can only ever be the base, so their tuned values are
+ * structurally UNREACHABLE via this table and deliberately have no entry here
+ * (an entry would be dead data). Only Time Profiler, SwiftUI, CPU Profiler,
+ * CPU Counters, and Processor Trace are genuinely composable extras among the
+ * templates with a real, non-default tuned value.
+ *
+ * Verified live end-to-end (not just via the preview command): a bare
+ * `--instrument "Hangs" --recording-options <file with the full Hangs key
+ * set, hangsThreshold: 250>` produces a REAL trace whose own TOC reports
+ * `hangs-threshold="250"` (vs. `"100"` with no override) — the effective
+ * value the instrument actually recorded with, not a cosmetic preview.
  */
 export const TEMPLATE_RECORDING_OPTIONS: Record<string, Record<string, Record<string, unknown>>> = {
-  SwiftUI: { SwiftUI: { enableLayoutTracing: true } },
+  SwiftUI: {
+    SwiftUI: { enableLayoutTracing: true }, // opinionated default (see purpose 1 above) — SwiftUI's only real key
+    // fidelity restoration: real template tunes hangsThreshold to 250ms (bare default 100ms).
+    Hangs: { detectPriorityInversions: false, hangsThreshold: 250 },
+    // fidelity restoration: real template tunes highFrequencySampling on (bare default false); the other 3 keys match bare.
+    "Time Profiler": {
+      contextSwitchSampling: false,
+      highFrequencySampling: true,
+      recordKernelStacks: false,
+      recordWaitingThreads: false,
+    },
+  },
+  "Time Profiler": {
+    // fidelity restoration, same real value as SwiftUI's.
+    Hangs: { detectPriorityInversions: false, hangsThreshold: 250 },
+  },
+  "CPU Profiler": {
+    // fidelity restoration, same real value as SwiftUI's.
+    Hangs: { detectPriorityInversions: false, hangsThreshold: 250 },
+  },
+  "CPU Counters": {
+    // fidelity restoration: real template selects the "CPU Bottlenecks" counting
+    // mode (bare default: selectedCountingMode/selectedCountingModeDisplayName
+    // both null) — this is CPU Counters' OWN headline tuning (not an auxiliary
+    // bundle instrument), same class of gap as SwiftUI's enableLayoutTracing but
+    // restoring a genuine template default rather than an opinion. Every other
+    // key matches bare default — still listed, all keys required (see above).
+    "CPU Counters": {
+      allEventsAndFormulas: [],
+      configurationType: { guided: {} },
+      countingLevel: "EL0",
+      pmiEventAliasOrMnemonic: "",
+      pmiThreshold: 1_000_000,
+      processBucketSize: 10,
+      sampleByTime: true,
+      selectedCountingMode: { analysisMode: "bottleneck", countingMode: "bottlenecks" },
+      selectedCountingModeDisplayName: "CPU Bottlenecks",
+      useDebuggingInformation: false,
+      useHighFrequencyForGuidedMode: false,
+      useHighFrequencyForManualMode: false,
+    },
+  },
+  "Processor Trace": {
+    // fidelity restoration: real template sets bufferSizeFill to 1 (bare
+    // default is 4) — also this template's own headline instrument. Every
+    // other key matches bare default — still listed, all keys required.
+    "Processor Trace": {
+      bufferSizeFill: 1,
+      bufferSizeWrap: 1,
+      decodeOnDevice: true,
+      forceDevTrace: false,
+      ringBufferMode: { fill: {} },
+      throttleEnabled: true,
+    },
+  },
 };
 
 /**
@@ -245,6 +345,49 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
 ]);
 
 /**
+ * PMT:rough-bench item 4: fidelityAtRisk keeps flagging an instrument even
+ * after its recordingOptions gap is closed — deliberately NOT stopping there.
+ * mitigateHangsOsLogFidelity fires purely off `fidelityAtRisk.includes("Hangs")`
+ * to compensate for Hangs' os-log subsystem/category scope, which ISN'T a
+ * recordingOptions-configurable value at all (confirmed live, PMT:pine-basin:
+ * "com.apple.runtime-issues" appears zero times in the raw bytes of every
+ * Hangs-bearing template — it's the instrument's own runtime behavior, not
+ * serialized template config) — restoring hangsThreshold via recordingOptions
+ * does nothing to close THAT gap, so Hangs must stay flagged or that mitigation
+ * would silently stop firing. This function distinguishes the two fix classes
+ * in the note text instead (don't conflate "recordingOptions-level tuning was
+ * restored" with "fully matches a real template invocation").
+ */
+function buildFidelityNote(
+  name: string,
+  baseLabel: string,
+  addedAtRisk: string[],
+  opts: Record<string, Record<string, unknown>> | undefined
+): string {
+  const restored = addedAtRisk.filter((inst) => opts?.[inst] !== undefined);
+  const notRestored = addedAtRisk.filter((inst) => opts?.[inst] === undefined);
+  const parts: string[] = [
+    ` ${addedAtRisk.join(", ")} ${addedAtRisk.length === 1 ? "was" : "were"} added bare (not part of ` +
+      `"${baseLabel}"'s own bundle).`,
+  ];
+  if (restored.length > 0) {
+    parts.push(
+      ` Known recordingOptions-level tuning WAS restored for ${restored.join(", ")} (see recordingOptions) — ` +
+        `but non-recordingOptions template-only auxiliary behavior (e.g. Hangs' os-log subsystem/category scope, ` +
+        `which isn't a configurable value at all) is still NOT guaranteed to match a real template recording.`
+    );
+  }
+  if (notRestored.length > 0) {
+    parts.push(
+      ` ${notRestored.join(", ")} ${notRestored.length === 1 ? "has" : "have"} no known tuned-value override — ` +
+        `tuned configuration and any template-only auxiliary behavior is NOT guaranteed to match a real template ` +
+        `recording of "${name}".`
+    );
+  }
+  return parts.join("");
+}
+
+/**
  * Expand a caller's explicit additional-template names — WHOLE templates to
  * layer onto the base one — into the real union of instruments xctrace needs,
  * plus any recordingOptions those templates bake in. Each name is expanded to
@@ -316,16 +459,33 @@ export function expandTemplates(
         }
       }
     }
+    // PMT:rough-bench: apply an extra's tuned recordingOptions PER INSTRUMENT,
+    // not by blindly merging its whole options object. The composed template's
+    // OWN headline (`instKey === name`) is always safe — the caller explicitly
+    // asked for this template, so its tuning applies whether or not it's
+    // literally freshly `added` this iteration. An AUXILIARY bundle instrument's
+    // tuning must ONLY apply when `addedAtRisk` says THIS composition step is
+    // the one adding it bare — otherwise a genuinely unrelated base template's
+    // own correct native tuning could get silently clobbered: e.g. composing
+    // SwiftUI (tunes Hangs to 250) on top of an Animation Hitches base (which
+    // already natively tunes Hangs to 33 via its own real --template
+    // invocation) must NOT overwrite that correct 33ms with SwiftUI's 250ms —
+    // Hangs is redundantly re-added bare here (baseCovered already has it, so
+    // it's harmless) but is NOT in addedAtRisk, so its tuning is correctly
+    // skipped.
     const opts = TEMPLATE_RECORDING_OPTIONS[name];
-    if (opts) Object.assign(recordingOptions, opts);
+    if (opts) {
+      for (const [instKey, values] of Object.entries(opts)) {
+        if (instKey === name || addedAtRisk.includes(instKey)) {
+          recordingOptions[instKey] = { ...(recordingOptions[instKey] ?? {}), ...values };
+        }
+      }
+    }
 
     const resolvedNote = name !== rawName ? ` ("${rawName}" is a custom template shortcut — resolved to its real path)` : "";
     const fidelityNote =
       addedAtRisk.length > 0
-        ? ` ${addedAtRisk.join(", ")} ${addedAtRisk.length === 1 ? "was" : "were"} added bare (not part of ` +
-          `"${baseLabel}"'s own bundle) — tuned configuration and any template-only auxiliary behavior ` +
-          `(e.g. Hangs' threshold, os-log's subsystem/category scope) is NOT guaranteed to match a real ` +
-          `template recording of "${name}".`
+        ? buildFidelityNote(name, baseLabel, addedAtRisk, opts)
         : bundle.length > 0
           ? ` Full fidelity — every instrument here is already covered by "${baseLabel}"'s own bundle.`
           : "";

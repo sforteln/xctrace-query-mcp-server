@@ -163,7 +163,7 @@ Platform note: `RealityKit Frames`/`RealityKit Metrics` error on a macOS target
 iOS/visionOS apps. That's a runtime platform limit of those instruments, not a
 bundle-correctness problem.
 
-## Hangs threshold across templates (PMT:flint-crystal item 5 → hand to PMT:rough-bench)
+## Hangs threshold across templates (PMT:flint-crystal item 5, values applied by PMT:rough-bench)
 
 `hangsThreshold` in the archive is a **3-level enum**, not raw milliseconds. The
 enum→ms mapping (confirmed via `--show-recording-options`):
@@ -184,7 +184,8 @@ Hitches, RealityKit Trace) get the tightest 33ms. The bare-added default is
 100ms (PMT:gravel-falcon), so preserving a template's tuned Hangs threshold on
 bare composition needs, per template: Animation Hitches/RealityKit Trace → 33,
 Metal System Trace/Game Performance/Audio System Trace → 100, else → 250.
-Actual `TEMPLATE_RECORDING_OPTIONS` value edits are PMT:rough-bench's scope.
+
+**PMT:rough-bench applied this**: `TEMPLATE_RECORDING_OPTIONS["Time Profiler"/"SwiftUI"/"CPU Profiler"] = { Hangs: { hangsThreshold: 250, detectPriorityInversions: false } }` — but the 33ms tier (Animation Hitches, RealityKit Trace) turned out to be structurally UNREACHABLE via this table: both are in `TEMPLATE_ONLY_NAMES`, meaning `expandTemplates` throws if either is ever composed as an EXTRA — they can only ever be the base, where xctrace's own real `--template` invocation already applies 33ms natively with no bare-instrument fidelity gap to restore. So no entry exists for them (an entry would be dead data); only the 250ms tier (reachable via Time Profiler/SwiftUI/CPU Profiler as extras) needed populating. See src/core/recording.ts's `TEMPLATE_RECORDING_OPTIONS` for the full mechanism, including a critical finding: `--recording-options <file>` requires the COMPLETE real key set per instrument (a partial override fails to load with a misleading error) — verified live, and guarded by `tests/templateRecordingOptions.test.ts` against a committed fixture of the real key sets.
 
 ## Named-target findings (PMT:pine-basin items 3 & 4)
 

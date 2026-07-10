@@ -1,0 +1,37 @@
+{
+  "Hangs": [
+    "detectPriorityInversions",
+    "hangsThreshold"
+  ],
+  "Time Profiler": [
+    "contextSwitchSampling",
+    "highFrequencySampling",
+    "recordKernelStacks",
+    "recordWaitingThreads"
+  ],
+  "SwiftUI": [
+    "enableLayoutTracing"
+  ],
+  "CPU Counters": [
+    "allEventsAndFormulas",
+    "configurationType",
+    "countingLevel",
+    "pmiEventAliasOrMnemonic",
+    "pmiThreshold",
+    "processBucketSize",
+    "sampleByTime",
+    "selectedCountingMode",
+    "selectedCountingModeDisplayName",
+    "useDebuggingInformation",
+    "useHighFrequencyForGuidedMode",
+    "useHighFrequencyForManualMode"
+  ],
+  "Processor Trace": [
+    "bufferSizeFill",
+    "bufferSizeWrap",
+    "decodeOnDevice",
+    "forceDevTrace",
+    "ringBufferMode",
+    "throttleEnabled"
+  ]
+}
