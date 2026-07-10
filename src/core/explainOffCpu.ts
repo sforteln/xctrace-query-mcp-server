@@ -159,16 +159,31 @@ export async function explainOffCpuInterval(
   const scheduling = await maybeSchedulingDelay(sessionId, run, startNs, endNs, thread);
 
   if (rows.length === 0) {
+    // No blocking syscall overlaps the window, but thread-state shows a real
+    // Runnable gap — the thread WAS off-CPU, just not because of a syscall
+    // wait a backtrace could show. That's the scheduling-delay class itself,
+    // not an absence of classification (PMT:slow-cobble).
+    const classification: OffCpuClassification | null = scheduling
+      ? {
+          class: "scheduling-delay",
+          headline: `Thread was runnable for ${scheduling.runnableMs.toFixed(1)}ms but not scheduled — CPU contention, not a blocking wait`,
+          evidence: scheduling.note,
+          deepestWaitFrame: null,
+        }
+      : null;
+
     return {
       window: { startNs, endNs },
       thread: thread ?? null,
-      classification: null,
+      classification,
       evidence: null,
       waitsInWindow: 0,
       ...(scheduling ? { schedulingDelay: scheduling } : {}),
-      summary:
-        `explain off-CPU [${fmtMs(startNs)}, ${fmtMs(endNs)}]${thread ? ` thread~${thread}` : ""} in ${schema} → ` +
-        `0 waiting syscalls overlap this window` + (scheduling ? ` — but thread-state shows a runnable (scheduling) delay` : ""),
+      summary: scheduling
+        ? `explain off-CPU [${fmtMs(startNs)}, ${fmtMs(endNs)}]${thread ? ` thread~${thread}` : ""} in ${schema} → ` +
+          `0 waiting syscalls overlap this window → classified scheduling-delay (runnable ${scheduling.runnableMs.toFixed(1)}ms, not scheduled)`
+        : `explain off-CPU [${fmtMs(startNs)}, ${fmtMs(endNs)}]${thread ? ` thread~${thread}` : ""} in ${schema} → ` +
+          `0 waiting syscalls overlap this window`,
       note: scheduling
         ? undefined
         : `No off-CPU wait covers this window${thread ? ` for thread ~"${thread}"` : ""}. The thread may have been ` +
