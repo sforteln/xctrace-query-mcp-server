@@ -42,6 +42,18 @@ import { resolveAssetPath } from "./assetPaths.js";
  * State, is invisible to it, so this is a confirmed lower bound, not
  * necessarily the complete instrument list a template records).
  *
+ * AUTHORITATIVE SOURCE (PMT:pine-basin): the --show-recording-options lower
+ * bound is superseded by decoding a template's OWN archive — see
+ * src/core/tracetemplate.ts (the NSKeyedArchiver .tracetemplate decoder) and
+ * the committed full enumeration at aidocs/templateBundlesAudit.md, which
+ * reads each template's stubInfoByUUID (the ground-truth instrument list,
+ * including no-options instruments). Do NOT extend this table from
+ * --show-recording-options alone again; decode the archive. NOTE a decoder
+ * display name is not always a valid bare --instrument name (RealityKit's
+ * "Runloops" vs xctrace's "Run Loops"), so reconcile each against
+ * `xctrace list instruments` before adding it. The systematic re-audit of
+ * every entry here from that enumeration is PMT:flint-crystal's scope.
+ *
  * Why this matters: most of these template names are ALSO valid standalone
  * `--instrument` names (e.g. "Time Profiler" is both a template and an
  * instrument). The two composition params below (see StartSessionOptions in
@@ -59,7 +71,21 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "SwiftUI": ["Hangs", "Time Profiler"],
   "CPU Profiler": ["Hangs", "Points of Interest", "Thermal State"],
   "CPU Counters": ["Time Profiler", "Points of Interest"],
-  "Power Profiler": ["Metal Performance Overview", "Time Profiler"],
+  // PMT:pine-basin: "Location Energy Model" added after the NSKeyedArchiver
+  // template decoder (src/core/tracetemplate.ts) authoritatively enumerated
+  // Power Profiler's real bundle from Power Profiler.tracetemplate's
+  // stubInfoByUUID — a no-configurable-options instrument invisible to
+  // --show-recording-options (how this table was originally built), hence the
+  // gap. Verified a bare `--instrument "Location Energy Model"` is a real,
+  // accepted name (`xctrace list instruments`). The decoder also shows this
+  // entry still under-lists Network Connections + Thermal State + the headline
+  // Power Profiler instrument; those, and the same authoritative re-audit of
+  // EVERY other entry here, are PMT:flint-crystal's scope (its decoded
+  // enumeration is committed at aidocs/templateBundlesAudit.md) — not folded
+  // in here, because a decoder DISPLAY name is not always a valid bare
+  // --instrument name (e.g. RealityKit's "Runloops" vs xctrace's "Run Loops"),
+  // so each addition needs the name reconciled before it's trusted.
+  "Power Profiler": ["Location Energy Model", "Metal Performance Overview", "Time Profiler"],
   "Allocations": ["Points of Interest"],
   "Leaks": ["Points of Interest"],
   "Core AI": ["Time Profiler"],
