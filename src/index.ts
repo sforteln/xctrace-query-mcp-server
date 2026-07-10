@@ -933,20 +933,27 @@ export function createServer(): McpServer {
         "cap with only childrenOmitted as a clue it's missing. \"hot\" instead returns a flat list of " +
         "functions ranked by self-time (with inclusive/total time alongside, for \"which subsystem " +
         "dominates\"), summed across every call site, immune to depth truncation — use this for \"where " +
-        "did the time actually go\". \"spine\" returns the single heaviest root-to-leaf path with no depth " +
+        "did the time actually go\". \"spine\" walks the single heaviest root-to-leaf path with no depth " +
         "cap — deliberately compact (name/binary/%-of-total/%-of-parent only, no per-frame weight detail; " +
-        "use \"hot\" for magnitude) since a GUI main-thread spine can run 100+ frames deep. A note fires " +
-        "where %-of-parent first drops below 80% (the path stops being clearly dominant beyond that depth) " +
-        "— use this for \"what's the one path that matters\" instead of manually re-deriving it from a " +
-        "truncated tree. Both \"hot\" and \"spine\" flag known wait/blocking frames (isWait), but only when " +
-        "that frame's OWN self-time dominates its own total — a wait-named frame with heavy children (e.g. " +
-        "a run-loop callout doing real nested work) is a callout, not idle, so isWait is false there; a " +
-        "true isWait means the thread was actually blocked, not CPU-bound, and Time Profiler shows the " +
-        "wait but never what it's blocked on. \"spine\" also returns appCodeStartsAtDepth: on a main " +
-        "thread the run-loop entry chain (NSApplicationMain → ... → RunCurrentEventLoopInMode → ...) is " +
-        "mandatory scaffolding in every sample, idle or busy, so it carries no signal on its own — this " +
-        "marks the depth where the sample's own distinguishing work actually starts (spine itself is " +
-        "never trimmed, this is just a pointer into it). When timeRange is a window (both bounds set), " +
+        "use \"hot\" for magnitude) since a GUI main-thread spine can run 100+ frames deep. BY DEFAULT the " +
+        "returned array is already trimmed to the leaf-ward, distinguishing-work portion (see " +
+        "appCodeStartsAtDepth below) rather than the full chain, since the root-ward prefix above it is " +
+        "typically mandatory scaffolding identical in every sample — use `leaf: N` for a fixed-size window " +
+        "instead of that computed trim point, or `full: true` for the complete untrimmed chain (rare — " +
+        "mainly for debugging the run-loop/dispatch scaffolding itself). spineFramesOmitted reports how " +
+        "many frames were cut from the root end when trimming happened; `depth` on each returned frame is " +
+        "always the absolute depth in the full chain, never renumbered. A note fires where %-of-parent " +
+        "first drops below 80% (the path stops being clearly dominant beyond that depth) — use this view " +
+        "for \"what's the one path that matters\" instead of manually re-deriving it from a truncated tree. " +
+        "Both \"hot\" and \"spine\" flag known wait/blocking frames (isWait), but only when that frame's " +
+        "OWN self-time dominates its own total — a wait-named frame with heavy children (e.g. a run-loop " +
+        "callout doing real nested work) is a callout, not idle, so isWait is false there; a true isWait " +
+        "means the thread was actually blocked, not CPU-bound, and Time Profiler shows the wait but never " +
+        "what it's blocked on. \"spine\" also returns appCodeStartsAtDepth: on a main thread the run-loop " +
+        "entry chain (NSApplicationMain → ... → RunCurrentEventLoopInMode → ...) is mandatory scaffolding " +
+        "in every sample, idle or busy, so it carries no signal on its own — this marks the depth where the " +
+        "sample's own distinguishing work actually starts, and (unless leaf/full was passed) is also where " +
+        "the default trim cuts. When timeRange is a window (both bounds set), " +
         "a note fires if the captured CPU time is far less than the window's own span — e.g. scoping to " +
         "a slow frame/hitch and getting back a sparse sample count does NOT mean nothing happened; the " +
         "gap is likely render/GPU work, scheduling delay, or waiting on another thread, none of which " +
@@ -1009,6 +1016,22 @@ export function createServer(): McpServer {
           .max(50)
           .optional()
           .describe("Max children shown per node (\"tree\", default 8) or max ranked entries returned (\"hot\", default 20). Ignored for \"spine\"."),
+        leaf: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe(
+            "\"spine\" only. Return exactly the last N frames of the root-to-leaf chain, overriding the " +
+            "default appCodeStartsAtDepth-based trim with a fixed-size window instead."
+          ),
+        full: z
+          .boolean()
+          .optional()
+          .describe(
+            "\"spine\" only. Return the complete, untrimmed root-to-leaf chain instead of the leaf-ward " +
+            "default trim — rarely needed, mainly for debugging the run-loop/dispatch scaffolding itself."
+          ),
         position: z
           .number()
           .int()
@@ -1020,9 +1043,9 @@ export function createServer(): McpServer {
           ),
       },
     },
-    async ({ sessionId, schema, run, thread, timeRange, view, maxDepth, topN, position }) =>
-      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, view, maxDepth, topN, position }, async () => {
-        const result = await callTree(sessionId, schema, { run, thread, timeRange, view, maxDepth, topN, position });
+    async ({ sessionId, schema, run, thread, timeRange, view, maxDepth, topN, leaf, full, position }) =>
+      safeToolWithLog("call_tree", { sessionId, schema, run, thread, timeRange, view, maxDepth, topN, leaf, full, position }, async () => {
+        const result = await callTree(sessionId, schema, { run, thread, timeRange, view, maxDepth, topN, leaf, full, position });
         const response = envelope(result, [
           {
             tool: "call_tree",

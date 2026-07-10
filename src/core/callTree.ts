@@ -154,7 +154,14 @@ export interface CallTreeResult {
   roots?: CallTreeNode[];
   /** Present when view is "hot". */
   hotFunctions?: HotFunctionEntry[];
-  /** Present when view is "spine". */
+  /**
+   * Present when view is "spine". BY DEFAULT this is already trimmed to the
+   * leaf-ward, distinguishing-work portion of the full root-to-leaf chain
+   * (see appCodeStartsAtDepth) — not the complete chain. Pass `full: true`
+   * on the request for the untrimmed chain, or `leaf: N` for a fixed-size
+   * window instead of the computed trim point. `depth` on each frame is
+   * always the ABSOLUTE depth in the full chain, unaffected by trimming.
+   */
   spine?: SpineFrame[];
   /**
    * Present when view is "spine" and a known run-loop/wait frame (see
@@ -164,10 +171,19 @@ export interface CallTreeResult {
    * in EVERY sample, idle or busy, so its presence/inclusive-% carries zero
    * signal — this depth is where the sample's actual, distinguishing work
    * starts. null if no such frame appears, or if it IS the leaf (genuinely
-   * idle — nothing runs past it). The full spine array is never trimmed;
-   * this is a pointer into it, not a replacement for it.
+   * idle — nothing runs past it). This is also the depth trimmed to by
+   * default (see `spine`'s own doc) unless `leaf`/`full` was requested.
    */
   appCodeStartsAtDepth?: number | null;
+  /**
+   * Present when view is "spine" and frames were actually cut from the root
+   * end of the full chain to produce the returned `spine` array — either by
+   * the appCodeStartsAtDepth-based default trim, the fixed tail-window
+   * fallback (no wait frame on this path at all), or an explicit `leaf: N`
+   * narrower than the full chain. Absent when `full: true` was honored, or
+   * when the full chain was already short enough that no trim was needed.
+   */
+  spineFramesOmitted?: number;
   note?: string;
 }
 
@@ -260,6 +276,18 @@ function addHotSample(
  * judgment call, not a measured threshold — tune if it proves noisy in practice.
  */
 const SPINE_DOMINANCE_THRESHOLD_PCT = 80;
+
+/**
+ * Fallback cap applied to the default (non-full, non-leaf) spine response
+ * only when appCodeStartsAtDepth is null — i.e. no WAIT_FRAME_NAMES frame
+ * appears anywhere on this path, so there's no natural scaffolding/app-code
+ * boundary to trim to (e.g. a background thread doing deep recursive work
+ * with no framework wait frame at all). Same purpose as that boundary — bound
+ * the default response size — just without a semantically-meaningful cut
+ * point to use instead. Not applied when the full chain is already shorter
+ * than this.
+ */
+const SPINE_DEFAULT_TAIL_WHEN_UNRESOLVED = 30;
 
 /**
  * Walk the already-built tree following the highest-totalWeight child at
@@ -522,9 +550,27 @@ export interface CallTreeOptions {
    * time actually go" directly.
    * "spine": the single heaviest root-to-leaf path, walked with no depth
    * cap — answers "what's the one path that matters" without needing to
-   * manually re-derive it from a truncated tree.
+   * manually re-derive it from a truncated tree. BY DEFAULT the returned
+   * array is trimmed to the leaf-ward, distinguishing-work portion (see
+   * appCodeStartsAtDepth on CallTreeResult), not the full chain — a GUI
+   * main-thread spine can run 100+ frames deep, nearly all of it identical
+   * run-loop/dispatch scaffolding present in every sample regardless of
+   * idle/busy. Use `leaf`/`full` below to change what's returned.
    */
   view?: "tree" | "hot" | "spine";
+  /**
+   * Spine-only (ignored for "tree"/"hot"). Return exactly the last N frames
+   * of the root-to-leaf chain, overriding the appCodeStartsAtDepth-based
+   * default trim with a fixed-size window instead.
+   */
+  leaf?: number;
+  /**
+   * Spine-only (ignored for "tree"/"hot"). Return the complete, untrimmed
+   * root-to-leaf chain instead of the leaf-ward default trim — the escape
+   * hatch for the rare case of debugging the run-loop/dispatch scaffolding
+   * itself.
+   */
+  full?: boolean;
 }
 
 /**
@@ -546,7 +592,9 @@ function buildViewResult(
   roots: Map<string, TreeNode>,
   hot: Map<string, HotAccum>,
   totalWeight: number,
-  totalSamples: number
+  totalSamples: number,
+  spineLeaf?: number,
+  spineFull?: boolean
 ): CallTreeResult {
   if (view === "hot") {
     const ranked = [...hot.values()].sort((a, b) => b.selfWeight - a.selfWeight);
@@ -589,29 +637,69 @@ function buildViewResult(
   }
 
   if (view === "spine") {
-    const { frames: spine, divergesAtDepth } = buildSpine(roots, totalWeight);
+    const { frames: fullSpine, divergesAtDepth } = buildSpine(roots, totalWeight);
     const notes: string[] = [];
-    if (spine.length === 0) {
+    if (fullSpine.length === 0) {
       notes.push(`No data found for schema "${schema}" in run ${run}.`);
     } else if (divergesAtDepth !== null) {
-      const at = spine[divergesAtDepth];
+      const at = fullSpine[divergesAtDepth];
       notes.push(
         `Spine dominance holds ≥${SPINE_DOMINANCE_THRESHOLD_PCT}% of parent weight through depth ${divergesAtDepth - 1}; ` +
         `at depth ${divergesAtDepth} ("${at.name}", ${at.pctOfParent}% of its parent) the profile branches — ` +
         "frames beyond this point are one branch among several comparable ones, not the whole story."
       );
     }
-    const leaf = spine[spine.length - 1];
-    if (leaf?.isWait) {
+    const leafFrame = fullSpine[fullSpine.length - 1];
+    if (leafFrame?.isWait) {
       notes.push(
-        `The spine's deepest frame ("${leaf.name}") is a known wait/blocking frame — this thread was ` +
+        `The spine's deepest frame ("${leafFrame.name}") is a known wait/blocking frame — this thread was ` +
         "idle/blocked there, not CPU-bound. Time Profiler shows the wait, not what it's blocked on — " +
         "use System Trace or thread-state instrumentation to find the blocking cause."
       );
     }
-    const appCodeStartsAtDepth = spine.length > 0 ? findAppCodeStartDepth(spine) : null;
-    if (appCodeStartsAtDepth !== null) {
-      const at = spine[appCodeStartsAtDepth];
+    const appCodeStartsAtDepth = fullSpine.length > 0 ? findAppCodeStartDepth(fullSpine) : null;
+
+    // Decide which slice of the full root-to-leaf chain to actually return.
+    // `depth` is never renumbered — it stays the ABSOLUTE depth in the full
+    // chain regardless of what's trimmed, so a caller can always tell where
+    // a returned frame sits. Trimming only ever removes from the ROOT end;
+    // the leaf (the frame most callers care about) is always preserved.
+    let spine = fullSpine;
+    let framesOmitted = 0;
+    if (spineFull) {
+      // Explicit escape hatch — return the complete chain, untrimmed.
+    } else if (spineLeaf !== undefined && spineLeaf > 0 && spineLeaf < fullSpine.length) {
+      framesOmitted = fullSpine.length - spineLeaf;
+      spine = fullSpine.slice(-spineLeaf);
+    } else if (spineLeaf === undefined) {
+      if (appCodeStartsAtDepth !== null) {
+        framesOmitted = appCodeStartsAtDepth;
+        spine = fullSpine.slice(appCodeStartsAtDepth);
+      } else if (fullSpine.length > SPINE_DEFAULT_TAIL_WHEN_UNRESOLVED) {
+        // No wait frame anywhere on this path — no natural scaffolding/
+        // app-code boundary to trim to. Fall back to a fixed tail window
+        // rather than returning a still-potentially-unbounded chain by
+        // default (e.g. a background thread doing deep recursive work with
+        // no framework wait frame at all).
+        framesOmitted = fullSpine.length - SPINE_DEFAULT_TAIL_WHEN_UNRESOLVED;
+        spine = fullSpine.slice(-SPINE_DEFAULT_TAIL_WHEN_UNRESOLVED);
+      }
+    }
+
+    if (framesOmitted > 0) {
+      notes.push(
+        `Depths 0–${framesOmitted - 1} omitted from the default response (${fullSpine.length} frames total) — ` +
+        (appCodeStartsAtDepth !== null && framesOmitted === appCodeStartsAtDepth
+          ? "standard run-loop/wait scaffolding present in every sample on this thread, idle or busy, carries " +
+            `no signal on its own; this sample's distinguishing work starts at depth ${appCodeStartsAtDepth} ` +
+            `("${fullSpine[appCodeStartsAtDepth].name}"). `
+          : "fixed tail window (no run-loop/wait frame appears on this path to trim to). ") +
+        "Pass full: true for the complete root-to-leaf chain, or leaf: N for an explicit last-N-frames window."
+      );
+    } else if (appCodeStartsAtDepth !== null) {
+      // Nothing was trimmed (full: true, or leaf: N already covered the
+      // whole chain) but the boundary is still worth surfacing.
+      const at = fullSpine[appCodeStartsAtDepth];
       notes.push(
         `Depths 0–${appCodeStartsAtDepth - 1} are standard run-loop/wait scaffolding present in every ` +
         `sample on this thread, idle or busy — carries no signal on its own. This sample's distinguishing ` +
@@ -630,7 +718,8 @@ function buildViewResult(
       threadFilter: thread ?? null,
       view,
       spine,
-      ...(spine.length > 0 ? { appCodeStartsAtDepth } : {}),
+      ...(fullSpine.length > 0 ? { appCodeStartsAtDepth } : {}),
+      ...(framesOmitted > 0 ? { spineFramesOmitted: framesOmitted } : {}),
       ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
     };
   }
@@ -898,7 +987,9 @@ async function buildTrackDetailCallTree(
   thread: string | undefined,
   timeRange: { startNs?: number; endNs?: number } | undefined,
   maxDepth: number,
-  topN: number
+  topN: number,
+  spineLeaf?: number,
+  spineFull?: boolean
 ): Promise<CallTreeResult> {
   let handle;
   try {
@@ -936,7 +1027,7 @@ async function buildTrackDetailCallTree(
     { timeCol, timeRange }
   );
 
-  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, "bytes", roots, hot, totalWeight, totalSamples);
+  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, "bytes", roots, hot, totalWeight, totalSamples, spineLeaf, spineFull);
 
   if (thread) {
     const filterNote =
@@ -963,7 +1054,7 @@ export async function callTree(
   const run = opts.run ?? sessionLastRun(sessionId);
   const session = getSession(sessionId);
   const view = opts.view ?? "tree";
-  const { maxDepth = 6, thread, timeRange, position } = opts;
+  const { maxDepth = 6, thread, timeRange, position, leaf: spineLeaf, full: spineFull } = opts;
   const topN = opts.topN ?? (view === "hot" ? 20 : 8);
 
   // Track-detail schemas (Allocations/Allocations List) have a completely
@@ -973,7 +1064,7 @@ export async function callTree(
   // resource. See PMT:spare-cairn.
   const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
   if (modelEntry?.source === "track-detail") {
-    return buildTrackDetailCallTree(sessionId, schema, run, position, view, thread, timeRange, maxDepth, topN);
+    return buildTrackDetailCallTree(sessionId, schema, run, position, view, thread, timeRange, maxDepth, topN, spineLeaf, spineFull);
   }
 
   // Ingest via the NORMAL streaming path — no bespoke XML parser anymore
@@ -1032,7 +1123,7 @@ export async function callTree(
     { threadCol, thread, timeCol, timeRange }
   );
 
-  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples);
+  const result = buildViewResult(schema, run, view, thread, timeRange, maxDepth, topN, weightKind, roots, hot, totalWeight, totalSamples, spineLeaf, spineFull);
 
   if (totalSamples === 0) {
     const zeroNote = zeroSamplesNote(db, handle.tableName, taggedBtCol.mnemonic, threadCol, thread, timeCol, timeRange);
