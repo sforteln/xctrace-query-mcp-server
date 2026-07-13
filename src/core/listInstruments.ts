@@ -13,6 +13,7 @@ import { getSession, lastRun as sessionLastRun } from "../engine/session.js";
 import { findOne } from "../engine/schemaModel.js";
 import { resolveRules, type RulesConfidence } from "../engine/versionRules.js";
 import { hintFor } from "../engine/roleHints.js";
+import type { TocRecordingSummary } from "../engine/xctrace.js";
 
 /**
  * Track-detail schemas (Allocations/Leaks) have no TOC `callstack` attribute
@@ -54,6 +55,20 @@ export interface SchemaInfo {
 export interface RunGroup {
   run: number;
   schemas: SchemaInfo[];
+  /**
+   * What THIS run was ACTUALLY recorded with — template, recording mode,
+   * time limit, and per-instrument settings, straight from xctrace's own
+   * <info><summary> (not far-swan's memory of a start_recording call). Two
+   * uses: a reminder when reopening a trace later ("what was this?"), and a
+   * self-check against what start_recording was actually asked to compose —
+   * catches silent fidelity loss (e.g. a bare-composed instrument losing a
+   * template-tuned setting) without needing to already know it can happen.
+   * Lives here (per-run-group), not on open_trace, since it's genuinely
+   * run-scoped data and open_trace's response has to stay compact — this is
+   * the run-scoped equivalent of describe_schema's per-schema detail.
+   * Null when the TOC carries no summary block (older trace formats).
+   */
+  recordingConfig: TocRecordingSummary | null;
 }
 
 export interface ListInstrumentsResult {
@@ -102,6 +117,7 @@ export function listInstruments(sessionId: string): ListInstrumentsResult {
     const runInstruments = session.instruments.filter((i) => i.run === run);
     return {
       run,
+      recordingConfig: session.toc.runs.find((r) => r.number === run)?.summary ?? null,
       schemas: runInstruments.map((inst) => {
         const entry = findOne(session.schemaModel, run, inst.schema);
         const { rulesVersion, confidence } = resolveRules(xcodeVersion, inst.schema);

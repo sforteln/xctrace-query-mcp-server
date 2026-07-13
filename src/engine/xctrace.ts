@@ -132,6 +132,43 @@ export interface TocTrack {
   details: TocTrackDetail[];
 }
 
+/** One key/value option xctrace applied to an instrument for this run, already human-readable (e.g. "Include Brief Unresponsiveness (>100ms)", not a raw enum). */
+export interface TocRecordingSetting {
+  key: string;
+  value: string;
+}
+
+/** One instrument's recording settings, as xctrace actually configured it. */
+export interface TocInstrumentSettings {
+  name: string;
+  options: TocRecordingSetting[];
+}
+
+/**
+ * The `<summary>` block from `--toc`'s `<run><info>` — what this run was
+ * ACTUALLY recorded with, straight from xctrace itself (not far-swan's
+ * memory of what it asked for). Genuinely useful for two things: (1) a
+ * reminder when reopening a trace later ("what was this?"), and (2) a
+ * self-check — comparing this against what start_recording was actually
+ * asked to compose catches the exact class of silent fidelity loss this
+ * project has repeatedly found (a bare-composed instrument losing its
+ * template-tuned settings, e.g. Hangs' threshold defaulting to 100ms instead
+ * of a template's 250ms) without needing to already know that quirk exists.
+ */
+export interface TocRecordingSummary {
+  /** The template used as the recording's base, or "Blank" for instruments-only/no template. Null if absent (older trace formats). */
+  templateName: string | null;
+  recordingMode: string | null;
+  /** The configured time limit, as xctrace formatted it (e.g. "5 seconds"). Null when no limit was set. */
+  timeLimit: string | null;
+  /** Actual elapsed recording duration in seconds. */
+  duration: number | null;
+  /** Why the recording ended, e.g. "Time limit reached" vs a manual stop. */
+  endReason: string | null;
+  /** Per-instrument settings as xctrace actually applied them — the ground truth for "what config did this trace end up with." */
+  instrumentSettings: TocInstrumentSettings[];
+}
+
 /** One run from the trace's table of contents. */
 export interface TocRun {
   /** The run number, used in XPath addressing (`run[@number="N"]`). */
@@ -140,6 +177,8 @@ export interface TocRun {
   tables: TocTable[];
   /** Tracks exported by this run (the /tracks/track/details/detail format). */
   tracks: TocTrack[];
+  /** What this run was actually recorded with, from <info><summary> — undefined if the TOC carries no summary block (older trace formats). */
+  summary?: TocRecordingSummary;
 }
 
 /** Parsed table of contents for a `.trace`. */
@@ -435,8 +474,8 @@ function asArray<T>(value: T | T[] | undefined): T[] {
   return Array.isArray(value) ? value : [value];
 }
 
-/** Parse `--toc` XML into the {@link Toc} structure. */
-function parseToc(xml: string, tracePath: string): Toc {
+/** Parse `--toc` XML into the {@link Toc} structure. Exported for direct unit-testing with canned XML — the real caller is exportToc. */
+export function parseToc(xml: string, tracePath: string): Toc {
   let doc: unknown;
   try {
     doc = tocParser.parse(xml);
@@ -486,7 +525,30 @@ function parseToc(xml: string, tracePath: string): Toc {
       return { name: trackName, details };
     });
 
-    return { number, tables, tracks };
+    // /info/summary — what this run was ACTUALLY recorded with (see
+    // TocRecordingSummary's doc comment). Absent on older trace formats.
+    const summaryNode = run?.info?.summary;
+    const summary: TocRecordingSummary | undefined = summaryNode
+      ? {
+          templateName: summaryNode["template-name"] != null ? String(summaryNode["template-name"]) : null,
+          recordingMode: summaryNode["recording-mode"] != null ? String(summaryNode["recording-mode"]) : null,
+          timeLimit: summaryNode["time-limit"] != null ? String(summaryNode["time-limit"]) : null,
+          duration: summaryNode["duration"] != null ? Number(summaryNode["duration"]) : null,
+          endReason: summaryNode["end-reason"] != null ? String(summaryNode["end-reason"]) : null,
+          instrumentSettings: asArray<Record<string, any>>(
+            // xctrace's own element name — "intruments" is xctrace's typo, not ours.
+            summaryNode["intruments-recording-settings"]?.instrument
+          ).map((inst) => ({
+            name: String(inst["@_name"] ?? ""),
+            options: asArray<Record<string, any>>(inst?.options?.option).map((opt) => ({
+              key: String(opt["@_key"] ?? ""),
+              value: String(opt["@_value"] ?? ""),
+            })),
+          })),
+        }
+      : undefined;
+
+    return { number, tables, tracks, ...(summary ? { summary } : {}) };
   });
 
   return { runs };

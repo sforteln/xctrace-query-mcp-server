@@ -204,15 +204,25 @@ const SERVER_INSTRUCTIONS =
   "have your answer.\n\n" +
   "2. Analyze an existing trace: open_trace → analyze (same verbs) → close_trace once you " +
   "have your answer.\n\n" +
-  "SHOW YOUR WORK. The developer is watching the investigation, not just the conclusion — so " +
-  "narrate it. Before each investigative call (query/find/aggregate/correlate/relate/call_tree/" +
-  "timeline), say in ONE tight line what you're about to query (the actual filter / join / " +
-  "predicate / window) and what you're looking for or expect; after it returns, say in one line " +
-  "what you found — or, on an empty result, what that RULES OUT. Lead with the verifiable \"what\" " +
-  "(the query + the number — each response carries a `summary` line grounded in what actually ran; " +
-  "build your narration on THAT, not a paraphrase), then your inference. Keep it a line each, not a " +
-  "paragraph — the point is a followable trail the developer can interrupt, question, or redirect " +
-  "mid-investigation, not a verbose log.\n\n" +
+  "SHOW YOUR WORK. The developer is watching the investigation, not just the conclusion — and " +
+  "they often have context you don't (what changed recently, what's already been ruled out, what's " +
+  "actually broken) — so narrate well enough that they can catch a wrong turn or hand you a " +
+  "shortcut before you spend calls finding it yourself. The developer is usually NOT familiar with " +
+  "this trace's schema names or columns, so lead with the STRATEGY in plain language — the idea " +
+  "you're testing, not a recitation of a filter/join/predicate like a SQL SELECT statement (\"I'm " +
+  "linking this schema to that one so we can see what was happening in the layout window\", not " +
+  "\"WHERE view-name = X AND start BETWEEN...\"). THEN name the actual schemas/columns involved as " +
+  "grounding detail, so the developer can map your explanation onto the real data if they want to dig " +
+  "in themselves. Before each investigative call (query/find/aggregate/correlate/relate/call_tree/" +
+  "timeline), NAME the tool you're calling, lead with that plain-language strategy, and say WHY you're " +
+  "looking there specifically — what led you to this call, not just what it does. After it returns, " +
+  "say what you found — or, on an empty result, what that RULES OUT. Lead " +
+  "with the verifiable \"what\" (the query + the number — each response carries a `summary` line " +
+  "grounded in what actually ran; build your narration on THAT, not a paraphrase), then your " +
+  "inference. Keep routine before/after lines tight, one line each — but when a call surfaces a " +
+  "genuine DISCOVERY (not just an expected/routine result), stop and explain it thoroughly: what it " +
+  "means, why it matters, and how it changes the investigation, so the developer has enough to " +
+  "actually engage with it, not just skim past it.\n\n" +
   "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
   "If a question is exploratory (\"what actually happened, in order, across subsystems, around " +
   "this event\"), use timeline() to merge 2+ schemas into one time-ordered stream before forming a " +
@@ -388,6 +398,11 @@ export function createServer(): McpServer {
         "List every instrument (schema/table) in a trace, grouped by run. " +
         "Returns schema names, row counts, schema documentation, " +
         "and a crossRunDiff note when runs differ — e.g. 'run 3 adds: time-sample, context-switch-sample'. " +
+        "Each run group also carries `recordingConfig` (template, recording mode, time limit, per-" +
+        "instrument settings) straight from xctrace's own record of what actually happened — a reminder " +
+        "when reopening a trace later, and a self-check against what start_recording was asked to " +
+        "compose (catches silent fidelity loss, e.g. a bare-composed instrument losing a template-tuned " +
+        "setting, without needing to already know it can happen). Null when the trace predates this field. " +
         "rowCount is `null` until that table is actually fetched (via query/aggregate/find/get_row), " +
         "then becomes a real number — `0` means genuinely fetched and confirmed empty, not unfetched; " +
         "don't read `null` as \"no rows\". " +
