@@ -1260,7 +1260,7 @@ export function createServer(): McpServer {
         '"my last Foundation Models run", "the time profile from this morning", ' +
         '"newest trace". ' +
         "Scans the same roots as list_traces, ranks by keyword overlap with the " +
-        "bundle name, tiebroken by recency. Words like last/latest/recent rank " +
+        "bundle name, tie-broken by recency. Words like last/latest/recent rank " +
         "purely by modification time. Returns up to 10 matches with paths ready " +
         "to pass to open_trace. " +
         "⚠️ Not for opening a trace — pass the returned path to open_trace.",
