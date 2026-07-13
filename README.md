@@ -202,7 +202,7 @@ These prompts reliably get things moving again:
 
 ## Supported instruments
 
-The server emits a `versionWarning` in `open_trace` when it encounters an Xcode version it hasn't seen before — that's the signal to add support (see below).
+The server tracks compatibility against one confirmed-working Xcode version at a time. `open_trace` emits a `versionWarning` when the detected Xcode isn't in that confirmed list — that's a signal the project owner hasn't verified this Xcode build yet, not something a PR fixes per-instrument (see [`aidocs/howVersionResolutionWorks.md`](./aidocs/howVersionResolutionWorks.md)).
 
 | Instrument | Xcode 27.0 |
 |------------|:----------:|
@@ -222,15 +222,6 @@ The server emits a `versionWarning` in `open_trace` when it encounters an Xcode 
 
 Any instrument not in this table is still navigable via `describe_schema`, `query`, `aggregate`, and `find` — it just won't have a curated shortcut. Open a PR to add verified support (see below).
 
-## Adding support for a new Xcode version
-When you see a `versionWarning` in `open_trace`, it means the server hasn't seen your Xcode version before and is falling back to the closest known rules. To add full support:
-1. **Checkout the repo and create a branch** — `git checkout -b adding-compatibility-<version>-AllSchemas`
-2. **Record a trace** with each instrument type using your Xcode version
-3. **Start a Claude session** in the repo directory and give it the trace files. Say: *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add Xcode `<version>` support using the trace`<filename>`."*
-4. **Review the PR** the AI creates — check that no fixture contains sensitive content (real user prompts, real IP addresses, real process names)
-5. **Open the PR** against this repo
-The full step-by-step is in [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md).
-
 ## Adding a new instrument
 Two PRs in order. The AI does the mechanical work — your job is to record the trace, give the AI the right prompt, and review what it produces.
 
@@ -238,7 +229,7 @@ Two PRs in order. The AI does the mechanical work — your job is to record the 
 
 1. **Record a trace** with the new instrument in Xcode Instruments
 2. **Start a Claude session** in the repo directory, attach the trace file, and say:
-   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B to add `<InstrumentName>` support using `<trace-file>`."*
+   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add `<InstrumentName>` support using `<trace-file>`."*
 3. **Review the fixture** the AI produces — check that it contains no sensitive content (real process names, IP addresses, private class names from your app). The AI will flag anything it's unsure about.
 4. **Open the PR**
 
@@ -247,7 +238,7 @@ Two PRs in order. The AI does the mechanical work — your job is to record the 
 A lens adds a `quickStart` shortcut so `open_trace` immediately suggests the right first call. Merge PR 1 first, then:
 
 1. **Start a Claude session** in the repo directory and say:
-   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario C PR 2 to add a curated lens for `<InstrumentName>`."*
+   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B PR 2 to add a curated lens for `<InstrumentName>`."*
 2. **Answer the AI's questions** — it will ask what the instrument measures and what a problematic result looks like. You recorded the trace, so you know the domain.
 3. **Review the lens** — confirm the `quickStart` call it chose actually gets to the useful data quickly.
 4. **Open the PR**

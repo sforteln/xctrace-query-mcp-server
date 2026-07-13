@@ -10,7 +10,7 @@
  *
  * Identifier integrity — catches stale references ("silent lie" class):
  *   • Backtick-quoted snake_case tokens in descriptions must be registered tool names
- *   • Single-quoted schema names in descriptions must be in VERIFIED_PAIRS or exempted
+ *   • Single-quoted schema names in descriptions must be in FIXTURED_SCHEMAS or exempted
  *
  * All checks derive their reference data from live source imports — no hardcoded lists.
  */
@@ -19,7 +19,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, basename } from "node:path";
 import { Readable } from "node:stream";
 import { createServer } from "../src/index.js";
-import { VERIFIED_PAIRS } from "../src/engine/versionRules.js";
+import { FIXTURED_SCHEMAS } from "../src/engine/versionRules.js";
 import { TEMPLATE_NOTES } from "../src/core/recording.js";
 import type { SchemaCol } from "../src/engine/parseTable.js";
 import { parseTableStream } from "../src/engine/parseTable.js";
@@ -53,16 +53,16 @@ const TOOL_NAMES = new Set(Object.keys(tools));
 
 // ── Reference sets ────────────────────────────────────────────────────────────
 
-// Schema names with verified fixtures — everything after ":" in VERIFIED_PAIRS keys.
-const KNOWN_SCHEMAS = new Set([...VERIFIED_PAIRS].map((p) => p.split(":")[1]));
+// Schema names with committed fixtures.
+const KNOWN_SCHEMAS = FIXTURED_SCHEMAS;
 
-// Schema-like tokens referenced in tool descriptions that are NOT in VERIFIED_PAIRS
+// Schema-like tokens referenced in tool descriptions that are NOT in FIXTURED_SCHEMAS
 // but are legitimate. Add here when a check produces a false positive, with justification.
 const SCHEMA_REF_EXEMPTIONS = new Set([
   "time-profile", // used by call_tree; real schema name but no fixture yet (backtrace track-detail)
   "cpu-profile",  // CPU Profiler's tagged-backtrace schema; verified live this session, no fixture yet
   "ane-hw-intervals", // Neural Engine instrument's interval schema; verified live (PMT:amber-ibis), no fixture yet
-  // (runloop-intervals graduated to a committed fixture in PMT:rust-gravel — now in VERIFIED_PAIRS, exemption removed.)
+  // (runloop-intervals graduated to a committed fixture in PMT:rust-gravel — now in FIXTURED_SCHEMAS, exemption removed.)
   "os-signpost", // bare-instrument Points of Interest schema; verified live repeatedly (PMT:calm-starling), no fixture yet
   "Prompt",       // Instruments UI phase-label in list_fm_requests description — not a schema name
   "Resolve",      // Instruments UI phase-label in list_fm_requests description — not a schema name
@@ -158,12 +158,12 @@ describe("Identifier integrity: no stale references", () => {
       ).toEqual([]);
     });
 
-    it(`${name}: single-quoted schema names are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
+    it(`${name}: single-quoted schema names are in FIXTURED_SCHEMAS or SCHEMA_REF_EXEMPTIONS`, () => {
       // Match 'schema-name' or 'SchemaCamelCase' — tokens with hyphens or leading uppercase.
       const stale = staleSchemaRefs(desc);
       expect(
         stale,
-        `"${name}" references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
+        `"${name}" references schema(s) not in FIXTURED_SCHEMAS: ${stale.join(", ")}\n` +
         `  If the schema was renamed, update the description to match.\n` +
         `  If this is an intentional reference to an unfixtureed schema, add it to SCHEMA_REF_EXEMPTIONS with a comment.`
       ).toEqual([]);
@@ -176,16 +176,16 @@ describe("Identifier integrity: no stale references", () => {
 // template's real schemas are 'potential-hangs' and 'hang-risks'") but were
 // never covered by the scan above, which only reads registered tool.description
 // strings — a real, previously-flagged gap (see PMT:clear-crow). Same
-// reference data (VERIFIED_PAIRS + exemptions), no new machinery. Migrated
+// reference data (FIXTURED_SCHEMAS + exemptions), no new machinery. Migrated
 // from RECORDING_INTENTS[type].note (PMT:stubborn-beck) — same guard,
 // keyed by real template name instead of a `type` enum key now.
 describe("Identifier integrity: TEMPLATE_NOTES don't reference stale schemas", () => {
   for (const [templateName, note] of Object.entries(TEMPLATE_NOTES)) {
-    it(`${templateName}: single-quoted schema names in its note are in VERIFIED_PAIRS or SCHEMA_REF_EXEMPTIONS`, () => {
+    it(`${templateName}: single-quoted schema names in its note are in FIXTURED_SCHEMAS or SCHEMA_REF_EXEMPTIONS`, () => {
       const stale = staleSchemaRefs(note);
       expect(
         stale,
-        `TEMPLATE_NOTES["${templateName}"] references schema(s) not in VERIFIED_PAIRS: ${stale.join(", ")}\n` +
+        `TEMPLATE_NOTES["${templateName}"] references schema(s) not in FIXTURED_SCHEMAS: ${stale.join(", ")}\n` +
         `  If the schema was renamed, update the note to match.\n` +
         `  If this is an intentional reference to an unfixtureed schema, add it to SCHEMA_REF_EXEMPTIONS with a comment.`
       ).toEqual([]);
@@ -197,7 +197,7 @@ describe("Identifier integrity: TEMPLATE_NOTES don't reference stale schemas", (
 // Cross-schema connection registry drift guards (PMT:rust-gravel)
 //
 // Extends this file's existing "reference data from the committed fixtures +
-// VERIFIED_PAIRS, no parallel harness" discipline to the SchemaEdge registry:
+// FIXTURED_SCHEMAS, no parallel harness" discipline to the SchemaEdge registry:
 //   (a) referential + coverage gate — every schema/col a CURATED edge names
 //       exists in a committed fixture
 //   (b) order-invariant derivation — permuting fixture schema/column order

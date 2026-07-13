@@ -305,8 +305,7 @@ export function createServer(): McpServer {
     async ({ path }) =>
       safeToolWithLog("open_trace", { path }, async () => {
         const result = await openTrace(path);
-        const schemas = [...new Set(result.instruments.map((i) => i.schema))];
-        const versionWarning = buildVersionWarning(result.xcodeVersion, schemas);
+        const versionWarning = buildVersionWarning(result.xcodeVersion);
         const lastRunNum = Math.max(...result.runs.map((r) => r.number));
         const lastRunSchemas = result.runs.find((r) => r.number === lastRunNum)?.schemas ?? [];
         // PMT:spare-goat: a lens's quickStart becomes the single `recommended:

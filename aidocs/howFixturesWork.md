@@ -67,7 +67,7 @@ wc -c /tmp/check.xml
 
 1. Export or write the XML
 2. Place it in `tests/fixtures/xcode-<version>/schema-table/<schema>.xml`
-3. Add `"<version>:<schema>"` to `VERIFIED_PAIRS` in `src/engine/versionRules.ts` — see [howVersionResolutionWorks.md](howVersionResolutionWorks.md)
+3. Add `"<schema>"` to `FIXTURED_SCHEMAS` in `src/engine/versionRules.ts` — see [howVersionResolutionWorks.md](howVersionResolutionWorks.md)
 4. Run `npm test -- -u` to baseline the snapshot, then `npm test` to confirm green
 5. Document it in `tests/FIXTURE_CONTEXT.md` if it is synthetic
 

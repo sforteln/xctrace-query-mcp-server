@@ -1,54 +1,30 @@
-# How version resolution works
+# How Xcode version tracking works
 
-Every schema in a trace is resolved to a `rulesVersion` and a `confidence` level before parsing. This is the only place version-specific logic lives — the parser itself is intentionally version-unaware.
+This project has only ever been verified against ONE Xcode build at a time. There used to be a full adaptive multi-version rules-resolution system here (per-schema `rulesVersion` + `confidence` lookup, nearest-known-version fallback) — removed (PMT:hollow-crystal) after it turned out to be built for a future with many tracked versions but only ever had one real entry. What replaced it is much simpler: a flat list of confirmed-working versions, checked against whatever's actually detected.
 
 ## Files
 
-- `src/engine/versionRules.ts` — `VERSION_BASE`, `VERSION_SCHEMA_OVERRIDES`, `VERIFIED_PAIRS`, `resolveRules()`, `buildVersionWarning()`
+- `src/engine/versionRules.ts` — `CONFIRMED_WORKING_VERSIONS`, `buildVersionWarning()`, `FIXTURED_SCHEMAS`
+- `src/engine/xcodeVersion.ts` — `detectXcodeVersion()`, unaffected by any of the above; still runs so we know what the client actually has
 
-## The three data structures
+## The mechanism
 
-**`VERSION_BASE`** maps each known Xcode version to its default rules version:
-```typescript
-{ "27.0": "27.0" }
-```
-A version listed here will not trigger a `versionWarning` in `open_trace`. An unknown version falls back to the nearest known version numerically.
+**`CONFIRMED_WORKING_VERSIONS`** is a flat `string[]` of Xcode short versions (e.g. `"27.0"`, whatever `detectXcodeVersion()` returns — `CFBundleShortVersionString`, not the finer build number) that have actually been tested end-to-end.
 
-**`VERSION_SCHEMA_OVERRIDES`** handles the case where one schema's format changed in a release while everything else stayed the same:
-```typescript
-{ "28.0": { "hitches": "28.0" } }  // only hitches changed; all other schemas still use 27.0 rules
-```
-Without this, you'd need an entirely new rules version just for one schema change.
+**`buildVersionWarning(xcodeVersion)`** checks the detected version against that list. In the list → `null` (no warning). Not in the list (including detection failing entirely) → one plain message naming what's actually confirmed, surfaced in `open_trace`'s response. No per-schema breakdown, no "nearest version" guessing — those existed for a version-resolution system this project doesn't have.
 
-**`VERIFIED_PAIRS`** is a `Set<string>` of `"rulesVersion:schema"` keys. An entry here means a fixture XML file exists for this combination and the parser is known to handle it correctly. Missing from this set = `confidence: "nearest"` (fallback, may not be accurate).
-
-## Resolution order
-
-```
-resolveRules(xcodeVersion, schema)
-  1. VERSION_SCHEMA_OVERRIDES[xcodeVersion][schema]  — per-schema override wins
-  2. VERSION_BASE[xcodeVersion]                      — exact base version match
-  3. findNearestVersion(xcodeVersion)                — numeric proximity fallback
-```
-
-Confidence is `"verified"` if the resolved `(rulesVersion, schema)` pair is in `VERIFIED_PAIRS`, otherwise `"nearest"`.
-
-## What triggers a versionWarning
-
-`buildVersionWarning()` is called in `open_trace` with the detected Xcode version and all schema names in the trace. It returns `null` (no warning) if the version is in `VERSION_BASE`. Otherwise it returns a warning with per-schema resolution details so the agent can explain exactly which schemas are falling back and to what version.
+**`FIXTURED_SCHEMAS`** is unrelated to any of the above — it's just the set of schema names that have a committed regression fixture, used by the drift guard (`tests/driftGuard.test.ts`) to catch tool descriptions referencing a schema name that doesn't actually exist as tested data. It used to be keyed as `"rulesVersion:schema"` pairs for the old resolution system; now it's just plain schema names.
 
 ## Why the parser is version-unaware
 
-The column schema in xctrace XML output is self-describing — every `<col>` element declares its `engineering-type`. The parser reads whatever is present in the XML. `versionRules.ts` exists to track which combinations have been tested and are known-good, not to change parsing behaviour. If a new Xcode version adds a column to an existing schema, the parser handles it automatically; `VERIFIED_PAIRS` just doesn't have an entry for it yet.
+Still true, unchanged by any of this: the column schema in xctrace XML output is self-describing — every `<col>` element declares its `engineering-type`. The parser reads whatever is present in the XML rather than branching on a version number. If a new Xcode version adds a column to an existing schema, the parser handles it automatically.
 
-## What looks surprising but is intentional
+## Confirming a newly-tested version
 
-**Adding a new fixture requires updating two things.** The XML file alone is not enough — it also needs a `VERIFIED_PAIRS` entry. Without the entry the schema shows `confidence: "nearest"` even if the fixture exists. The test suite checks this consistency via the drift guard.
-
-**`findNearestVersion` prefers older over newer.** When falling back, it picks the highest version that is ≤ the target. Slightly old rules are safer than slightly new — new versions are more likely to have added columns that the old rules don't know about than to have removed ones the old rules expect.
+Deliberate and manual, not automatic: run the full test suite against the new Xcode install, and if it's actually green, append the short version to `CONFIRMED_WORKING_VERSIONS`. Granularity is the short version (e.g. "27.0") — not build/beta level. Chosen deliberately: trace schema formats aren't expected to change often within one short version, and re-verifying against every beta/point release isn't worth the ongoing maintenance cost. If that assumption turns out wrong for a specific release, that's the trigger to reconsider the granularity, not a reason to add it back preemptively.
 
 ## Other Xcode-version-dependent facts to re-verify when upgrading
 
-Schema/column shape isn't the only thing that can drift between Xcode versions — anywhere this codebase hardcodes a fact about xctrace's own built-in templates/instruments, that fact needs re-checking against the new Xcode, the same way a fixture needs a `VERIFIED_PAIRS` entry.
+Schema/column shape isn't the only thing that can drift between Xcode versions — anywhere this codebase hardcodes a fact about xctrace's own built-in templates/instruments, that fact needs re-checking against the new Xcode before trusting it, the same spirit as confirming a new version above (manual, deliberate, not automatic).
 
-**`TEMPLATE_BUNDLES` in `src/core/recording.ts`** — records which extra instruments each built-in template (e.g. "Time Profiler", "SwiftUI") bundles for free, verified by running `xcrun xctrace record --template <name> --show-recording-options` for every template referenced there. A new Xcode version can add, remove, or change a template's bundled instruments. When upgrading, re-run that command for each template in `TEMPLATE_BUNDLES` (and check `xcrun xctrace list templates`/`list instruments` for new names worth adding) before trusting `decomposeInstruments()`'s output on the new version — a stale entry here doesn't fail loudly like a schema-version mismatch does, it silently records an incomplete instrument set instead.
+**`TEMPLATE_BUNDLES` in `src/core/recording.ts`** — records which extra instruments each built-in template (e.g. "Time Profiler", "SwiftUI") bundles for free, verified by running `xcrun xctrace record --template <name> --show-recording-options` for every template referenced there. This table has no runtime version-conditional logic at all — it's a flat, single-version-assumed table — which is exactly why it needs a manual re-check on upgrade rather than failing loudly on its own: a new Xcode version can add, remove, or change a template's bundled instruments, and a stale entry here doesn't error like a schema mismatch would, it silently records an incomplete instrument set instead. When upgrading, re-run that command for each template in `TEMPLATE_BUNDLES` (and check `xcrun xctrace list templates`/`list instruments` for new names worth adding) before trusting `decomposeInstruments()`'s output on the new version.
