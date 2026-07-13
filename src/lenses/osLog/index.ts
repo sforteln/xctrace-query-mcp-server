@@ -13,8 +13,16 @@ const OS_LOG_SCHEMA = "os-log";
  * scopes its own os-log capture to. NOT confirmed universal/exhaustive across
  * apps with different framework dependencies (full-trace item 7, still open)
  * — treat this as the best confirmed approximation today, not a guarantee.
+ *
+ * Confirmed live (2026-07-10) straight from a real trace's own TOC: a full
+ * Hangs template's xctrace export ALREADY materializes this exact scope as a
+ * dedicated os-log table instance (`<table message-type="Fault" schema="os-log"
+ * category="&quot;Hang Risk&quot; &quot;Severe Hang Risk&quot; CFNetwork Contacts
+ * CoreML" subsystem="&quot;com.apple.runtime-issues&quot;"/>`) — so `message-
+ * type: "Fault"` (capital F) is the real, exact value, not a guess.
  */
 const RUNTIME_ISSUES_SUBSYSTEM = "com.apple.runtime-issues";
+const RUNTIME_ISSUES_MESSAGE_TYPE = "Fault";
 const RUNTIME_ISSUES_CATEGORIES = ["Hang Risk", "Severe Hang Risk", "CFNetwork", "Contacts", "CoreML"];
 
 /**
@@ -31,6 +39,26 @@ const RUNTIME_ISSUES_CATEGORIES = ["Hang Risk", "Severe Hang Risk", "CFNetwork",
  * template capture, and an APPROXIMATION (not an exact match — xctrace gives
  * no way to apply a template's exact scope to a bare instrument) against an
  * unscoped bare one.
+ *
+ * IMPORTANT — this is the FALLBACK path, not the primary one: a real Hangs
+ * template already produces a dedicated `hang-risks` schema (confirmed live —
+ * its own TOC entry, own columns: time/process/message/severity/event-type/
+ * backtrace/thread) that IS Apple's already-fully-processed output — fault-
+ * filtered, main-thread-gated (via System Trace's runloop-events `is-main`,
+ * see aidocs/appleModelerHarvest.md §3), and severity-labeled, with zero
+ * approximation needed. `hang-risks` only fails to populate when Hangs was
+ * composed BARE (see queryHints.ts's note on this schema) — THAT's the one
+ * case this function's raw-os-log approximation actually earns its keep.
+ * Prefer querying `hang-risks` directly whenever it's present in the trace;
+ * this function does not (yet) check for that itself — see the caller.
+ *
+ * This approximation still can't replicate the main-thread gate at all (no
+ * join against runloop-events implemented here — and that schema may not
+ * even be present unless System Trace-family instrumentation was recorded
+ * too), so even with the subsystem/message-type/category filter tightened to
+ * match Apple's real rule, this can still surface non-main-thread rows that
+ * the real `hang-risks` schema would have excluded. Documented limitation,
+ * not fixed here.
  */
 function runtimeIssuesFinder(sessionId: string, run: number): NextAction {
   return {
@@ -41,16 +69,21 @@ function runtimeIssuesFinder(sessionId: string, run: number): NextAction {
       run,
       where: [
         { col: "subsystem", op: "eq", val: RUNTIME_ISSUES_SUBSYSTEM },
+        { col: "message-type", op: "eq", val: RUNTIME_ISSUES_MESSAGE_TYPE },
         { anyOf: RUNTIME_ISSUES_CATEGORIES.map((category) => ({ col: "category", op: "eq", val: category })) },
       ],
     },
     description:
       `Approximates a real Hangs-bundling template's own curated os-log scope: subsystem ` +
-      `"${RUNTIME_ISSUES_SUBSYSTEM}" and category in [${RUNTIME_ISSUES_CATEGORIES.join(", ")}] — the confirmed ` +
-      "watchlist for main-thread hang risk / framework misuse (Hang Risk, Severe Hang Risk, CFNetwork, " +
-      "Contacts, CoreML). NOT confirmed exhaustive across every app (audited against one app's traces) — " +
-      "call find/query on 'os-log' with no filter to see everything actually captured if this comes back empty " +
-      "and a hang is still suspected.",
+      `"${RUNTIME_ISSUES_SUBSYSTEM}", message-type "${RUNTIME_ISSUES_MESSAGE_TYPE}", and category in ` +
+      `[${RUNTIME_ISSUES_CATEGORIES.join(", ")}] — the confirmed watchlist for main-thread hang risk / ` +
+      "framework misuse (Hang Risk, Severe Hang Risk, CFNetwork, Contacts, CoreML). If schema 'hang-risks' " +
+      "is present in this trace, query that directly instead — it's Apple's own already-processed output " +
+      "(fault-filtered AND main-thread-gated), not an approximation. This filter can't replicate the main-" +
+      "thread gate (no join against runloop-events), so it may over-include non-main-thread rows. NOT " +
+      "confirmed exhaustive across every app (audited against one app's traces) — call find/query on " +
+      "'os-log' with no filter to see everything actually captured if this comes back empty and a hang is " +
+      "still suspected.",
   };
 }
 
