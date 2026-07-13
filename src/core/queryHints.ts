@@ -286,7 +286,23 @@ export function buildQueryHints(input: QueryHintsInput): QueryHints {
       // Present bt-sibling but only a NEGATIVE/anti-join link — still correlatable by time window, just not via that curated edge.
       correlation = `No backtrace of its own — correlate this schema's window against ${btSibling.schema} (time-window) to attribute the work to a real call stack (note the ✗/∌ edge above: that link is framed as a NON-join / anti-join, so use a plain time-window correlate).`;
     } else {
-      correlation = "No backtrace of its own — it records WHEN/WHAT, not the call stack. Compose a backtrace-carrying instrument (e.g. Time Profiler) and correlate by time-window to attribute the work.";
+      // No PRESENT sibling carries a backtrace. Before falling back to a
+      // generic instrument suggestion, exhaust what the curated registry
+      // already knows: latentRecovery (computed above for Part 2b) may name a
+      // SPECIFIC absent schema this schema's own curated edge points at — the
+      // "same layer as you" sibling (Leaks needs Allocations specifically, not
+      // a generic CPU sampler that can't attribute an allocation site either
+      // way) — rather than a one-size-fits-all default that can be actively
+      // wrong for schemas whose real backtrace source isn't Time Profiler.
+      const btRecovery = conn.latentRecovery.find((r) => {
+        const reconstructed = colsFromHint(r.absentSchema);
+        return reconstructed !== null && carriesOwnBacktrace(r.absentSchema, reconstructed);
+      });
+      correlation = btRecovery
+        ? `No backtrace of its own — ${btRecovery.absentSchema} (which does carry one) isn't in this trace; ` +
+          `re-record with type: "${btRecovery.reRecordType}" to compose it alongside the current instruments and ` +
+          "attribute the work to a real call stack."
+        : "No backtrace of its own — it records WHEN/WHAT, not the call stack. Compose a backtrace-carrying instrument (e.g. Time Profiler) and correlate by time-window to attribute the work.";
     }
   }
 

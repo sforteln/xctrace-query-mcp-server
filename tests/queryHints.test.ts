@@ -88,6 +88,23 @@ describe("queryHints — correlation (carries-own-backtrace)", () => {
     expect(h.correlation).toMatch(/time-window/);
     expect(h.correlation).toMatch(/anti-join/); // acknowledges the ∌ edge is not the way to a stack
   });
+  it("names the SPECIFIC known-but-absent bt-sibling (Leaks → Allocations) instead of a generic default, when Allocations isn't in this run", () => {
+    // Same "same layer as you" case as the present-sibling test above, but
+    // Allocations/Allocations List is NOT in presentSchemas this time — the
+    // curated registry still knows it's Leaks' own designated backtrace
+    // source (via latentRecovery), so the fallback should name it specifically
+    // rather than defaulting to a generic "e.g. Time Profiler" suggestion that
+    // wouldn't actually attribute a leaked object's allocation site.
+    const leaksCols = [col("address", "address"), col("size", "size-in-bytes")];
+    const h = buildQueryHints({ ...base, schema: "Leaks/Leaks", cols: leaksCols, primaryTime: null, presentSchemas: ["Leaks/Leaks"] });
+    expect(h.correlation).toMatch(/Allocations\/Allocations List/);
+    expect(h.correlation).toMatch(/leaks-backtraces/);
+    expect(h.correlation).not.toMatch(/Time Profiler/);
+  });
+  it("falls back to the fully generic suggestion only when no known bt-sibling exists at all, present or absent", () => {
+    const h = buildQueryHints({ ...base, schema: "device-thermal-state-intervals", cols: hitchesCols, primaryTime: "start", presentSchemas: ["device-thermal-state-intervals"] });
+    expect(h.correlation).toMatch(/e\.g\. Time Profiler/);
+  });
 });
 
 describe("queryHints — gotchas", () => {
