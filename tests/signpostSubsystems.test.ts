@@ -1,9 +1,9 @@
 /**
  * PMT:vivid-rill — signpostSubsystems: start_recording's only way to capture
  * custom app-defined os_signpost INTERVALS (beginInterval/endInterval →
- * OSSignpostIntervals). Verified live (test-os-signpost-subsystem-capture.md)
- * that the `os_signpost` instrument's dynamicTracingEnabledSubsystems option
- * defaults to empty and is never set by anything else in this codebase — so
+ * OSSignpostIntervals). Verified live that the `os_signpost` instrument's
+ * dynamicTracingEnabledSubsystems option defaults to empty and is never set
+ * by anything else in this codebase — so
  * without this param, no custom subsystem's intervals are ever captured,
  * regardless of template/instrument composition.
  *

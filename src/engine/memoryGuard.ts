@@ -62,7 +62,7 @@ export function assertMemoryBudget(rowsParsedSoFar: number, schema: string): voi
     "call_tree/correlate) or columns (query) to fetch a bounded subset instead of the whole table. " +
     "A plain filter/find-predicate (query/find's `filter`, correlate's `intervalsFilter`/`eventsFilter`) " +
     "does NOT prevent this on its own — it's applied AFTER parsing, so the full table still gets " +
-    "materialized first (verified live, PMT:onyx-spark). timeRange is the only parameter that narrows " +
+    "materialized first (verified live). timeRange is the only parameter that narrows " +
     "DURING streaming, before this limit is even at risk.",
     { rowsParsedBeforeAbort: rowsParsedSoFar, heapUsedMb, heapLimitMb }
   );

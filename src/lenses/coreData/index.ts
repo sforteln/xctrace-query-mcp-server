@@ -101,13 +101,14 @@ const coreDataLens: Lens = {
     }
 
     if (schemas.includes(FETCH_SCHEMA)) {
-      // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces
-      // a full-table scan regardless of size, and quickStart runs from
-      // schema names alone (no row count known yet). aggregate by
-      // fetch-entity (same call this lens's own nextActions already offers
-      // for this schema) answers "which entity's fetches cost the most
-      // total time" instead of "the single slowest fetch" — a related,
-      // similarly actionable question that stays bounded on a huge trace.
+      // Bounded-by-construction — see howLensesWork.md's `quickStart` section:
+      // a raw sorted query forces a full-table scan regardless of size, and
+      // quickStart runs from schema names alone (no row count known yet).
+      // aggregate by fetch-entity (same call this lens's own nextActions
+      // already offers for this schema) answers "which entity's fetches cost
+      // the most total time" instead of "the single slowest fetch" — a
+      // related, similarly actionable question that stays bounded on a huge
+      // trace.
       return {
         schema: FETCH_SCHEMA,
         tool: "aggregate",
@@ -126,10 +127,10 @@ const coreDataLens: Lens = {
     }
 
     if (schemas.includes(SAVE_SCHEMA)) {
-      // Bounded-by-construction (PMT:spare-goat) — same reasoning as
-      // FETCH_SCHEMA above; aggregate by thread (already offered by this
-      // lens's own nextActions for this schema) surfaces the common "saves
-      // clustered on the main thread" cause without an unbounded full scan.
+      // Bounded-by-construction — same reasoning as FETCH_SCHEMA above;
+      // aggregate by thread (already offered by this lens's own nextActions
+      // for this schema) surfaces the common "saves clustered on the main
+      // thread" cause without an unbounded full scan.
       return {
         schema: SAVE_SCHEMA,
         tool: "aggregate",

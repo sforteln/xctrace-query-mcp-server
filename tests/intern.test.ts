@@ -218,7 +218,7 @@ describe("PMT:ruddy-owl flavor-2 interning", () => {
     expect(stored.every((r) => isInternSentinel(r.fmt))).toBe(true);
   });
 
-  // ── PMT:dry-glen node-encoded chains ──────────────────────────────────────
+  // ── node-encoded chains: large view-hierarchy values, interned via shared-node dedup (see hierarchyEncode.test.ts) ──
   const NODES_A = Array.from({ length: 20 }, (_, i) => `ViewNode${String(i).padStart(2, "0")}`); // ViewNode00..19
   const CHAIN_A = NODES_A.join(" ← "); // ~360B, ≥256 floor
   const CHAIN_B = ["OtherLeaf", ...NODES_A.slice(1)].join(" ← "); // shares ViewNode01..19

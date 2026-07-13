@@ -1,11 +1,15 @@
 /**
- * PMT:pine-basin — read-only NSKeyedArchiver decoder for `.tracetemplate`
+ * Read-only NSKeyedArchiver decoder for `.tracetemplate`
  * files, so far-swan can AUTHORITATIVELY enumerate every instrument and every
  * private config key a stock Instruments template actually configures —
  * instead of `plutil` + grepping for known key-name substrings, which only
- * ever finds what you already thought to look for.
+ * ever finds what you already thought to look for. See templateBundlesAudit.md
+ * for the cross-source comparison (xctrace list instruments vs.
+ * --show-recording-options vs. the Instruments.app GUI picker) that established
+ * this decoder as the one authoritative source, none of the others being
+ * complete on their own.
  *
- * WHY THIS SHAPE (decided PMT:pine-basin, after live recon):
+ * WHY THIS SHAPE (decided after live recon):
  *   A `.tracetemplate` is a `bplist00` binary plist wrapping an NSKeyedArchiver
  *   object graph ($archiver="NSKeyedArchiver", $version=100000, $objects[],
  *   $top{}). Two layers are needed to read it: (1) parse the binary plist into
@@ -25,8 +29,8 @@
  *   NSData blob is present (icons, color archives), which stock templates carry.
  *   xml1 base64-encodes those instead, so it's the reliable conversion target.
  *
- * SCOPE: read-only. Composing/writing templates is deliberately OUT of scope
- * (PMT:pine-basin item 5) — the archive encodes private, undocumented
+ * SCOPE: read-only. Composing/writing templates is deliberately OUT of scope —
+ * the archive encodes private, undocumented
  * Instruments.app object instances with no compatibility guarantee, and a
  * subtly-wrong synthesized template can silently misrecord or crash xctrace.
  */

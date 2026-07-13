@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #2 — animation hitch duration distribution.
+ * Corpus detector #2 — animation hitch duration distribution.
  *
  * The Animation Hitches instrument ("hitches" schema) logs one row per dropped
  * frame; a handful of long hitches can hide in an average, but the p95/p99
@@ -9,7 +9,8 @@
  * hitches (is-system = No — system-owned hitches aren't actionable by the app).
  *
  * cost: EXPENSIVE — p95/p99 use the mcp_p95/mcp_p99 nearest-rank percentile
- * UDFs (sqlHydrate.ts's registerPercentileUdfs / PMT:round-rime), which is
+ * UDFs (sqlHydrate.ts's registerPercentileUdfs — the same percentile
+ * machinery aggregate's own op set uses), which is
  * exactly the "percentile UDF" case the core-vs-lens cost rule calls out as
  * never a free/cheap verb (aidocs/howLensesWork.md).
  *
@@ -18,7 +19,7 @@
  * app-caused hitches, p95 ≈ 50.0ms, p99 ≈ 66.7ms — comfortably over both
  * bands, a real finding, not just a synthetic one.
  *
- * PMT:still-hail: the p95/p99 bands used to be fixed 33ms/50ms literals — an
+ * The p95/p99 bands used to be fixed 33ms/50ms literals — an
  * UNCREDITED 60Hz-multiple encoding (33 ≈ 2x, 50 ≈ 3x @16.67ms) that could
  * silently drift from bands.ts's own multiples. Both are now expressed as
  * HITCH_P95_MULTIPLE/HITCH_P99_MULTIPLE against the REAL resolved frame

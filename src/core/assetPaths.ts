@@ -1,12 +1,15 @@
 /**
- * PMT:gold-haven — package-relative asset path resolution.
+ * Package-relative asset path resolution.
  *
- * far-swan occasionally ships a custom, offline-validated .tracetemplate
+ * This server occasionally ships a custom, offline-validated .tracetemplate
  * alongside its own code (see CUSTOM_TEMPLATE_PATHS' "memory-vm" entry) — a
  * genuinely different, safer risk category than composing a template
- * dynamically at request time (PMT:pine-basin explicitly descoped that): a
- * shipped template was validated ONCE, by a human, in Instruments.app,
- * before it's ever used for anything real.
+ * dynamically at request time (deliberately descoped: composing a template
+ * on the fly can't reproduce settings that only exist as raw archive keys
+ * with no CLI-reachable equivalent, e.g. the VM Tracker auto-snapshot config
+ * — see templateBundlesAudit.md's "VM Tracker Automatic Snapshotting"
+ * section): a shipped template was validated ONCE, by a human, in
+ * Instruments.app, before it's ever used for anything real.
  *
  * Mirrors serverInfo.ts's MODULE_DIR/REPO_ROOT pattern (the only prior
  * import.meta.url usage in this codebase) — this file compiles to

@@ -6,7 +6,7 @@
  * search) — and `pgrep -l` has no STAT column, so a zombie/defunct process
  * (already exited — unattachable and unkillable, waiting only for its
  * parent to reap it) was indistinguishable from a live one in the response
- * (PMT:ash-lagoon: a real xcodeAI session hit exactly this, guessed the dead
+ * (a real AI-driven debugging session hit exactly this, guessed the dead
  * PID, and wasted a round-trip). Unified on `ps -axo pid,user,stat,args` for
  * both cases, filtering by search substring in JS instead of shelling out to
  * pgrep a second way.

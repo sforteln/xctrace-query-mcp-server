@@ -1,5 +1,5 @@
 /**
- * timeline — time-ordered, origin-tagged merge of N schemas (PMT:coral-cliff).
+ * timeline — time-ordered, origin-tagged merge of N schemas.
  *
  * relate()/correlate() are CONFIRMATORY: they answer "does A contain/precede
  * B?" and need a hypothesis first. timeline() is the EXPLORATORY counterpart:
@@ -17,7 +17,8 @@
  * distinguishable from instants (simpler than emitting synthetic begin/end
  * rows, and enough for "what was happening when").
  *
- * COST-TIER LENS, not a free core verb (PMT:pure-hail's core-vs-lens rule): a
+ * COST-TIER LENS, not a free core verb (see howLensesWork.md's core-vs-lens
+ * cost rule): a
  * merge over full untrimmed tables is the OOM/latency cliff again, so a
  * bounded timeRange is REQUIRED — each per-schema branch is then an indexed
  * range scan (dusk-floe's per-schema time-column index), not a table scan.

@@ -12,7 +12,7 @@ const SYSCALL_SCHEMA = "syscall";
 const THREAD_STATE_SCHEMA = "thread-state";
 
 /**
- * PMT:lean-pass — the off-CPU "dig" lens. Time Profiler samples only ON-CPU
+ * The off-CPU "dig" lens. Time Profiler samples only ON-CPU
  * threads, so call_tree returns empty exactly on the stalls that matter most
  * (off-CPU) and can't say WHY. This lens reads the OFF-CPU-side schemas
  * (syscall + thread-state) and classifies a stall window idle-vs-blocked-vs-

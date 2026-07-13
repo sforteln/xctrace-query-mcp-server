@@ -12,11 +12,11 @@
  * parsed kperf-bt children, and tells the agent to use call_tree for a full
  * aggregated + symbolicated call tree across all samples.
  *
- * PMT:dusk-floe: fetches the one SQL row by _row_idx and hydrates it into the
- * same Cell shape the old JS-array path produced (buildCellDetail/
- * extractKperfBt below are UNCHANGED — they always operated on Cell objects,
- * not the array itself, so hydrateCell from sqlHydrate.ts slots in as a drop-
- * in row source).
+ * Fetches the one SQL row by _row_idx and hydrates it into the same Cell
+ * shape the old JS-array path produced (buildCellDetail/extractKperfBt below
+ * are UNCHANGED — they always operated on Cell objects, not the array
+ * itself, so hydrateCell from sqlHydrate.ts slots in as a drop-in row
+ * source).
  */
 import { getTable, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints } from "../engine/roleHints.js";
@@ -110,10 +110,10 @@ function extractKperfBt(cell: Cell): CellDetail["backtrace"] {
  * get_row is the "give me everything" drill-down (query/find deliberately
  * stay fmt-only summaries) — but "everything" still needs a backstop. A
  * single cell can resolve to an unbounded blob with no relationship to the
- * row's own size: verified live against a real device HTTPTraffic trace
- * (PMT:loam-merlin), an interned image response body resolved to 342 KB for
- * ONE cell, because the intern/ref scheme that keeps the trace compact on
- * disk has no size ceiling on what it dedupes. 2000 chars keeps a genuinely
+ * row's own size: verified live against a real device HTTPTraffic trace, an
+ * interned image response body resolved to 342 KB for ONE cell, because the
+ * intern/ref scheme that keeps the trace compact on disk has no size ceiling
+ * on what it dedupes. 2000 chars keeps a genuinely
  * useful amount of text (a full header block, a real error message) while
  * capping the pathological case; `truncated`/`originalLength` on CellDetail
  * tell the agent how much was cut.
@@ -192,8 +192,10 @@ function buildCellDetail(
   // resolved" — a ref-only frame with no matching id in scope (a parser gap,
   // not normal data) comes back as {name: "", addr: ""} rather than being
   // dropped, so check for that instead of asserting "already symbolicated"
-  // unconditionally (verified live: this fired confidently wrong on Allocations
-  // backtraces before the frame-ref cache fix — see PMT:spare-cairn).
+  // unconditionally (verified live: this fired confidently wrong — reporting
+  // "already symbolicated" on Allocations backtraces that actually had blank
+  // frames — before a fix made the frame-ref cache populate these fields
+  // correctly).
   if (cell.resolvedFrames) {
     const frames = cell.resolvedFrames;
     const unresolved = frames.filter((f) => f.name === "" && f.addr === "").length;

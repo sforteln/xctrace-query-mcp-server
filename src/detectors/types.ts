@@ -1,8 +1,9 @@
 /**
- * PMT:pure-hail — the Detector contract.
+ * The Detector contract.
  *
- * A detector is server-internal analysis (bounded SQL / relate() / round-rime
- * over the ingested tables) that either FIRES (returns a Finding) or doesn't.
+ * A detector is server-internal analysis (bounded SQL / relate() / aggregate's
+ * window-function machinery over the ingested tables) that either FIRES
+ * (returns a Finding) or doesn't.
  * Its SQL is a private implementation detail — it NEVER reaches the AI. What the
  * AI gets is a structured Finding: a plain-language headline, the structured
  * firing conditions (from which the framework derives the criterion text and
@@ -65,7 +66,7 @@ export interface Finding {
   /**
    * Optional structured extras beyond firing/handles — for a detector whose
    * most useful output isn't just "did it fire" but a small derived artifact
-   * (e.g. still-hail's vsyncCadenceTable: a bounded vsync-tick x
+   * (e.g. vsyncCadenceTable.ts's "frames held" table: a bounded vsync-tick x
    * surface-present table around the worst hitch). Deliberately a loose bag
    * rather than one field per possible enrichment — keeps Finding's core
    * shape stable as detectors accrete richer, detector-specific payloads.

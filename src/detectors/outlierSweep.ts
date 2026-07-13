@@ -1,8 +1,9 @@
 /**
- * PMT:shingle-bluff — outlier sweep (discovery-mode lens over the Apple
- * modeler harvest's band map, src/detectors/bands.ts).
+ * Outlier sweep (discovery-mode lens over the Apple modeler harvest's band
+ * map, src/detectors/bands.ts — see aidocs/appleModelerHarvest.md for the
+ * modeling methodology behind these bands).
  *
- * Unlike flint-larch's corpus detectors (each chasing one specific,
+ * Unlike the corpus detectors (each chasing one specific,
  * pre-decided hypothesis — a p95/p99 tail, a rebuild storm, a cumulative
  * high-water mark), this is the GENERIC layer: for a trace where the AI has
  * no hypothesis yet, it sweeps whatever harvested (column, band) pairs apply
@@ -19,7 +20,7 @@
  * "full-table band scan" the core-vs-lens cost rule reserves for a named,
  * on-demand lens rather than a free/cheap verb (aidocs/howLensesWork.md).
  *
- * PMT:still-hail: the frame budget is now resolved live (frameBudget.ts)
+ * The frame budget is resolved live (frameBudget.ts)
  * instead of assuming DEFAULT_REFRESH_INTERVAL_MS's 60Hz, and a fired finding
  * carries a bounded vsync-cadence "frames held" table (vsyncCadenceTable.ts)
  * around the worst outlier as enrichment, when the Display schemas that feed

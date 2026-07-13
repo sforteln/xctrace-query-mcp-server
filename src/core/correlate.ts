@@ -1,6 +1,5 @@
 /**
- * correlate — the friendly {time-range, EXISTS} preset over relate()
- * (PMT:ruddy-stork).
+ * correlate — the friendly {time-range, EXISTS} preset over relate().
  *
  * Answers causal questions no single schema can, e.g. "did this SwiftUI
  * view-body update cause this Core Data fetch storm?" Finds every events-
@@ -13,8 +12,11 @@
  *
  * This is now a thin mapping onto relate(A=intervals, B=events, {
  * joinCondition:"time-range", polarity:"exists" }) — the SQL indexed range
- * join over PMT:gravel-cape's ingested tables. correlate() keeps its own
- * established result shape (intervalCount/intervalsWithMatch/matchedEventCount)
+ * join over the session's SQLite-ingested tables (each schema is streamed
+ * into a per-session SQLite table on first access, rather than held as a JS
+ * array — see howSessionsWork.md's "Large-table hardening" section).
+ * correlate() keeps its own established result shape
+ * (intervalCount/intervalsWithMatch/matchedEventCount)
  * as the ergonomic entry point; relate() is the general operator underneath.
  * Requires both schemas in the same trace on the same clock — see
  * start_recording's `instruments` param to compose them.
@@ -82,7 +84,7 @@ export interface CorrelateResult {
   unit?: WeightUnit;
   /** Present only when matchThread found zero matches despite temporal candidates existing. */
   threadMismatchWarning?: string;
-  /** Present only when totalIntervals is 0 — distinguishes an excluded-by-filter intervalsSchema from a genuinely empty one (PMT:thorny-verge). */
+  /** Present only when totalIntervals is 0 — distinguishes an excluded-by-filter intervalsSchema from a genuinely empty one; see emptyResultNote.ts. */
   note?: string;
 }
 

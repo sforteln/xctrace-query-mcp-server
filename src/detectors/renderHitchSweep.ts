@@ -1,13 +1,14 @@
 /**
- * Render-hitch sweep — the render-PASS twin of PMT:shingle-bluff's outlier
- * sweep. Where outlierSweep sweeps hitches' own duration relative to the
+ * Render-hitch sweep — the render-PASS twin of the outlier sweep. Where
+ * outlierSweep sweeps hitches' own duration relative to the
  * frame budget, this sweeps hitches-renders' per-render-pass duration
  * relative to Apple's render-hitch baseline (frameBudget.ts's
  * resolveRenderBaselineMs — ((buffer-count - 1) / 2) x the frame budget, the
- * double-buffering pipeline's own time budget, aidocs #1 / dim-chalk §1).
+ * double-buffering pipeline's own time budget; see
+ * aidocs/appleModelerHarvest.md's hitches section for the modeling behind it).
  *
- * still-hail (PMT) deferred this baseline, believing no buffer-count signal
- * was available anywhere in the ingested Display schemas. It turned out
+ * This baseline was originally deferred, on the belief that no buffer-count
+ * signal was available anywhere in the ingested Display schemas. It turned out
  * display-vsyncs-interval's `color` mnemonic — a name that reads like a plain
  * UI tag, and IS just that on other Display schemas — carries engineering-
  * type "render-buffer-depth" on THIS schema specifically (verified live,

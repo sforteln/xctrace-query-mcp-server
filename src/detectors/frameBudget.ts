@@ -1,5 +1,5 @@
 /**
- * PMT:still-hail — real per-display frame-budget resolver.
+ * Real per-display frame-budget resolver.
  *
  * bands.ts's hitchBandNs() has always taken a `frameBudgetMs` param, but every
  * caller left it defaulted to DEFAULT_REFRESH_INTERVAL_MS (60Hz) because
@@ -209,13 +209,13 @@ export function resolveFrameBudgetMs(ctx: DetectorContext, display: string | nul
  * verified live — fmt="2" constant across the authoring trace). The name is
  * misleading (the same mnemonic is a plain UI color tag on other Display
  * schemas — hitches-renders' frame-color, displayed-surfaces-interval's own
- * `color`), which is exactly why still-hail's original column probe missed
+ * `color`), which is exactly why this resolver's original column probe missed
  * this signal; see this file's header for the correction.
  */
 const RENDER_BUFFER_DEPTH_COLUMN = "color";
 
 /** Observed default buffer depth (double-buffering) — verified live against the
- *  still-hail/render-baseline authoring trace, where this was the ONLY value
+ *  render-baseline authoring trace, where this was the ONLY value
  *  present. Used only when the column is present but every row's value is
  *  missing/non-numeric (or the schema isn't ingested at all) — never silently
  *  assumed when a real depth is readable. */
@@ -270,7 +270,7 @@ function tryRenderBufferDepth(ctx: DetectorContext, display: string | null): num
  * Resolve Apple's render-hitch baseline (ms) for a hitch's render passes,
  * given its `display` label — or null to resolve a trace-wide baseline.
  * baseline = ((buffer-count - 1) / 2) x the REAL per-display frame budget
- * (aidocs #1, dim-chalk §1): render-duration at/under this is Low (fine, the
+ * (aidocs/appleModelerHarvest.md's hitches section): render-duration at/under this is Low (fine, the
  * double-buffering pipeline absorbs it), at/over 2x is High (a slow render
  * likely causing the hitch itself, not just downstream of one) — see
  * bands.ts's RENDER_BASELINE_LOW_MULTIPLE/RENDER_BASELINE_HIGH_MULTIPLE.

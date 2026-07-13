@@ -9,7 +9,7 @@ const FS_ANTIPATTERN_SCHEMA = "detected-fs-antipattern";
 const FS_SYSCALL_SCHEMA = "fs-syscall";
 
 /**
- * PMT:harsh-mantle: File Activity's detected-fs-antipattern is a SMALL,
+ * File Activity's detected-fs-antipattern is a SMALL,
  * bounded diagnosed-anomaly table (verified live: 43 rows in a real 7GB
  * trace — a kdebug-derived detector output, not a raw per-event log), so a
  * raw sorted query is safe here unlike this project's usual firehose

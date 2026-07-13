@@ -117,10 +117,11 @@ const thermalLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(THERMAL_SCHEMA)) return null;
-    // Bounded-by-construction (PMT:spare-goat) — a raw query sorted by
-    // duration forces a full-table scan regardless of table size, and
-    // quickStart runs from schema names alone (no row count known yet) so it
-    // can't tell a short trace from a long one before recommending. thermal-
+    // Bounded-by-construction — see howLensesWork.md's `quickStart` section:
+    // a raw query sorted by duration forces a full-table scan regardless of
+    // table size, and quickStart runs from schema names alone (no row count
+    // known yet) so it can't tell a short trace from a long one before
+    // recommending. thermal-
     // state naturally partitions into a handful of named states, so "total
     // time per state" (aggregate) answers the same "what dominated" question
     // as a sorted list of individual intervals, without the unbounded scan.

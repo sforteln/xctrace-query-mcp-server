@@ -105,9 +105,9 @@ export interface StartSessionOptions {
    */
   instruments?: string[];
   /**
-   * Which template(s) to record with (PMT:stubborn-beck — collapsed from the
-   * old separate `template`/`templates` params, one polymorphic param
-   * instead of two spellings of the same "what's my base" decision). A
+   * Which template(s) to record with (collapsed from the old separate
+   * `template`/`templates` params, one polymorphic param instead of two
+   * spellings of the same "what's my base" decision). A
    * single string is a straightforward base template (real xctrace name, or
    * a recognized custom-template shortcut like "memory-vm" — see
    * CUSTOM_TEMPLATE_PATHS in recording.ts). An array's FIRST entry becomes
@@ -126,7 +126,7 @@ export interface StartSessionOptions {
    * capture (`OSSignposter.beginInterval`/`endInterval` calls, landing in
    * the `OSSignpostIntervals` schema) — e.g. ["com.example.myapp"]. This is
    * the ONLY way to capture those: verified live (test-os-signpost-
-   * subsystem-capture.md, PMT:vivid-rill) that `os_signpost` is a real,
+   * subsystem-capture.md) that `os_signpost` is a real,
    * separate xctrace instrument (distinct from "Points of Interest") whose
    * `dynamicTracingEnabledSubsystems` recording-option defaults to an EMPTY
    * array — with no subsystem listed, the OS never enables tracing for a
@@ -164,7 +164,7 @@ export interface StartSessionResult {
    * template-only auxiliary behavior (e.g. Hangs' threshold, os-log's scope)
    * is not guaranteed to match a real template recording. Empty/absent when
    * every composed instrument happens to already be covered by the base
-   * template's own bundle. See PMT:gravel-falcon.
+   * template's own bundle.
    */
   fidelityAtRisk?: string[];
   /**
@@ -174,7 +174,7 @@ export interface StartSessionResult {
    * see DEVICE_ONLY_INSTRUMENTS in recording.ts). A WARNING, not a block —
    * the curated map may drift; the rest of the recording still proceeds, and
    * record()'s partial-success runIssues handling is the backstop for the
-   * actual outcome. See PMT:stormy-coast.
+   * actual outcome.
    */
   deviceOnlyWarning?: string;
   /**
@@ -196,7 +196,7 @@ export interface StartSessionResult {
    * evidence is genuinely live-repro-only (not sourced from any Apple
    * compatibility list the way DEVICE_ONLY_INSTRUMENTS is), and a beta bug
    * can be fixed in the very next Xcode release, so treat this as a strong
-   * hint to retry differently, not a permanent fact. See PMT:ash-stone.
+   * hint to retry differently, not a permanent fact.
    */
   knownBrokenWarning?: string;
 }
@@ -243,21 +243,21 @@ export async function startSession(
   const baseExtraInstruments = [
     ...new Set([...literalInstruments, ...expanded.instruments].filter((i) => i !== resolvedTemplate)),
   ];
-  // PMT:birch-river: compensate for Hangs' os-log coverage not surviving a
+  // Compensate for Hangs' os-log coverage not surviving a
   // bare composition — see mitigateHangsOsLogFidelity's own doc for the
   // verified cost/scope tradeoffs behind making this automatic.
   const hangsMitigation = mitigateHangsOsLogFidelity(expanded.fidelityAtRisk, baseExtraInstruments);
   const withHangsMitigation = hangsMitigation.instrument
     ? [...baseExtraInstruments, hangsMitigation.instrument]
     : baseExtraInstruments;
-  // PMT:plain-creek: default bare "Points of Interest" onto every recording
+  // Default bare "Points of Interest" onto every recording
   // whose resolved template doesn't already bundle it — see the function's
   // own doc for the cost/fidelity evidence behind making this unconditional.
   const poiDefault = defaultPointsOfInterest(resolvedTemplate, withHangsMitigation);
   const withPoiDefault = poiDefault.instrument
     ? [...withHangsMitigation, poiDefault.instrument]
     : withHangsMitigation;
-  // PMT:vivid-rill: custom app-defined os_signpost INTERVAL capture
+  // Custom app-defined os_signpost INTERVAL capture
   // (beginInterval/endInterval → OSSignpostIntervals) needs the separate
   // `os_signpost` instrument + dynamicTracingEnabledSubsystems — verified
   // live (test-os-signpost-subsystem-capture.md) that neither is ever
@@ -300,7 +300,7 @@ export async function startSession(
     );
   }
 
-  // PMT:loam-merlin: fail BEFORE spawning xctrace when `device` name-
+  // Fail BEFORE spawning xctrace when `device` name-
   // substring-matches more than one target — verified live, xctrace itself
   // only reports this at finalize (stop_recording), after a 30s drive was
   // already wasted on a session that was dead from the start.
@@ -350,7 +350,7 @@ export async function startSession(
   // COMPLETE real key set for every instrument it mentions — a partial
   // object fails to LOAD at all, with the exact same misleading "The data
   // couldn't be read because it is missing" error (verified live, same
-  // finding as PMT:rough-bench's TEMPLATE_RECORDING_OPTIONS entries, which
+  // finding as recording.ts's TEMPLATE_RECORDING_OPTIONS entries, which
   // this os_signpost path predates and never got updated to match). Real
   // os_signpost schema (`xctrace record --instrument os_signpost
   // --show-recording-options`) has TWO keys: dynamicTracingEnabledSubsystems
@@ -398,7 +398,7 @@ export async function startSession(
   // the-bundle forms count as an app launch (the debug-build case).
   const resolvedLaunchArgs = isAppLaunchPath(launch) ? ["-ApplePersistenceIgnoreState", "YES"] : undefined;
 
-  // PMT:sleek-vault: attach-by-NAME doesn't resolve on a device/Simulator, so when
+  // Attach-by-NAME doesn't resolve on a device/Simulator, so when
   // targeting one, resolve the CFBundleIdentifier/name to a live PID and attach by
   // PID (the app must already be running — far-swan attaches, never launches). On
   // the host Mac (no device) attach-by-name works, so pass it through unchanged.
@@ -407,7 +407,7 @@ export async function startSession(
       ? await resolveAttachTarget(attach, device)
       : attach;
 
-  // PMT:stormy-coast: xctrace doesn't expose Simulator instrument compatibility
+  // xctrace doesn't expose Simulator instrument compatibility
   // itself — only the Instruments GUI does (greys out unsupported instruments) —
   // so warn upfront from the curated DEVICE_ONLY_INSTRUMENTS map rather than
   // finding out from a failed/un-exportable sub-instrument after the fact.
@@ -416,14 +416,14 @@ export async function startSession(
       ? deviceOnlyInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, true)
       : undefined;
 
-  // PMT:flint-crystal follow-up: warn (never block) when the resolved
+  // Warn (never block) when the resolved
   // template/instruments need a CPU architecture this HOST Mac doesn't have
   // (e.g. Processor Trace needs Intel PT — permanently absent on Apple
   // Silicon) — unlike deviceOnlyWarning this is unconditional on the target,
   // since the limit is the machine running Instruments, not what's profiled.
   const hostArchWarning = hostArchInstrumentWarning(resolvedTemplate, resolvedExtraInstruments, process.arch);
 
-  // PMT:ash-stone gap #2: warn (never block) when the CURRENT Xcode matches a
+  // Warn (never block) when the CURRENT Xcode matches a
   // curated known-broken instrument/combination — unlike deviceOnlyWarning
   // this isn't sim-specific, since the confirmed repro was a device recording.
   const knownBrokenWarning = knownBrokenInstrumentWarning(
@@ -608,7 +608,7 @@ export async function stopSession(
     // with nothing to diagnose it from.
     const excerptSource = rec.stderr || rec.stdout;
     const excerpt = excerptSource ? ` ${excerptSource.slice(-500)}` : " (no output on stdout or stderr)";
-    // PMT:open-mantle: check the FULL stderr (not the truncated excerpt above)
+    // Check the FULL stderr (not the truncated excerpt above)
     // for xctrace's "Instrument with name '<X>' cannot be found" rejection —
     // if <X> is actually a real template name, add the steer-to-`template`
     // hint rather than leaving the caller with just xctrace's opaque message.

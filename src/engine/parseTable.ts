@@ -101,7 +101,7 @@ function parseSchemaCols(schemaNode: Record<string, any>): SchemaCol[] {
  * string. We only coerce all-digit strings (no floats — fmt already carries the
  * human-readable form; raw is the machine value).
  *
- * PMT:loam-merlin: an all-digit value past Number.MAX_SAFE_INTEGER (e.g. a
+ * An all-digit value past Number.MAX_SAFE_INTEGER (e.g. a
  * uint64 sentinel like error-code's "no error" = 2^64-1 =
  * 18446744073709551615) silently rounds to a nearby-but-wrong double if
  * coerced — verified live against a real HTTPTraffic trace: it came back as
@@ -218,8 +218,8 @@ function parseCell(
   // check regardless of which shape a given "text-backtrace" column actually
   // uses (not independently confirmed live which shape Swift Concurrency's
   // columns carry in practice — this generalizes correctly either way).
-  // "tagged-backtrace" (time-profile/cpu-profile sample stacks, PMT:elm-swamp)
-  // has the SAME <frame name addr><binary></frame> shape as "backtrace" — the
+  // "tagged-backtrace" (time-profile/cpu-profile sample stacks) has the SAME
+  // <frame name addr><binary></frame> shape as "backtrace" — the
   // only reason call_tree used a separate buffered parser was fast-xml-parser
   // collapsing the repeated <frame> siblings, which the streaming MiniXmlBuilder
   // (used here) arrays correctly. A ref-only <tagged-backtrace ref="N"/> is
@@ -240,7 +240,7 @@ function parseCell(
 
   // Collect child nodes (anything not starting with @_ is either a child tag
   // or the "#text" key for text content). __childOrder is MiniXmlBuilder's
-  // own bookkeeping (PMT:black-jay), not a real XML child — excluding it
+  // own bookkeeping, not a real XML child — excluding it
   // here matters: left in, it's an array of tag-name strings that this
   // branch would try to recurse into as if it were compound cell data,
   // eventually recursing into individual characters of a string and blowing
@@ -289,7 +289,7 @@ function parseCell(
 
 /**
  * Parse one <row> element into a NormalizedRow, mapping children onto the
- * schema columns by TRUE DOCUMENT POSITION (PMT:black-jay) — there is always
+ * schema columns by TRUE DOCUMENT POSITION — there is always
  * exactly one XML child per schema column, in schema-declaration order, and
  * that child is either the column's real engineering-type tag or `sentinel`
  * (null). `rowNode.__childOrder` (stamped by MiniXmlBuilder.onCloseTag) is
@@ -318,8 +318,8 @@ function parseRow(
   if (!childOrder) {
     throw new Error(
       "parseRow: rowNode is missing __childOrder — every row must come from " +
-        "MiniXmlBuilder (the only XML-to-object path since PMT:black-jay " +
-        "removed DOM/fast-xml-parser row parsing)."
+        "MiniXmlBuilder (the only XML-to-object path; the older DOM/" +
+        "fast-xml-parser row parsing was removed)."
     );
   }
 
@@ -389,8 +389,11 @@ interface StreamParseResult {
  * need column shape + a row count (describe_schema).
  *
  * `sqlite`, when given, streams each parsed row straight into a SQLite table
- * (PMT:gravel-cape) instead of accumulating a JS `rows` array — the real
- * ingestion path; `rows` in the resolved result stays empty.
+ * instead of accumulating a JS `rows` array — the real ingestion path (see
+ * howSessionsWork.md's "Large-table hardening" section: a large enough
+ * table's parsed rows can exceed Node's heap and crash the whole process,
+ * and streaming into SQLite bounds memory use by batch size instead of table
+ * size); `rows` in the resolved result stays empty.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
  *         matched nothing), "parse-error" on malformed XML.
@@ -484,7 +487,7 @@ function parseTableStreamInternal(
             rowCount++;
             if (!countOnly) {
               const row = parseRow(builtNode, cols, cache);
-              // Straight swap, not a parallel path (PMT:gravel-cape) — a
+              // Straight swap, not a parallel path — a
               // sqlite-sink parse writes to disk instead of accumulating
               // `rows`, it never does both.
               if (sqliteWriter) sqliteWriter.writeRow(row);
@@ -570,11 +573,12 @@ export interface SqliteIngestResult {
 }
 
 /**
- * Streams a table straight into a SQLite table instead of a JS array —
- * PMT:gravel-cape's ingestion path. Reuses parseRow/parseCell/RefCache
- * unchanged; only the last step (push into `rows` vs. INSERT) differs, via
- * {@link SqliteTableWriter}. `rows` in the resolved result is always empty —
- * callers of this function must read data back out via SQL, not `.rows`.
+ * Streams a table straight into a SQLite table instead of a JS array — the
+ * real ingestion path (see howSessionsWork.md's "Large-table hardening").
+ * Reuses parseRow/parseCell/RefCache unchanged; only the last step (push
+ * into `rows` vs. INSERT) differs, via {@link SqliteTableWriter}. `rows` in
+ * the resolved result is always empty — callers of this function must read
+ * data back out via SQL, not `.rows`.
  */
 export function parseTableStreamToSqlite(
   stdout: Readable,

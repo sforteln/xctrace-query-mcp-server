@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #3 — SwiftUI rebuild storm (temporal
+ * Corpus detector #3 — SwiftUI rebuild storm (temporal
  * clustering).
  *
  * Distinct from swiftuiOverInvalidation (#1, which flags a view with a large
@@ -11,8 +11,8 @@
  * can miss if the same total is spread evenly across a long trace.
  *
  * cost: EXPENSIVE — computes a LAG() inter-arrival gap via a SQL window
- * function partitioned by view description (sqlHydrate.ts's buildWindowExpr,
- * PMT:round-rime), which the core-vs-lens cost rule places outside "cheap"
+ * function partitioned by view description (sqlHydrate.ts's buildWindowExpr),
+ * which the core-vs-lens cost rule places outside "cheap"
  * regardless of any LIMIT on the output (aidocs/howLensesWork.md).
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";

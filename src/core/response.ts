@@ -21,26 +21,30 @@ export interface NextAction {
   /** One-line description of what this call does / why it is useful here. */
   description: string;
   /**
-   * Set on the single best-guess pick, when there is one (PMT:spare-goat).
-   * Never fabricate a strict ranking of the whole list otherwise — at most
-   * ONE entry carries this flag; every other entry is a plain, unranked
-   * alternative. Absent (not `false`) on every non-recommended entry.
+   * Set on the single best-guess pick, when there is one. Never fabricate a
+   * strict ranking of the whole list otherwise — at most ONE entry carries
+   * this flag; every other entry is a plain, unranked alternative. Absent
+   * (not `false`) on every non-recommended entry.
    */
   recommended?: true;
 }
 
 /**
  * Merge a single best-guess recommendation into a plain alternatives list,
- * flagging it `recommended: true` — the one-ranked-list shape PMT:spare-goat
- * replaced `suggestedStart` + a separate `nextActions` with. Collapsing these
- * into one array removes the old "is suggestedStart the top of nextActions,
- * or a different thing?" reconciliation cost for the caller, while keeping
- * the "one clear pick + a menu of alternatives" value the split used to
- * provide (recommended IS the single winner — see PMT:pure-hail for how a
- * fired detector becomes this same entry). `recommended` may be null (no
- * lens/detector had a pick for this trace/schema) — in that case this is a
- * plain passthrough of `alternatives`, matching mcp-server-design's "don't
- * fabricate a ranking you can't justify."
+ * flagging it `recommended: true`. This replaced an earlier shape where
+ * `open_trace` returned a separate `suggestedStart` field alongside
+ * `nextActions` — two overlapping "what to do next" answers the caller had
+ * to reconcile ("is suggestedStart the top of nextActions, or a different
+ * thing?"). Collapsing into one array removes that reconciliation cost while
+ * keeping the "one clear pick + a menu of alternatives" value the split used
+ * to provide: `recommended` IS the single winner, whether it came from a
+ * lens's `quickStart` or from a detector that fired during open_trace's
+ * eager sweep (see index.ts's open_trace handler, where a fired finding
+ * demotes quickStart's pick to a plain alternative). `recommended` may be
+ * null (no lens/detector had a pick for this trace/schema) — in that case
+ * this is a plain passthrough of `alternatives`, matching mcp-server-design's
+ * "don't fabricate a ranking you can't justify." See howHintsWork.md's "One
+ * ranked list" section for the full history.
  */
 export function withRecommended(recommended: NextAction | null, alternatives: NextAction[]): NextAction[] {
   if (!recommended) return alternatives;
@@ -51,10 +55,9 @@ export function withRecommended(recommended: NextAction | null, alternatives: Ne
 export interface ToolResponse<T = unknown> {
   /**
    * One-line, honest echo of what an investigative call effectively did + its
-   * headline result (PMT:thick-haze) — the grounded "what ran → what came
-   * back" the AI's "show your work" narration builds on (see
-   * SERVER_INSTRUCTIONS). Present on the investigative verbs; absent on the
-   * lifecycle/metadata tools.
+   * headline result — the grounded "what ran → what came back" the AI's
+   * "show your work" narration builds on (see SERVER_INSTRUCTIONS). Present
+   * on the investigative verbs; absent on the lifecycle/metadata tools.
    */
   summary?: string;
   /** The actual result payload. */
@@ -134,8 +137,12 @@ export function actionsAfterDescribeSchema(
   // Both candidates below are already bounded-by-construction regardless of
   // table size (query: LIMIT 20, no sort; aggregate: bounded by distinct
   // group count) — there's no risky unbounded-sort shape to guard against
-  // here (unlike a lens quickStart's own recommendation; see PMT:spare-goat).
-  // The pick is about which is more ACTIONABLE: a real weight column makes
+  // here, unlike a lens quickStart's own recommendation, which runs from
+  // schema names alone (before any row is fetched) and so has no cheap way to
+  // know a table's real size before recommending a call (see howHintsWork.md's
+  // "One ranked list" section — this is the same cost-tier judgment call,
+  // made here for free since describe_schema already paid for a real row
+  // count). The pick is about which is more ACTIONABLE: a real weight column makes
   // "top N by weight" answerable (this project's own stated workhorse
   // question), so aggregate wins when primaryWeight is known; otherwise a
   // plain page is the more useful default.
@@ -352,7 +359,7 @@ export function actionsAfterFind(
 
 // ─── Envelope helper ──────────────────────────────────────────────────────────
 
-/** Wrap a tool result in the standard envelope. `summary` is the grounded one-line narration echo (PMT:thick-haze). */
+/** Wrap a tool result in the standard envelope. `summary` is the grounded one-line narration echo — see the `summary` field's own doc comment on ToolResponse above. */
 export function envelope<T>(
   data: T,
   nextActions: NextAction[],

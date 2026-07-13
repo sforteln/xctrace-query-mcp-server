@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #5 — hitch cause split (GPU-bound vs
+ * Corpus detector #5 — hitch cause split (GPU-bound vs
  * main-thread-busy).
  *
  * Splits app-caused hitches (hitches.is-system = No) by whether ANY Time

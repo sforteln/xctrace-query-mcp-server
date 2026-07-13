@@ -1,6 +1,6 @@
 /**
- * PMT:pure-hail surfacing — turn fired cheap detectors into ranked nextActions.
- * PMT:ruddy-elk extends this with the EAGER bounded-schema sweep: at
+ * Detector surfacing — turn fired cheap detectors into ranked nextActions.
+ * This also implements the EAGER bounded-schema sweep: at
  * stop_recording (nothing ingested yet) and open_trace on a cold trace, the
  * old detectorNextActions() below always returned [] — its own doc comment
  * admitted it ("Empty when nothing is ingested yet"). eagerSweep() fixes the
@@ -71,7 +71,7 @@ export async function detectorNextActions(sessionId: string): Promise<NextAction
   return ranked.map((f) => findingToNextAction(f, sessionId));
 }
 
-// ─── PMT:ruddy-elk: annotated schema inventory ─────────────────────────────────
+// ─── Annotated schema inventory ────────────────────────────────────────────────
 
 /** One compact line per present schema — the annotated inventory returned by
  *  open_trace and stop_recording. Bounded by schema COUNT (dozens at most),
@@ -96,10 +96,11 @@ export interface SchemaInventoryEntry {
   scanNote?: string;
 }
 
-/** correlateHint = the buildable-today subset (PMT:azure-forge's richer
- *  version is a follow-up, not built here): a schema carries its own
- *  backtrace if its pinned role-hint map (roleHints.ts) declares a
- *  role==="backtrace" column; otherwise it needs a join/correlate to reach one. */
+/** correlateHint = a simplified, buildable-today check: a schema carries its
+ *  own backtrace if its pinned role-hint map (roleHints.ts) declares a
+ *  role==="backtrace" column; otherwise it needs a join/correlate to reach
+ *  one. A fuller version — keyed to each schema's live-verified backtrace
+ *  shape instead of the pinned map — is known future work, not built here. */
 function correlateHintFor(schema: string): SchemaInventoryEntry["correlateHint"] {
   const hint = hintFor(schema);
   const carriesBacktrace = hint ? Object.values(hint.columns).some((c) => c.role === "backtrace") : false;
@@ -197,7 +198,7 @@ export function buildSweepNote(
   return `Swept ${schemaList}${detail}; clean — no findings crossed a threshold.`;
 }
 
-// ─── PMT:ruddy-elk: the eager sweep itself ─────────────────────────────────────
+// ─── The eager sweep itself ────────────────────────────────────────────────────
 
 export interface EagerSweepResult {
   /** The single top-ranked fired finding, as a re-runnable NextAction — or

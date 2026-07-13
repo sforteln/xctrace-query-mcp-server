@@ -5,7 +5,9 @@
  * correctly and to serve as a copy-paste starting point for real lenses.
  *
  * A lens is NOT limited to the base verbs (query/aggregate/find/relate) —
- * this template deliberately demonstrates BOTH patterns (PMT:warm-mica):
+ * this template deliberately demonstrates BOTH patterns (see howLensesWork.md's
+ * `registerTools` section and howSessionsWork.md's "Lenses use bespoke scoped
+ * SQL" note for why lenses reach for direct SQL instead of a whole-table fetch):
  *
  *   1. example_list — reach for a base verb when it already fits. query()
  *      already does filter/sort/pagination/backtrace-safety; a lens just

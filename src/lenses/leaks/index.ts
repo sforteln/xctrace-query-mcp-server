@@ -23,10 +23,11 @@ const LIST_WEIGHT = hintFor(ALLOCATIONS_LIST_SCHEMA)!.primaryWeight!;
 const STATS_WEIGHT = hintFor(ALLOCATIONS_STATS_SCHEMA)!.primaryWeight!;
 // Pre-attach snapshot rows all carry this exact sentinel timestamp. This
 // detection keys off the fmt string (the `timestamp__fmt` column), which is
-// the direct, exact representation of the sentinel. (As of PMT:light-reed the
-// track-detail timestamp's `.raw` is now numeric ns — parsed from the
-// "MM:SS.mmm.µµµ" fmt at ingest — so `raw === 0` would work equally, but the
-// fmt match stays the clearest expression of "this specific sentinel value".)
+// the direct, exact representation of the sentinel. (The track-detail
+// timestamp's `.raw` is now numeric ns — parsed from the "MM:SS.mmm.µµµ" fmt
+// at ingest, where it used to be unparsed — so `raw === 0` would work
+// equally, but the fmt match stays the clearest expression of "this specific
+// sentinel value".)
 //
 // Independently verified against Instruments.app itself (not just inferred
 // from this timestamp): opening the same trace directly in the Leaks/
@@ -57,9 +58,10 @@ function buildAllocationJoinAction(
   const db = cached ? peekDb(sessionId) : undefined;
   // A scoped single-row lookup (LIMIT 1, first match in _row_idx order —
   // matching the original Array.find's first-match semantics exactly) instead
-  // of fetchAllRowsHydrated's whole-table fetch (PMT:warm-mica). peek-only:
-  // db is only defined when the table is already cached, so this never
-  // triggers a fetch/ingestion of its own.
+  // of fetchAllRowsHydrated's whole-table fetch (see howLensesWork.md's
+  // "Lenses use bespoke scoped SQL" note). peek-only: db is only defined when
+  // the table is already cached, so this never triggers a fetch/ingestion of
+  // its own.
   const match =
     cached && db
       ? (db
@@ -136,8 +138,10 @@ function unattributableFractionHint(
   const db = leaksTable && allocTable ? peekDb(sessionId) : undefined;
   if (!leaksTable || !allocTable || !db || leaksTable.rowCount === 0) return null;
 
-  // A direct SQL semi-join + property-check (PMT:warm-mica) — NOT relate(),
-  // which only answers "matched / not matched"; this needs "matched, AND a
+  // A direct SQL semi-join + property-check (see howLensesWork.md's "Lenses
+  // use bespoke scoped SQL" note for why a lens reaches for scoped SQL
+  // instead of a base verb here) — NOT relate(), which only answers "matched
+  // / not matched"; this needs "matched, AND a
   // property of the specific match". CAREFUL semantic preserved from the
   // original: an address can legitimately recur in Allocations List (alloc
   // -> free -> realloc reuse), so the original built a JS Map that let a
@@ -264,9 +268,10 @@ const leaksLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(LEAKS_SCHEMA)) return null;
-    // Deliberately KEPT as a raw sorted query, unlike the other quickStart
-    // branches PMT:spare-goat swapped to aggregate — Leaks/Leaks is different
-    // in kind from those high-volume event logs (thermal-state samples,
+    // Deliberately KEPT as a raw sorted query, unlike the other lenses'
+    // quickStart branches (see howLensesWork.md's `quickStart` section),
+    // which default to aggregate — Leaks/Leaks is different in kind from
+    // those high-volume event logs (thermal-state samples,
     // hang/hitch occurrences, Core Data fetches/saves): a leak is a DIAGNOSED
     // object, not a raw per-event log entry, so this table is realistically
     // bounded regardless of trace length or duration. Grouping by

@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #6 — allocations with no matching free.
+ * Corpus detector #6 — allocations with no matching free.
  *
  * IMPORTANT design note (per the task brief): the obvious implementation is an
  * anti-join against the Leaks recording (an allocation address with no

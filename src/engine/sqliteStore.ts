@@ -20,10 +20,10 @@
  *                             children also get promoted (below), since a
  *                             compound child (nesting two levels deep) is
  *                             never promoted and would otherwise be lossy.
- *   "<mnemonic>__<path>", "<mnemonic>__<path>__fmt" — PMT:pale-jay / PMT:tall-bench:
+ *   "<mnemonic>__<path>", "<mnemonic>__<path>__fmt" — nested-field promotion:
  *                             promotion of a compound cell's descendants at
  *                             ANY depth (not capped at one level — see
- *                             PMT:tall-bench), so common fields (thread's
+ *                             below), so common fields (thread's
  *                             tid, but also thread.process.pid two levels
  *                             down) are directly queryable/indexable via
  *                             plain SQL instead of trapped in the
@@ -84,8 +84,8 @@ import { encodeNodeSequence } from "./hierarchyEncode.js";
 const MAX_PROMOTION_DEPTH = 6;
 
 /**
- * Accumulates ref-identity among a row's SCALAR cells across the whole ingest,
- * so PMT:bare-shoal can collapse dot-paths that reach the SAME value to one
+ * Accumulates ref-identity among a row's SCALAR cells across the whole ingest
+ * so duplicate dot-paths that reach the SAME value collapse to one
  * canonical path (thread-info exposes thread.process.pid AND
  * name.thread.process.pid as the exact same value — same XML ref).
  *
@@ -184,8 +184,8 @@ interface PromotablePath {
   /**
    * scalar: a scalar leaf (promote raw+fmt). compound: a compound intermediate
    * node (promote fmt only). backtrace: a nested pre-symbolicated stack — folded
-   * into the shared backtraces/frames tables and promoted as a __backtrace_id FK
-   * (PMT:muddy-frost), the same dedup top-level backtrace columns already get.
+   * into the shared backtraces/frames tables and promoted as a __backtrace_id FK,
+   * getting the same DB-wide dedup a top-level backtrace column already gets.
    */
   kind: "scalar" | "compound" | "backtrace";
 }
@@ -198,10 +198,10 @@ function pathKey(path: string[]): string {
  * Recursively find every promotable descendant of `children`: scalar leaves
  * (raw+fmt), compound intermediate nodes (fmt only — matching getRow.ts's
  * childValues, which only wants a direct child's .fmt regardless of whether it
- * is itself compound), and nested backtraces (resolvedFrames at depth > 0),
- * which PMT:muddy-frost folds into the shared frames/backtraces tables via a
- * __backtrace_id FK instead of leaving them re-encoded per row inside the
- * parent's __children JSON. A null child is the only thing left un-promotable —
+ * is itself compound), and nested backtraces (resolvedFrames at depth > 0) —
+ * these fold into the shared frames/backtraces tables via a __backtrace_id FK
+ * instead of leaving them re-encoded per row inside the parent's __children
+ * JSON. A null child is the only thing left un-promotable —
  * it carries no column, and survives in the small residual __children blob
  * (residualChildrenBlob) so getRow's childValues can still show it.
  */
@@ -238,16 +238,17 @@ function resolveCellAtPath(cell: Cell | null | undefined, path: string[]): Cell 
 }
 
 /**
- * PMT:live-fawn + muddy-frost — the __children blob's sole consumer
- * (getRow.ts's childValues / extractKperfBt) only reads each IMMEDIATE child's
- * fmt, and every non-null immediate child is now reconstructable from a promoted
- * column: scalars/compounds from <mnemonic>__<child>__fmt, and nested backtraces
- * from a __backtrace_id FK (muddy-frost). So the only thing the blob still needs
- * to carry is null immediate children (a `<sentinel/>` placeholder that has no
- * column). Store just those — a tiny residual object, e.g. {"sentinel":null} —
- * and NULL when there are none. hydrateCell merges promoted + FK + this residual
- * back into the shallow children map. This is what lets a compound whose bulk
- * was a nested stack (cause-graph-node: string + a 28-frame backtrace + a null
+ * The __children blob's sole consumer (getRow.ts's childValues /
+ * extractKperfBt) only reads each IMMEDIATE child's fmt, and every non-null
+ * immediate child is now reconstructable from a promoted column:
+ * scalars/compounds from <mnemonic>__<child>__fmt, and nested backtraces from
+ * a __backtrace_id FK (the same backtrace dedup FK used for top-level
+ * backtrace columns). So the only thing the blob still needs to carry is null
+ * immediate children (a `<sentinel/>` placeholder that has no column). Store
+ * just those — a tiny residual object, e.g. {"sentinel":null} — and NULL when
+ * there are none. hydrateCell merges promoted + FK + this residual back into
+ * the shallow children map. This is what lets a compound whose bulk was a
+ * nested stack (cause-graph-node: string + a 28-frame backtrace + a null
  * sentinel) drop from a per-row JSON re-encode to one FK + a ~15-byte residual.
  */
 function residualChildrenBlob(cell: Cell | null | undefined): string | null {
@@ -281,7 +282,7 @@ export function quoteIdent(name: string): string {
 export const ROW_IDX_COLUMN = "_row_idx";
 
 /**
- * Value-interning (PMT:lime-bluff). A stored value ≥ INTERN_THRESHOLD_BYTES is
+ * Value interning. A stored value ≥ INTERN_THRESHOLD_BYTES is
  * replaced in its physical column by a tiny sentinel token: INTERN_SENTINEL
  * (a control char that never appears in xctrace's text) followed by the decimal
  * interned_values.id. Reads detect the prefix and resolve id → content.
@@ -299,32 +300,34 @@ export const INTERN_SENTINEL = String.fromCharCode(1); // SOH — never present 
 export const INTERN_THRESHOLD_BYTES = 256;
 /**
  * Bumped whenever the persisted on-disk shape changes incompatibly (a table's
- * columns, a side table's structure) so a PMT:ruby-peak cache written by an
- * older build isn't silently reused against new-code reads. traceCache stores
- * this in the .db's _meta and treats a mismatch like an mtime-stale cache:
- * wipe + re-ingest (re-export). No in-place migration — see PMT:tidy-warbler.
+ * columns, a side table's structure) so a persisted trace-cache .db written by
+ * an older build isn't silently reused against new-code reads. traceCache
+ * stores this in the .db's _meta and treats a mismatch like an mtime-stale
+ * cache: wipe + re-ingest (re-export). No in-place migration.
  * History: 1 = pre-symbols frames(name,binary,binary_path); 2 = frames.symbol_id
- * + the deduped `symbols` table; 3 = backtraces.fingerprint is a sha256 hash,
- * not raw-stack JSON (PMT:true-glade — an old .db's JSON fingerprints would
- * never match the new hash keys, so a re-ingest into it would double-store
- * every stack; a version bump forces a clean rebuild).
- * 4 = large interned chain values are node-encoded into `hierarchy_nodes`
- * (PMT:dry-glen) — reads decode per-value, so a mixed old/new .db would work,
- * but a bump keeps every .db in one clean shape.
+ * + the deduped `symbols` table (see the symbol-content dedup described in
+ * openSessionDb); 3 = backtraces.fingerprint is a sha256 hash, not raw-stack
+ * JSON — an old .db's JSON fingerprints would never match the new hash keys,
+ * so a re-ingest into it would double-store every stack; a version bump forces
+ * a clean rebuild.
+ * 4 = large interned chain values are node-encoded into `hierarchy_nodes` —
+ * reads decode per-value, so a mixed old/new .db would work, but a bump keeps
+ * every .db in one clean shape.
  */
 export const INGEST_SCHEMA_VERSION = "4";
 /**
- * PMT:ruddy-owl flavor-2: for a column pass 1 flagged as low-distinct /
- * high-repeat, values this size or larger are interned (well below the 256B
- * flavor-1 floor) — a 20-byte category repeated 275k× is pure duplication.
- * Below this even N copies aren't worth a side-table row + hash-index entry.
- * Interning stays CONSISTENT (every occurrence of a value → the same content-
- * hash sentinel), so GROUP BY / JOIN / eq are unaffected.
+ * Flavor-2 interning: for a column classified (by the look-ahead sample below)
+ * as low-distinct / high-repeat, values this size or larger are interned (well
+ * below the 256B flavor-1 floor used for every other column) — a 20-byte
+ * category repeated 275k× is pure duplication. Below this even N copies aren't
+ * worth a side-table row + hash-index entry. Interning stays CONSISTENT (every
+ * occurrence of a value → the same content-hash sentinel), so GROUP BY / JOIN /
+ * eq are unaffected.
  */
 export const FLAVOR2_INTERN_FLOOR_BYTES = 16;
 /**
- * PMT:ruddy-owl single-pass look-ahead: buffer this many rows to decide which
- * columns are flavor-2 before writing any. Enough to read a column's
+ * Single-pass look-ahead: buffer this many rows to decide which columns get
+ * the flavor-2 treatment above before writing any. Enough to read a column's
  * repeat/distinct character (a ratio, so a sample suffices) while bounding the
  * buffered-row memory. Small tables never reach it — they flush at finish().
  */
@@ -344,12 +347,12 @@ export function internSentinelId(token: string): number {
  * Open (or create) the one SQLite DB file backing a whole session.
  *
  * journalMode "wal" (default) avoids readers blocking on a writer mid-ingest.
- * PMT:ruby-peak's persisted, colocated trace cache passes "default" instead —
- * WAL only earns its keep for concurrent reader/writer access, and that DB is
- * write-once-during-ingest then READ-ONLY (no concurrent writer ever touches
- * a schema after it loads), so WAL there is pure downside: it leaves
- * `.db-wal`/`.db-shm` sidecar files next to the .trace, defeating the "one
- * obvious file to manage" tidiness the whole feature is built around. The
+ * The persisted, colocated trace cache (engine/traceCache.ts) passes "default"
+ * instead — WAL only earns its keep for concurrent reader/writer access, and
+ * that DB is write-once-during-ingest then READ-ONLY (no concurrent writer
+ * ever touches a schema after it loads), so WAL there is pure downside: it
+ * leaves `.db-wal`/`.db-shm` sidecar files next to the .trace, defeating the
+ * "one obvious file to manage" tidiness the whole feature is built around. The
  * default rollback journal leaves only a transient `-journal` during a write
  * transaction, deleted by SQLite on commit — see engine/traceCache.ts.
  */
@@ -358,34 +361,34 @@ export function openSessionDb(dbPath: string, opts: { journalMode?: "wal" | "def
   if ((opts.journalMode ?? "wal") === "wal") {
     db.exec("PRAGMA journal_mode = WAL");
   }
-  // Generic key-value metadata — currently used for PMT:ruby-peak's
-  // source_mtime_ms/source_path staleness check (see engine/traceCache.ts).
+  // Generic key-value metadata — currently used for the persisted trace
+  // cache's source_mtime_ms/source_path staleness check (see engine/traceCache.ts).
   // A single small table rather than a bespoke one-row schema per fact, since
   // more sessions-worth of small facts may accumulate here over time.
   db.exec("CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)");
   // Persisted column metadata (mnemonic/name/engineering-type) per ingested
-  // (run,schema) table — PMT:ruby-peak. A physical SQLite table only has
-  // column NAMES (thread__process__pid, ...); engineeringType (needed to
-  // rebuild a real SchemaCol[]) is otherwise only known transiently, from the
-  // live XML TOC's <schema> block or a track-detail discovery pass. Recording
-  // it here is what makes cross-PROCESS reuse of an already-ingested table
-  // possible — a brand-new process can rebuild `cols` from this table alone,
-  // with zero xctrace calls, instead of only ever reusing within one process's
-  // lifetime the way the in-memory schemaModel/tableCache do.
+  // (run,schema) table. A physical SQLite table only has column NAMES
+  // (thread__process__pid, ...); engineeringType (needed to rebuild a real
+  // SchemaCol[]) is otherwise only known transiently, from the live XML TOC's
+  // <schema> block or a track-detail discovery pass. Recording it here is what
+  // makes cross-PROCESS reuse of an already-ingested table possible — a
+  // brand-new process can rebuild `cols` from this table alone, with zero
+  // xctrace calls, instead of only ever reusing within one process's lifetime
+  // the way the in-memory schemaModel/tableCache do.
   db.exec(
     "CREATE TABLE IF NOT EXISTS _ingested_schema (table_name TEXT, mnemonic TEXT, name TEXT, engineering_type TEXT)"
   );
-  // Backtraces are stored as QUERYABLE FRAME ROWS, not a JSON blob (PMT:elm-swamp) —
+  // Backtraces are stored as QUERYABLE FRAME ROWS, not a JSON blob —
   // the whole point of the SQLite engine is queryable data, and call_tree folds from
   // frame rows. `backtraces` dedups by fingerprint (a sha256 of the frame sequence —
   // the same stack recurs across thousands of rows and schemas, so dedup is a real win;
-  // PMT:true-glade hashes it rather than storing the raw-stack JSON, which was a 6+ GB
+  // it's hashed rather than storing the raw-stack JSON, which was a 6+ GB
   // third copy of the frame content on backtrace-heavy traces — see backtraceIdFor);
   // each distinct backtrace's frames live in `frames`, one row per frame,
   // leaf-first (frame_index 0 = deepest call, matching the leaf-first XML order both
   // parsers produce; consumers reverse for a root-first tree).
   //
-  // PMT:tidy-warbler: the backtrace fold dedups STACK IDENTITY, but a stack-rich trace
+  // The backtrace fold above dedups STACK IDENTITY, but a stack-rich trace
   // still explodes the frame ROWS — a real 347k-row Allocations trace had 126k distinct
   // backtraces expand to 16 M frame rows, each storing its full name/binary/binary_path
   // strings even though only ~23,744 distinct names / 215 binaries underlie them (~2 GB
@@ -404,30 +407,31 @@ export function openSessionDb(dbPath: string, opts: { journalMode?: "wal" | "def
     "CREATE TABLE IF NOT EXISTS frames (backtrace_id INTEGER, frame_index INTEGER, symbol_id INTEGER, addr TEXT)"
   );
   db.exec("CREATE INDEX IF NOT EXISTS idx_frames_backtrace ON frames(backtrace_id)");
-  // Interned large/repeated cell values (PMT:lime-bluff) — the same dedup
-  // discipline `frames` gives backtraces, extended to ordinary large text.
+  // Interned large/repeated cell values — the same dedup discipline `frames`
+  // gives backtraces, extended to ordinary large text.
   // xctrace's XML already dedups a repeated big value (a view-hierarchy chain,
   // a cause-graph-node) to one `id` + cheap `<ref>`s; our parser resolves every
   // ref to the full value, so without this the writer would serialize that
   // value into EVERY row that shares it (852k-row swiftui-updates → ~28 GB db,
-  // found live in PMT:lush-spit). Instead a value ≥ the intern threshold is
+  // confirmed against a real trace). Instead a value ≥ the intern threshold is
   // stored ONCE here (deduped by content hash) and the row column holds a tiny
   // sentinel token; reads resolve it (see INTERN_SENTINEL / resolveInterned).
   // `hash` is a content hash so the UNIQUE index stays small regardless of blob
   // size; collision would merge distinct values, so it must be a strong hash
   // (sha256) where that is not a realistic risk.
   db.exec("CREATE TABLE IF NOT EXISTS interned_values (id INTEGER PRIMARY KEY, hash TEXT UNIQUE, content TEXT)");
-  // PMT:dry-glen: distinct view-hierarchy / cause NODES (the ~5-20k shared view
+  // Distinct view-hierarchy / cause NODES (the ~5-20k shared view
   // types like LazyVStack). A large interned value that is a delimited chain has
   // its content stored node-encoded (a sequence of these ids), collapsing the
   // ~2.4 GB of distinct-but-node-redundant text; reads decode via this table.
   db.exec("CREATE TABLE IF NOT EXISTS hierarchy_nodes (id INTEGER PRIMARY KEY, name TEXT UNIQUE)");
-  // PMT:bare-shoal metadata, one row-set per ingested (run,schema) table:
-  //   promoted_column — every DSL-usable nested SCALAR path promoted by
-  //     PMT:tall-bench, mapping its dot-path (thread.process.pid) to the
-  //     physical base column (thread__process__pid). Stored explicitly rather
-  //     than reverse-parsing physical names, since a mnemonic could itself
-  //     contain "__" and splitting would be ambiguous.
+  // Dot-path metadata, one row-set per ingested (run,schema) table:
+  //   promoted_column — every DSL-usable nested SCALAR path promoted by the
+  //     nested-field promotion scheme described in this file's header comment,
+  //     mapping its dot-path (thread.process.pid) to the physical base column
+  //     (thread__process__pid). Stored explicitly rather than reverse-parsing
+  //     physical names, since a mnemonic could itself contain "__" and
+  //     splitting would be ambiguous.
   //   column_identity — for each base column proven ref-identical to a shorter
   //     canonical one (see ColumnIdentityTracker), base_column -> canonical.
   //     Absence of a row means "this column IS canonical" (or unique). The
@@ -458,21 +462,21 @@ export class SqliteTableWriter {
   private readonly btInsertStmt: StatementSync;
   private readonly frameInsertStmt: StatementSync;
   private readonly frameCacheIds = new Map<string, number>();
-  /** PMT:tidy-warbler: distinct (name,binary,binary_path) frame content -> symbols.id, memoized. */
+  /** Distinct (name,binary,binary_path) frame content -> symbols.id (the shared-symbols dedup described in openSessionDb), memoized. */
   private readonly symbolLookupStmt: StatementSync;
   private readonly symbolInsertStmt: StatementSync;
   private readonly symbolCache = new Map<string, number>();
-  /** PMT:dry-glen: distinct view-hierarchy/cause node name -> hierarchy_nodes.id, memoized. */
+  /** Distinct view-hierarchy/cause node name -> hierarchy_nodes.id (the hierarchy-node interning described in openSessionDb), memoized. */
   private readonly nodeLookupStmt: StatementSync;
   private readonly nodeInsertStmt: StatementSync;
   private readonly nodeCache = new Map<string, number>();
-  /** PMT:lime-bluff value interning: content hash -> sentinel token, memoized across rows. */
+  /** Value interning: content hash -> sentinel token, memoized across rows. */
   private readonly internLookupStmt: StatementSync;
   private readonly internInsertStmt: StatementSync;
   private readonly internCache = new Map<string, string>();
   /** mnemonic -> ordered list of promoted descendant paths, discovered from data. */
   private readonly promotedPaths = new Map<string, PromotablePath[]>();
-  /** PMT:bare-shoal: ref-identity accumulation across rows for dot-path collapsing. */
+  /** Ref-identity accumulation across rows for dot-path collapsing (see ColumnIdentityTracker above). */
   private readonly identity = new ColumnIdentityTracker();
   /** base column name -> its dot-path + segment count, for canonical selection at finish. */
   private readonly baseInfo = new Map<string, { dotpath: string; segCount: number }>();
@@ -481,9 +485,9 @@ export class SqliteTableWriter {
   private inTxn = false;
 
   /**
-   * PMT:ruddy-owl: mnemonics flagged as flavor-2 (low-distinct / high-repeat) —
-   * their values intern at the small FLAVOR2 floor rather than the 256B flavor-1
-   * floor. Decided from a bounded sample of the first `sampleSize` rows (a
+   * Mnemonics flagged as flavor-2 (low-distinct / high-repeat) — their values
+   * intern at the small FLAVOR2 floor rather than the 256B flavor-1 floor.
+   * Decided from a bounded sample of the first `sampleSize` rows (a
    * single-pass look-ahead, no second export), or injected up front (tests).
    */
   private internColumns: Set<string>;
@@ -521,7 +525,7 @@ export class SqliteTableWriter {
     );
     // IS (not =) so a null binary/binary_path matches an existing null symbol
     // (SQL `= NULL` is never true) — content dedup must treat two null-binary
-    // frames of the same name as one symbol (PMT:tidy-warbler).
+    // frames of the same name as one symbol (the shared symbols-table dedup).
     this.symbolLookupStmt = db.prepare(
       "SELECT id FROM symbols WHERE name IS ? AND binary IS ? AND binary_path IS ?"
     );
@@ -559,15 +563,16 @@ export class SqliteTableWriter {
     // column list.
     db.exec(`DROP TABLE IF EXISTS ${quoteIdent(tableName)}`);
     db.exec(`CREATE TABLE ${quoteIdent(tableName)} (${colDefs.join(", ")})`);
-    // Clear any stale PMT:bare-shoal metadata for this table_name from a prior
-    // differently-shaped ingestion (mirrors the DROP TABLE above).
+    // Clear any stale dot-path/ref-identity metadata (promoted_column,
+    // column_identity) for this table_name from a prior differently-shaped
+    // ingestion (mirrors the DROP TABLE above).
     db.prepare("DELETE FROM promoted_column WHERE table_name = ?").run(tableName);
     db.prepare("DELETE FROM column_identity WHERE table_name = ?").run(tableName);
     // persistIngestedSchemaCols is written at finish(), NOT here — see finish()'s
-    // own comment for why (PMT:onyx-spark: writing it here, eagerly, before any
-    // row is inserted, silently marked an ABORTED table-too-large ingest as
-    // "fully ingested, safe to reuse" — verified live, a genuine data-integrity
-    // bug, not hypothetical).
+    // own comment for why: writing it here, eagerly, before any row is
+    // inserted, silently marked an ABORTED table-too-large ingest as "fully
+    // ingested, safe to reuse" — verified live, a genuine data-integrity bug,
+    // not hypothetical.
 
     const insertCols = this.insertColumnNames();
     this.insertStmt = db.prepare(
@@ -580,9 +585,9 @@ export class SqliteTableWriter {
    * If `v` is a string worth interning, store it once in interned_values
    * (deduped by content hash) and return a tiny sentinel token to store in the
    * row column instead; otherwise return `v` unchanged. The size threshold is
-   * per-column: a mnemonic pass 1 flagged as flavor-2 (low-distinct/high-repeat,
-   * PMT:ruddy-owl) interns at the small FLAVOR2 floor; every other column keeps
-   * lime-bluff's 256B flavor-1 floor. Interning is CONSISTENT — a given value
+   * per-column: a mnemonic the sampling pass flagged as flavor-2
+   * (low-distinct/high-repeat) interns at the small FLAVOR2 floor; every other
+   * column keeps the standard 256B flavor-1 floor. Interning is CONSISTENT — a given value
    * always maps to the same sentinel — so a column that mixes interned and
    * inline values across DIFFERENT values still groups/joins/compares correctly
    * (each distinct value has exactly one stored form). Numbers, sub-floor
@@ -601,8 +606,8 @@ export class SqliteTableWriter {
     if (existing) {
       id = existing.id;
     } else {
-      // PMT:dry-glen: node-encode a delimited chain (view-hierarchy / cause list)
-      // before storing — its content becomes a sequence of hierarchy_nodes ids,
+      // Node-encode a delimited chain (view-hierarchy / cause list) before
+      // storing — its content becomes a sequence of hierarchy_nodes ids,
       // collapsing the shared-node redundancy. Non-chain values store raw (encode
       // returns null). Dedup is still keyed on the ORIGINAL content hash, so the
       // set of interned values is unchanged; reads decode transparently.
@@ -615,7 +620,7 @@ export class SqliteTableWriter {
   }
 
   /**
-   * PMT:dry-glen: intern one view-hierarchy/cause NODE name into the shared,
+   * Intern one view-hierarchy/cause NODE name into the shared,
    * DB-wide-deduped hierarchy_nodes table, returning its id. Memoized per ingest;
    * same lookup-then-insert-on-miss discipline as symbolIdFor / interning.
    */
@@ -633,7 +638,7 @@ export class SqliteTableWriter {
     // the dedup key (the UNIQUE column on backtraces) — never read back; the
     // frames themselves are stored as real symbol-backed rows below.
     //
-    // PMT:true-glade reverses elm-swamp's original choice of storing the raw
+    // This hashing scheme replaced an earlier version that stored the raw
     // JSON here. On a backtrace-heavy trace (a real Allocations trace: 126k
     // distinct stacks, ~127 frames deep) the raw-JSON fingerprint + its UNIQUE
     // index was 6.35 GB — a full THIRD copy of the frame content, carried purely
@@ -661,7 +666,8 @@ export class SqliteTableWriter {
     // One frames row per frame, leaf-first (frame_index 0 = deepest), matching
     // the leaf-first order the parsers produce; consumers reverse for a tree.
     // The frame's content (name/binary/binary_path) is deduped into `symbols`
-    // and the row stores only its symbol_id + per-instance addr (PMT:tidy-warbler).
+    // and the row stores only its symbol_id + per-instance addr (the shared
+    // symbols-table dedup, see openSessionDb).
     for (let i = 0; i < frames.length; i++) {
       const f = frames[i];
       this.frameInsertStmt.run(id, i, this.symbolIdFor(f.name, f.binaryName, f.binaryPath), f.addr);
@@ -671,7 +677,7 @@ export class SqliteTableWriter {
   }
 
   /**
-   * PMT:tidy-warbler: intern one frame's content — a (name, binary, binary_path)
+   * Intern one frame's content — a (name, binary, binary_path)
    * tuple — into the shared, DB-wide-deduped `symbols` table and return its id.
    * Memoized per ingest (symbolCache) and checked against the table (symbolLookupStmt,
    * IS-based so nulls dedup) so a symbol shared across millions of frame rows and
@@ -749,7 +755,7 @@ export class SqliteTableWriter {
         const base = `${col.mnemonic}__${p.path.join("__")}`;
         if (p.kind === "backtrace") {
           // A nested stack folds into backtraces/frames; the row stores only its
-          // deduped FK, exactly like a top-level backtrace column (PMT:muddy-frost).
+          // deduped FK, exactly like a top-level backtrace column.
           this.db.exec(`ALTER TABLE ${quoteIdent(this.tableName)} ADD COLUMN ${quoteIdent(`${base}__backtrace_id`)}`);
           continue;
         }
@@ -772,12 +778,12 @@ export class SqliteTableWriter {
   }
 
   /**
-   * PMT:ruddy-owl single-pass look-ahead: until the flavor-2 decision is made,
-   * buffer rows and fold them into the sample stats; the moment the sample is
-   * full, decide and flush. Everything after writes straight through. A table
-   * smaller than the sample flushes at finish(). The buffered rows reference
-   * the parser's shared (RefCache-deduped) Cell objects, so buffering doesn't
-   * copy their blobs.
+   * Single-pass look-ahead: until the flavor-2 decision is made, buffer rows
+   * and fold them into the sample stats; the moment the sample is full, decide
+   * and flush. Everything after writes straight through. A table smaller than
+   * the sample flushes at finish(). The buffered rows reference the parser's
+   * shared (RefCache-deduped) Cell objects, so buffering doesn't copy their
+   * blobs.
    */
   writeRow(row: NormalizedRow): void {
     if (!this.decided) {
@@ -811,14 +817,14 @@ export class SqliteTableWriter {
 
     const values: Array<string | number | null> = [this.rowCount];
     // Scalar cells for this row (top-level + promoted leaves), fed to the
-    // identity tracker to detect ref-shared duplicate dot-paths (PMT:bare-shoal).
+    // identity tracker to detect ref-shared duplicate dot-paths.
     const scalarCells: Array<[string, Cell]> = [];
     for (const col of this.cols) {
       const cell = row[col.mnemonic];
       if (this.backtraceCols.has(col.mnemonic)) {
         values.push(cell?.resolvedFrames ? this.backtraceIdFor(cell.resolvedFrames) : null);
       } else {
-        // Large values are interned to a sentinel token (PMT:lime-bluff) — a
+        // Large values are interned to a sentinel token — a
         // blob shared across N rows is stored once, not N times. Small values
         // (numbers, labels, pids) pass through unchanged, so numeric/filter/
         // sort/group columns are unaffected.
@@ -838,7 +844,7 @@ export class SqliteTableWriter {
           const descendant = resolveCellAtPath(cell, p.path);
           if (p.kind === "backtrace") {
             // Fold the nested stack into backtraces/frames (content-hash deduped,
-            // shared DB-wide), store only its FK — PMT:muddy-frost.
+            // shared DB-wide), store only its FK.
             values.push(descendant?.resolvedFrames ? this.backtraceIdFor(descendant.resolvedFrames) : null);
             continue;
           }
@@ -870,8 +876,9 @@ export class SqliteTableWriter {
       this.inTxn = false;
     }
     this.persistFieldMetadata();
-    // PMT:ruby-peak's cross-process reuse marker (PMT:onyx-spark: moved HERE
-    // from the constructor). Deliberately gated on reaching finish() — the
+    // The cross-process reuse marker (moved HERE from the constructor, see
+    // openSessionDb's _ingested_schema comment). Deliberately gated on
+    // reaching finish() — the
     // caller only calls finish() after the FULL row stream is consumed with
     // no exception (see parseTable.ts's saxStream "end" handler); a
     // table-too-large abort mid-stream returns without ever calling finish(),
@@ -889,7 +896,7 @@ export class SqliteTableWriter {
   }
 
   /**
-   * Persist PMT:bare-shoal's dot-path metadata: every nested scalar field
+   * Persist the dot-path metadata: every nested scalar field
    * (promoted_column) and the ref-identity collapse map (column_identity).
    * Canonical = the shortest path in an identity group (a top-level column,
    * seg-count 1, always wins; ties broken lexicographically for determinism),
@@ -926,7 +933,7 @@ export interface PromotedFieldMeta {
   base: string;
 }
 
-/** Load PMT:bare-shoal's nested-field metadata for one ingested (run,schema) table. */
+/** Load the nested-field (dot-path) promotion metadata for one ingested (run,schema) table. */
 export function loadPromotedColumns(db: DatabaseSync, tableName: string): PromotedFieldMeta[] {
   return (
     db
@@ -943,7 +950,7 @@ export function loadColumnIdentity(db: DatabaseSync, tableName: string): Map<str
   return new Map(rows.map((r) => [r.base_column, r.canonical_column]));
 }
 
-// ─── PMT:ruby-peak: persisted-db metadata (_meta key-value, _ingested_schema) ──
+// ─── Persisted-db metadata (_meta key-value, _ingested_schema) ───────────
 
 /** Read one `_meta` key, or null if never set (a fresh db, or an older db predating this key). */
 export function readMeta(db: DatabaseSync, key: string): string | null {
@@ -974,8 +981,8 @@ export function persistIngestedSchemaCols(db: DatabaseSync, tableName: string, c
 /**
  * Load a previously-ingested table's column metadata, or null if this exact
  * table_name was never ingested into this db (the normal case for a schema
- * touched for the first time). A non-null result is the reuse signal PMT:
- * ruby-peak's getTable/getSchemaMeta check BEFORE running any xctrace export
+ * touched for the first time). A non-null result is the reuse signal
+ * getTable/getSchemaMeta checks BEFORE running any xctrace export
  * — the physical table + its frames/backtraces/promoted-column metadata are
  * already sitting in this same db file, so re-ingesting would be pure waste.
  */

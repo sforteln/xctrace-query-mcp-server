@@ -1,14 +1,20 @@
 /**
- * Shared SQL query/hydration helpers for PMT:dusk-floe — the SQL-backed
- * counterparts of the JS-array scans query/aggregate/find/get_row used to do
- * directly against ParsedTable.rows.
+ * Shared SQL query/hydration helpers for the SQL-backed engine — the
+ * SQL-backed counterparts of the JS-array scans query/aggregate/find/get_row
+ * used to do directly against ParsedTable.rows, back when each table's rows
+ * lived in a JS array in memory. See howSessionsWork.md's "Large-table
+ * hardening" section for why that in-memory scan approach was replaced with
+ * SQLite ingestion (a large enough table could OOM the whole process) and for
+ * the fuller migration story.
  *
- * Scope note (see PMT:dusk-floe): every mnemonic referenced here is a
- * TOP-LEVEL column — the existing predicate DSL never supported nested
- * compound fields (thread.tid) even in the old JS implementation, so this
- * only maps mnemonics to the plain "mnemonic"/"mnemonic__fmt" columns
- * PMT:gravel-cape created. PMT:tall-bench's promoted nested-path columns are
- * untouched here — PMT:bare-shoal exposes those separately.
+ * Scope note: every mnemonic referenced here is a TOP-LEVEL column — the
+ * existing predicate DSL never supported nested compound fields (thread.tid)
+ * even in the old JS implementation, so this only maps mnemonics to the plain
+ * "mnemonic"/"mnemonic__fmt" columns the SQLite ingestion sink
+ * (sqliteStore.ts) creates for every row. Promoted nested-path columns (e.g.
+ * "thread__process__pid") are untouched here — dot-path resolution
+ * (engine/fieldRef.ts's FieldResolver) exposes those separately; see
+ * howSessionsWork.md's "Nested fields are addressable by dot-path" section.
  */
 import type { DatabaseSync } from "node:sqlite";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
@@ -40,7 +46,7 @@ export function registerRegexpUdf(db: DatabaseSync): void {
 
 /**
  * The percentile custom aggregates the aggregate() verb's p50/p90/p95/p99/median
- * ops compile to — SQLite has no built-in percentile function (PMT:round-rime).
+ * ops compile to — SQLite has no built-in percentile function.
  * Registered once per connection, alongside registerRegexpUdf.
  *
  * Uses the nearest-rank method (no interpolation): for a group's N non-null
@@ -123,7 +129,7 @@ export function backtraceFmtFromFrames(frames: ResolvedFrame[]): string {
   return frames.length > 0 ? `${frames.length} frames, top: ${topName}` : "0 frames";
 }
 
-// ─── Window functions (query's `window` option, PMT:round-rime) ─────────────────
+// ─── Window functions (query's `window` option) ─────────────────────────────────
 
 export type WindowOp = "running-total" | "delta" | "rank" | "row-number";
 
@@ -194,8 +200,9 @@ export interface DisplayField {
  * see sqliteStore.ts's header comment) — selecting a nonexistent "<base>__fmt"
  * for a backtrace column is a real SQL error, not just a wrong value, so this
  * must branch per-column rather than assume every field has the same shape.
- * Fields are pre-resolved (PMT:bare-shoal) so a dot-path column displays the
- * value at its physical base column, keyed by the caller's original ref.
+ * Fields are pre-resolved by dot-path resolution before this runs (see the
+ * file header), so a dot-path column already displays the value at its
+ * physical base column, keyed by the caller's original ref.
  */
 export function buildDisplaySelect(fields: DisplayField[]): DisplaySelectPlan {
   const selectCols: string[] = [];
@@ -237,13 +244,13 @@ export function resolveBacktraceDisplayValues(
 
 /**
  * A small memoized backtrace lookup, shared across a batch of hydrations —
- * reads the normalized frame ROWS (PMT:elm-swamp) for a backtrace_id and
+ * reads the normalized frame ROWS for a backtrace_id and
  * rebuilds the ResolvedFrame[] in leaf-first order (frame_index ASC = the
  * order the parsers produced), the same shape the old JSON blob returned.
  */
 export function makeFrameLookup(db: DatabaseSync): (id: number | null) => ResolvedFrame[] {
   const stmt = db.prepare(
-    // Frame content lives in `symbols` (deduped); join to rebuild it (PMT:tidy-warbler).
+    // Frame content lives in `symbols` (deduped); join to rebuild it.
     "SELECT s.name AS name, s.binary AS binary, s.binary_path AS binary_path, f.addr AS addr " +
       "FROM frames f JOIN symbols s ON f.symbol_id = s.id WHERE f.backtrace_id = ? ORDER BY f.frame_index ASC"
   );
@@ -264,14 +271,19 @@ export function makeFrameLookup(db: DatabaseSync): (id: number | null) => Resolv
   };
 }
 
-// ─── Interned-value resolution (PMT:lime-bluff) ────────────────────────────────
+// ─── Interned-value resolution ───────────────────────────────────────────────
 
 /**
- * A memoized resolver for interned large values: given a stored column value,
- * returns the original content if it's an intern sentinel token, else the value
- * unchanged. Small values (numbers, labels) pass straight through, so this is
- * cheap to apply everywhere a stored value is read back for display/hydration.
- * Content is cached by id across a batch of reads (a big blob resolves once).
+ * A memoized resolver for interned large values. Ingestion (sqliteStore.ts)
+ * replaces any stored value at or above a 256-byte threshold with a tiny
+ * sentinel token and keeps the real content once, deduped by content hash, in
+ * an interned_values table — cheap when the same large blob (a KB-scale
+ * view-hierarchy chain, a prompt/response body) repeats across many rows.
+ * This resolver reverses that for display/hydration: given a stored column
+ * value, returns the original content if it's a sentinel token, else the
+ * value unchanged. Small values (numbers, labels) pass straight through, so
+ * this is cheap to apply everywhere a stored value is read back. Content is
+ * cached by id across a batch of reads (a big blob resolves once).
  */
 export function makeInternResolver(db: DatabaseSync): (v: unknown) => unknown {
   const resolve = makeInternedContentResolver(db);
@@ -279,12 +291,16 @@ export function makeInternResolver(db: DatabaseSync): (v: unknown) => unknown {
 }
 
 /**
- * Resolve an interned_values id to its ORIGINAL content, decoding a PMT:dry-glen
- * node-encoded chain value (a sequence of hierarchy_nodes ids) back to its exact
- * string. Memoized by id; the hierarchy_nodes map is loaded once, lazily (only
- * if some value is actually node-encoded), so a trace with no chains pays
- * nothing. Shared by makeInternResolver (display) and the mcp_unintern UDF
- * (content predicates).
+ * Resolve an interned_values id to its ORIGINAL content. Beyond plain interned
+ * strings, some large values (e.g. a SwiftUI view-hierarchy chain) are stored
+ * further compressed: as a node-encoded sequence of hierarchy_nodes ids, one
+ * per repeated segment (LazyVStack, _PaddingLayout, ...) — since the segments
+ * recur far more often than the full chains do (see hierarchyEncode.ts for
+ * the dedup rationale and measured savings). This decodes that sequence back
+ * to its exact original string. Memoized by id; the hierarchy_nodes map is
+ * loaded once, lazily (only if some value is actually node-encoded), so a
+ * trace with no chains pays nothing. Shared by makeInternResolver (display)
+ * and the mcp_unintern UDF (content predicates).
  */
 export function makeInternedContentResolver(db: DatabaseSync): (id: number) => string {
   const stmt = db.prepare("SELECT content FROM interned_values WHERE id = ?");
@@ -324,14 +340,15 @@ export function registerInternDecodeUdf(db: DatabaseSync): void {
 export const identityResolver = (v: unknown): unknown => v;
 
 /**
- * Resolve a filter TARGET to its stored form for equality comparison
- * (PMT:ruddy-owl). If the value was interned (its content hash is in
- * interned_values), rows store the sentinel token, not the literal — so eq/ne
- * must compare against that token. Returns the sentinel token when the value is
- * interned, else the value unchanged. One indexed hash lookup per distinct
- * target (memoized), then a plain indexed `col = ?` — far cheaper than a
- * per-row resolve of the column, and correct for interned values of ANY size
- * (so this replaces lime-bluff's ≥256B-gated column-side resolve for equality).
+ * Resolve a filter TARGET to its stored form for equality comparison. If the
+ * value was interned (its content hash is in interned_values), rows store the
+ * sentinel token, not the literal — so eq/ne must compare against that token.
+ * Returns the sentinel token when the value is interned, else the value
+ * unchanged. One indexed hash lookup per distinct target (memoized), then a
+ * plain indexed `col = ?` — far cheaper than a per-row resolve of the column,
+ * and correct for interned values of ANY size (this replaces an earlier
+ * ≥256-byte column-side resolve for equality — see the interned-value
+ * section above).
  */
 export function makeInternTargetResolver(db: DatabaseSync): (v: string) => string {
   const stmt = db.prepare("SELECT id FROM interned_values WHERE hash = ?");
@@ -374,10 +391,11 @@ export function resolveInternedDisplayValues(
 /**
  * Rebuild one Cell from a hydrated SQL row's physical columns for `col`,
  * matching the exact shape the original XML parser produced. `type` comes
- * from the column's known engineeringType (SchemaCol), not per-row storage
- * (PMT:arid-buck's note — type was always redundant per-row, this is where
- * that gets resolved). A backtrace cell's fmt/raw are recomputed from the
- * joined frames array using the identical formula parseTable.ts's parseCell
+ * from the column's known engineeringType (SchemaCol), not per-row storage —
+ * every cell in a column shares the same engineering type, so storing it
+ * again on each row would just be a redundant copy; this reads it once from
+ * the column's own schema instead. A backtrace cell's fmt/raw are recomputed
+ * from the joined frames array using the identical formula parseTable.ts's parseCell
  * uses at ingestion time — never stored separately, since they're fully
  * derivable and storing them would just be a second, driftable copy.
  */
@@ -400,8 +418,9 @@ export function hydrateCell(
     };
   }
 
-  // A large stored value is an intern sentinel (PMT:lime-bluff) — resolve it
-  // back to the original content before rebuilding the Cell. Small values pass
+  // A large stored value is an intern sentinel (see the interned-value
+  // section above) — resolve it back to the original content before
+  // rebuilding the Cell. Small values pass
   // through unchanged. NULL still reliably means "the cell itself was null".
   const fmt = unintern(sqlRow[fmtCol(col.mnemonic)]);
   // fmt is always a real string for a non-null Cell (never optional in the
@@ -409,8 +428,8 @@ export function hydrateCell(
   // (a <sentinel/>), not a legitimate empty-string/zero value.
   if (fmt === null || fmt === undefined) return null;
 
-  // PMT:live-fawn + muddy-frost: a compound cell's children are reconstructed
-  // from its promoted columns — <mnemonic>__<child>__fmt (scalars/compounds) and
+  // A compound cell's children are reconstructed from its promoted columns —
+  // <mnemonic>__<child>__fmt (scalars/compounds) and
   // <mnemonic>__<child>__backtrace_id (nested stacks, folded into frames tables)
   // — merged with the small residual __children blob, which now carries ONLY the
   // un-promotable null children. get_row's childValues/extractKperfBt read each
@@ -431,8 +450,8 @@ export function hydrateCell(
 /**
  * Rebuild the shallow children map get_row consumes (each IMMEDIATE child tag →
  * a Cell carrying its fmt, plus resolved frames for a nested backtrace) from a
- * compound cell's promoted columns and its residual __children blob
- * (PMT:live-fawn + muddy-frost). Three sources, merged:
+ * compound cell's promoted columns and its residual __children blob. Three
+ * sources, merged:
  *   - `<mnemonic>__<child>__fmt`         → scalar / compound child (fmt only)
  *   - `<mnemonic>__<child>__backtrace_id`→ nested stack, frames from the FK
  *   - residual blob                      → null children (the only un-promotable
@@ -497,14 +516,14 @@ export function hydrateNormalizedRow(
 
 /**
  * Fetch and hydrate an ENTIRE table into NormalizedRow[] — a last-resort
- * escape hatch, not a default (PMT:warm-mica). Every lens site that used to
+ * escape hatch, not a default. Every lens site that used to
  * reach for this as its normal path (leaks/network hint checks, swiftUI's
  * paginateTable, the three Foundation Models drill-down files) has been
  * rewritten to a scoped SQL query — a single-row lookup, a bounded page, a
  * direct join/aggregate — because pulling a whole table into JS just to read
  * one row or compute one scalar reintroduces, at the lens layer, the exact
  * full-table-scan-into-JS cost this entire feature exists to eliminate at
- * the core-verb layer. Zero callers remain in this codebase as of warm-mica.
+ * the core-verb layer. Zero callers remain in this codebase as of this rewrite.
  *
  * Kept (deliberately, not deleted) for the rare, genuine case a lens needs
  * every row at once and there is no honest way to express that as a bounded
@@ -531,12 +550,13 @@ export interface SqlCondition {
 
 /**
  * SQL that yields a column's ORIGINAL content whether it's stored inline or as
- * an intern sentinel (PMT:lime-bluff) — so content predicates (contains/regex,
- * and equality against a large value) match interned rows too, not just inline
- * ones. Resolution goes through the mcp_unintern UDF (not a raw subquery on
- * interned_values.content) because a PMT:dry-glen value is stored node-encoded
- * and must be DECODED to its original text before a substring/regex match; the
- * UDF also memoizes, so a repeated sentinel resolves once. The CASE
+ * an intern sentinel (see the interned-value section above) — so content
+ * predicates (contains/regex, and equality against a large value) match
+ * interned rows too, not just inline ones. Resolution goes through the
+ * mcp_unintern UDF (not a raw subquery on interned_values.content) because a
+ * node-encoded chain value (see makeInternedContentResolver above) must be
+ * DECODED to its original text before a substring/regex match; the UDF also
+ * memoizes, so a repeated sentinel resolves once. The CASE
  * short-circuits on the cheap SUBSTR check, so a column with no interned values
  * is just `col` plus a per-row char test. Requires registerInternDecodeUdf on
  * the connection.
@@ -555,9 +575,9 @@ export function internResolved(colSql: string): string {
 
 /**
  * query.ts's simple equality filter: mnemonic -> expected fmt or raw value.
- * `internTarget` (PMT:ruddy-owl) resolves a string target to its stored form —
- * the sentinel token when the value was interned, else the literal — so the
- * comparison stays a plain indexed `col = ?` that matches interned rows too.
+ * `internTarget` resolves a string target to its stored form — the sentinel
+ * token when the value was interned, else the literal — so the comparison
+ * stays a plain indexed `col = ?` that matches interned rows too.
  */
 export function buildEqualityFilter(
   filter: Record<string, string | number>,
@@ -610,16 +630,17 @@ export type ConditionOp =
 
 /**
  * find.ts's richer predicate DSL — mirrors testCondition's raw+fmt dual-check
- * semantics exactly. `internTarget` (PMT:ruddy-owl) resolves an eq/ne string
- * target to its stored form so equality matches interned rows; contains/regex
- * instead resolve the COLUMN per-row (they search within the value).
+ * semantics exactly. `internTarget` resolves an eq/ne string target to its
+ * stored form so equality matches interned rows; contains/regex instead
+ * resolve the COLUMN per-row (they search within the value).
  *
- * PMT:narrow-ochre: pass `compareMnemonic` to compare against another column
- * on the same row instead of the literal `val` (val is ignored when
- * present) — see buildCrossColumnCondition below. Only eq/ne/gt/gte/lt/lte
- * support this; contains/not-contains/regex/is-null/not-null stay
- * literal/unary-only, since "column A's value inside column B" isn't one of
- * the two gaps this prompt closes.
+ * `compareMnemonic`: compare against another column on the same row instead
+ * of the literal `val` (val is ignored when present) — see
+ * buildCrossColumnCondition below. Only eq/ne/gt/gte/lt/lte support this;
+ * contains/not-contains/regex/is-null/not-null stay literal/unary-only,
+ * since "column A's value inside column B" isn't one of the two gaps this
+ * feature closes (cross-column comparison here, and OR-combinator support in
+ * combineWithOp below).
  */
 export function buildCondition(
   mnemonic: string,
@@ -679,7 +700,7 @@ export function buildCondition(
 
     // contains/not-contains/regex search WITHIN the value, so a short target can
     // match inside a large INTERNED value — always resolve the sentinel to its
-    // content first (the CASE is a no-op for inline rows, PMT:lime-bluff).
+    // content first (the CASE is a no-op for inline rows).
     case "contains":
       if (val === undefined) return { clause: "0", params: [] };
       return {
@@ -706,7 +727,8 @@ export function buildCondition(
 }
 
 /**
- * PMT:narrow-ochre's cross-column comparison: A op B instead of A op <literal>.
+ * Cross-column comparison (see Condition.compareMnemonic above): A op B
+ * instead of A op <literal>.
  * gt/gte/lt/lte compare CAST(...AS REAL) on both sides (mirrors the literal
  * case's numeric cast — these ops are inherently numeric). eq/ne mirror the
  * literal case's raw+fmt dual-check, but two-sided: fmt is resolved through
@@ -750,8 +772,8 @@ export function combineConditions(conditions: SqlCondition[]): SqlCondition {
 }
 
 /**
- * PMT:narrow-ochre's OR support: joins conditions with the given boolean
- * operator instead of hardcoding AND — find.ts's condition-tree compiler calls
+ * OR support: joins conditions with the given boolean operator instead of
+ * hardcoding AND — find.ts's condition-tree compiler calls
  * this once per allOf/anyOf group. An empty AND group matches everything
  * (existing behavior, unchanged); an empty OR group matches nothing (the
  * empty disjunction is false, same as SQL's own "no branch matched").

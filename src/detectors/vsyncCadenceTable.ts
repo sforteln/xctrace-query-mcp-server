@@ -1,5 +1,5 @@
 /**
- * PMT:still-hail — the vsync-cadence "frames held" table.
+ * The vsync-cadence "frames held" table.
  *
  * The HIGH-VALUE output this prompt exists to ship: turns a hitch's abstract
  * "duration Xms over budget" into the concrete, legible sequence of vsync

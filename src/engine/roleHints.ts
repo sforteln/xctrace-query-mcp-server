@@ -190,10 +190,10 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
   // entry here, os-log would report hasCallstack:false despite genuinely
   // carrying a resolvable text-backtrace — an AI scanning list_instruments
   // would never realize it can call_tree/get_row a real stack out of it. This
-  // is what surfaces com.apple.runtime-issues (Hang Risk/Severe Hang Risk;
-  // dim-chalk's aidocs/appleModelerHarvest.md §3) as reachable via a plain
-  // find()/query on subsystem+category, per the pure-hail core-vs-lens cost
-  // rule — no bespoke lens verb (PMT:full-trace).
+  // is what surfaces com.apple.runtime-issues (Hang Risk/Severe Hang Risk; see
+  // aidocs/appleModelerHarvest.md §3) as reachable via a plain find()/query on
+  // subsystem+category — a core-verb-level capability, so no bespoke lens verb
+  // is needed here (see howHintsWork.md's "Lens-specific vs. core-verb-level").
   "os-log": {
     instrument: "os_log",
     primaryTime: "time",
@@ -210,7 +210,7 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "emit-location": detail,
     },
   },
-  // ── File Activity (PMT:harsh-mantle) ─────────────────────────────────────────
+  // ── File Activity ─────────────────────────────────────────────────────────────
   // Both schemas carry a real `end` column alongside `start` (fs-syscall's
   // `end` is engineering-type "event-time", genuinely time-shaped, not just
   // start+duration) — without this pin, the auto-derived primaryTime falls
@@ -412,7 +412,7 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       // string form display-vsyncs-interval/displayed-surfaces-interval's own
       // display-name columns carry (a direct join key across those three;
       // device-display-info's display-id is numeric and needs frameBudget.ts's
-      // heuristic join instead — see PMT:still-hail).
+      // heuristic join instead — see the Displays schema notes below).
       display: label,
       // narrative-description explains the hitch cause.
       "narrative-description": detail,
@@ -425,8 +425,9 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
   // own timeline color-coding), NOT a diagnostic signal — don't mistake it for
   // one. containment-level/offscreen-passes were both 0 for every top-level
   // (non-nested) render sampled; no buffer/pipeline-depth signal was found on
-  // this schema (see frameBudget.ts's header + PMT:still-hail's completion
-  // report for why the render baseline stayed a documented follow-up).
+  // this schema at all — the render baseline's buffer-count term (see
+  // frameBudget.ts's header) turned out to live on display-vsyncs-interval's
+  // `color` column instead (see the CORRECTION note below).
   "hitches-renders": {
     instrument: "Hitches (render detail)",
     primaryTime: "start",
@@ -444,12 +445,11 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       label: detail,
     },
   },
-  // device-display-info (PMT:still-hail): per-connected-display metadata, one
-  // row per display (tiny). max-refresh-rate is THE frame-budget source
-  // frameBudget.ts reads (budget = 1000/rate ms) — verified live: 0 rows in
-  // the still-hail authoring trace (a real, not hypothetical, "not ingested /
-  // empty" case the resolver must degrade through to display-vsyncs-interval
-  // or the fallback constant).
+  // device-display-info: per-connected-display metadata, one row per display
+  // (tiny). max-refresh-rate is THE frame-budget source frameBudget.ts reads
+  // (budget = 1000/rate ms) — verified live: 0 rows in the authoring trace (a
+  // real, not hypothetical, "not ingested / empty" case the resolver must
+  // degrade through to display-vsyncs-interval or the fallback constant).
   "device-display-info": {
     instrument: "Displays",
     primaryTime: "timestamp",
@@ -469,9 +469,9 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "is-main-display": detail,
     },
   },
-  // display-vsyncs-interval (PMT:still-hail, corrected by the render-baseline
-  // follow-up): per-vsync tick log (2,364 rows in the authoring trace — NOT
-  // tiny; a real recording can carry many more).
+  // display-vsyncs-interval (corrected by a follow-up below): per-vsync tick
+  // log (2,364 rows in the authoring trace — NOT tiny; a real recording can
+  // carry many more).
   // VERIFIED LIVE, surprising: `duration` is NOT the inter-vsync interval in
   // practice — every single row carried the identical value (a 1ns sentinel
   // for the "VSync Request" marker), despite the column's declared
@@ -480,15 +480,16 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
   // consecutive `timestamp` values, not from this column — pinned here as
   // `ns` anyway (matches the declared type/what a future trace might carry),
   // but don't rely on it for cadence without checking for variance first.
-  // CORRECTION (render-baseline follow-up): still-hail's column probe missed
+  // CORRECTION: the original column probe (see hitches-renders above) missed
   // that `color` (a confusing mnemonic reused as a plain UI tag on OTHER
   // Display schemas — hitches-renders' frame-color, displayed-surfaces-
   // interval's own color) carries engineering-type "render-buffer-depth"
   // HERE, on THIS schema specifically — verified live, fmt="2" (constant)
   // across every one of the 2,364 rows in the authoring trace. This IS the
-  // buffer-count signal still-hail believed didn't exist; frameBudget.ts's
-  // resolveRenderBaselineMs() reads it. Similarly `event` carries engineering-
-  // type "vsync-event" (constant "VSYNC" in this trace) — a plain label.
+  // buffer-count signal that original probe believed didn't exist;
+  // frameBudget.ts's resolveRenderBaselineMs() reads it. Similarly `event`
+  // carries engineering-type "vsync-event" (constant "VSYNC" in this trace) —
+  // a plain label.
   "display-vsyncs-interval": {
     instrument: "Displays (vsync ticks)",
     primaryTime: "timestamp",
@@ -508,8 +509,8 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       event: label,
     },
   },
-  // displayed-surfaces-interval (PMT:still-hail): one row per surface
-  // presentation (1,629 rows in the authoring trace). This is the "on-screen
+  // displayed-surfaces-interval: one row per surface presentation (1,629 rows
+  // in the authoring trace). This is the "on-screen
   // duration" side of the vsync-cadence table (vsyncCadenceTable.ts) — a
   // surface's `duration` spanning multiple vsync cadences IS the dropped-frame
   // hold the hitch made visible.
@@ -540,12 +541,12 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "detachment-suggestion": detail,
     },
   },
-  // display-surface-swap (PMT:rust-gravel): the per-swap event log Displays
-  // produces. Verified live (committed fixture): it carries FIVE start-time-
-  // typed columns (timestamp, delay, hid-time, generation-time,
-  // desired-presentation-time) — so an un-pinned primaryTime would be
-  // position-dependent (the exact order-invariance hazard the cross-schema
-  // edge derivation guards against, f3203f0's class). Pin primaryTime to the
+  // display-surface-swap: the per-swap event log Displays produces. Verified
+  // live (committed fixture): it carries FIVE start-time-typed columns
+  // (timestamp, delay, hid-time, generation-time, desired-presentation-time)
+  // — so an un-pinned primaryTime would be position-dependent (the same
+  // order-invariance hazard the detected-fs-antipattern pin above guards
+  // against). Pin primaryTime to the
   // canonical swap timestamp; the other start-time columns are specific
   // sub-timestamps/measures, not the axis a window-join uses, so they're
   // pinned to detail. swap-id is engineering-type "displayed-surface-swap" —
@@ -611,8 +612,10 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
 
   // ── GCD Performance ────────────────────────────────────────────────────────────
   // Verified live (2026-07-02, composed onto Time Profiler against Finder) while
-  // checking whether this belonged in the "low-signal-alone" list (PMT:sage-weasel)
-  // — it does NOT: this schema has its OWN resolved backtrace per flagged event
+  // checking whether this belonged in the same low-signal-alone bucket as
+  // Thermal State above (an instrument with no diagnostic signal unless
+  // correlated against something else) — it does NOT: this schema has its OWN
+  // resolved backtrace per flagged event
   // (same engineering-type as Leaks/Allocations/core-data-fetch's Caller), so it's
   // independently useful without correlating against anything else.
   "gcd-perf-event": {
@@ -910,7 +913,7 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "average-rtt": ns,
     },
   },
-  // PMT:steel-spruce: verified live (xctrace record --instrument "Run Loops"
+  // Verified live (xctrace record --instrument "Run Loops"
   // --attach, real .trace export) — the heuristic classifier ALREADY gets
   // every column here right (checked via classifyWithHints before adding
   // this): "start"/"duration" resolve via engineering-type, "interval-type"/
@@ -970,17 +973,16 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "other-arg": detail,
     },
   },
-  // PMT:lean-knoll: verified live (real xctrace export, read-only, against
+  // Verified live (real xctrace export, read-only, against
   // 2026-07-07T20-27-57-animation-hitches.trace) — UNLIKE os-log/runloop-
   // intervals above, heuristics do NOT already get this right: none of
   // "requested-qo-s"/"effective-qo-s"/"mismatch-qo-s" match any mnemonic
   // pattern (checked against classifyWithHints before adding this — all three
   // default to "detail" without this pin), so this entry is a genuine
   // correctness fix, not just a friendly-name/gate-closer. mismatch-qo-s'
-  // real engineering-type is "state" (not "state" mnemonic as the prompt's own
-  // paraphrase suggested) — its fmt value is the literal string "QoS classes
-  // mismatch" when a thread's requested and effective QoS classes diverge, a
-  // single filterable label, not something to compute.
+  // real engineering-type is "state" — its fmt value is the literal string
+  // "QoS classes mismatch" when a thread's requested and effective QoS
+  // classes diverge, a single filterable label, not something to compute.
   ThreadQoSTable: {
     instrument: "System Trace (Thread QoS)",
     primaryTime: "start",
@@ -995,12 +997,12 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "mismatch-qo-s": label,
     },
   },
-  // PMT:lean-knoll: verified live, same recording/method as ThreadQoSTable
+  // Verified live, same recording/method as ThreadQoSTable
   // above — "scheduled-priority"/"base-priority" also default to "detail"
   // without this pin (checked before adding). fmt carries both the OS
   // priority-class name and its number (e.g. "User Interactive - 46"); raw is
   // the plain number, directly comparable cross-column via find()'s
-  // compareCol (PMT:narrow-ochre) to detect scheduled < base (a priority
+  // compareCol to detect scheduled < base (a priority
   // inversion).
   ThreadPriority: {
     instrument: "System Trace (Thread Priority)",
@@ -1019,10 +1021,11 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
   // above) — NOT pinned here deliberately: a ~495K-row-scale scheduling
   // firehose (made-runnable-by-thread, preempted-by-thread, yielded-to-thread,
   // thread-state, syscall (+duration), thermal-throttled, tagged-backtrace),
-  // opened only in a bounded hitch/mismatch window, never eager-ingested
-  // (PMT:ruddy-elk's never-eager firehose calibration). Column shape
-  // confirmed live for this comment only, via a read-only export immediately
-  // deleted afterward — see PMT:lean-knoll's completion report.
+  // opened only in a bounded hitch/mismatch window, never eager-ingested (see
+  // detectors/eagerSchemas.ts's firehose classification). Column shape
+  // confirmed live for this comment only, via a one-off read-only export
+  // immediately deleted afterward (not a committed fixture, unlike the other
+  // pins in this file).
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────

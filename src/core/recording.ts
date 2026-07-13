@@ -1,6 +1,6 @@
 /**
  * Recording composition helpers — curated knowledge about xctrace templates
- * and instruments, keyed by their REAL names (PMT:stubborn-beck).
+ * and instruments, keyed by their REAL names.
  *
  * Earlier versions of this file routed all of this through a `type` enum of
  * friendly intent keys ("cpu", "leaks-backtraces", ...) that resolved to a
@@ -42,7 +42,7 @@ import { resolveAssetPath } from "./assetPaths.js";
  * State, is invisible to it, so this is a confirmed lower bound, not
  * necessarily the complete instrument list a template records).
  *
- * AUTHORITATIVE SOURCE (PMT:pine-basin): the --show-recording-options lower
+ * AUTHORITATIVE SOURCE: the --show-recording-options lower
  * bound is superseded by decoding a template's OWN archive — see
  * src/core/tracetemplate.ts (the NSKeyedArchiver .tracetemplate decoder) and
  * the committed full enumeration at aidocs/templateBundlesAudit.md, which
@@ -51,9 +51,9 @@ import { resolveAssetPath } from "./assetPaths.js";
  * --show-recording-options alone again; decode the archive. NOTE a decoder
  * display name is not always a valid bare --instrument name (RealityKit's
  * "Runloops" vs xctrace's "Run Loops"), so reconcile each against
- * `xctrace list instruments` before adding it. PMT:flint-crystal did that
- * systematic re-audit — every entry below is reconciled to the decoder
- * enumeration (see the per-entry notes and aidocs/templateBundlesAudit.md).
+ * `xctrace list instruments` before adding it — every entry below has been
+ * systematically re-audited and reconciled to the decoder enumeration (see
+ * the per-entry notes and aidocs/templateBundlesAudit.md).
  *
  * Why this matters: most of these template names are ALSO valid standalone
  * `--instrument` names (e.g. "Time Profiler" is both a template and an
@@ -68,7 +68,7 @@ import { resolveAssetPath } from "./assetPaths.js";
  * meant instead of the server guessing from an overloaded name.
  */
 export const TEMPLATE_BUNDLES: Record<string, string[]> = {
-  // PMT:flint-crystal: every entry below re-audited against the NSKeyedArchiver
+  // Every entry below re-audited against the NSKeyedArchiver
   // template decoder's authoritative stubInfoByUUID enumeration
   // (src/core/tracetemplate.ts, full table at aidocs/templateBundlesAudit.md) —
   // each instrument reconciled to a valid bare `--instrument` name via
@@ -82,8 +82,8 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "SwiftUI": ["Hangs", "Hitches", "Time Profiler"], // flint-crystal +Hitches
   "CPU Profiler": ["Hangs", "Points of Interest", "Thermal State"], // decoder-confirmed complete
   "CPU Counters": ["Points of Interest", "Thread Activity", "Time Profiler"], // flint-crystal +Thread Activity
-  // "Location Energy Model" (PMT:pine-basin) + "Network Connections"/"Thermal
-  // State" (PMT:flint-crystal) — all decoder-confirmed members of Power
+  // "Location Energy Model" + "Network Connections"/"Thermal
+  // State" — all decoder-confirmed members of Power
   // Profiler's real bundle, invisible to the --show-recording-options
   // construction this table originally used.
   "Power Profiler": ["Location Energy Model", "Metal Performance Overview", "Network Connections", "Thermal State", "Time Profiler"],
@@ -93,7 +93,7 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Core ML": ["GPU", "Metal Application", "Neural Engine", "Time Profiler"], // flint-crystal +GPU, +Metal Application, +Neural Engine
   // Trusted from the decoder: the archive declares a full, standard Points of
   // Interest stub (identical shape to every other POI-bundling template) plus
-  // Thread Activity. PMT:calm-starling's earlier [] was based on a SCHEMA-level
+  // Thread Activity. An earlier version's empty entry ([]) here was based on a SCHEMA-level
   // "no signpost schema recorded" finding — but that's consistent with "the
   // profiled app never called os_signpost" (no data => no schema), not with
   // "POI isn't bundled". Could not record-verify this directly (Processor Trace
@@ -103,14 +103,14 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   "Processor Trace": ["Points of Interest", "Thread Activity"],
   "Network": ["HTTP Traffic", "Network Connections", "Points of Interest"], // flint-crystal +HTTP Traffic, +Network Connections (base-only, see TEMPLATE_ONLY_NAMES)
   "App Launch": ["dyld Activity", "Thread Activity", "Time Profiler"], // flint-crystal +dyld Activity, +Thread Activity (base-only)
-  // PMT:calm-starling + flint-crystal: the decoder CONFIRMS no "Points of
-  // Interest" in this template (consistent with calm-starling's "no signpost
+  // The decoder CONFIRMS no "Points of
+  // Interest" in this template (consistent with the earlier "no signpost
   // instrument" finding) — Animation Hitches' os-signpost coverage is a BARE
   // 'os-signpost' schema only (see TEMPLATE_NOTES["Animation Hitches"]).
-  // flint-crystal added the decoder's other real bundle members. Base-only.
+  // The decoder's other real bundle members were added separately. Base-only.
   "Animation Hitches": ["Display", "Hangs", "Hitches", "Thermal State", "Thread Activity", "Time Profiler"],
   "Swift Concurrency": ["Hangs", "Points of Interest", "Swift Actors", "Swift Executors", "Swift Tasks", "Time Profiler"], // flint-crystal +Swift Actors/Executors/Tasks (base-only)
-  // PMT:flint-crystal NEW. RealityKit Trace is a TEMPLATE with no matching bare
+  // RealityKit Trace is a TEMPLATE with no matching bare
   // instrument (added to TEMPLATE_ONLY_NAMES), so this bundle is used only for
   // base-template fidelity tracking. "Run Loops" is the decoder's "Runloops"
   // reconciled to xctrace's real name — GUI-picker-invisible but a valid bare
@@ -118,12 +118,13 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
   // Frames/Metrics are iOS/visionOS-only (they error on a macOS target — a
   // platform limit of those instruments, not a bundle error).
   "RealityKit Trace": ["GPU", "Hangs", "Metal Application", "RealityKit Frames", "RealityKit Metrics", "Run Loops", "Time Profiler"],
-  // PMT:flint-crystal NEW, genuinely EMPTY auxiliary bundle. The Foundation
+  // Genuinely EMPTY auxiliary bundle. The Foundation
   // Models template bundles exactly ONE instrument — "Foundation Models" itself
   // (a valid bare instrument, so composing it works with no auxiliaries). The
   // many FM tables (ModelInferenceTable, SessionTable, InstructionsTable, …) are
   // SCHEMAS that one instrument emits, NOT separately-bundled instruments —
-  // correcting PMT:amber-ibis's schemas-as-bundle framing. Listed explicitly
+  // correcting an earlier framing that treated those schemas as if they were
+  // separately-bundled instruments. Listed explicitly
   // (vs absent) to record that it was audited and the bundle is truly empty.
   "Foundation Models": [],
 };
@@ -139,10 +140,10 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
  *      deliberate choice, not fidelity restoration. Only add one of these
  *      when there's no real tradeoff; a genuine cost/benefit knob should stay
  *      at Apple's per-template default rather than becoming a one-off param.
- *   2. FIDELITY RESTORATION (PMT:rough-bench) — an AUXILIARY bundle
+ *   2. FIDELITY RESTORATION — an AUXILIARY bundle
  *      instrument's tuned value, matching exactly what the template's own
  *      real `--template` invocation applies, so a bare-added copy of that
- *      instrument (fidelityAtRisk, PMT:gravel-falcon) doesn't silently fall
+ *      instrument (fidelityAtRisk) doesn't silently fall
  *      back to the generic bare default. e.g. SwiftUI's real invocation tunes
  *      Hangs to 250ms (bare default is 100ms) — composing SwiftUI as an extra
  *      on a base that doesn't already bundle Hangs should still get 250ms.
@@ -154,7 +155,7 @@ export const TEMPLATE_BUNDLES: Record<string, string[]> = {
  * tuning, though see below — it still has to be LISTED) — verify against both
  * outputs before adding any.
  *
- * ⚠️ CRITICAL, verified live (PMT:rough-bench) — unlike `--show-recording-
+ * ⚠️ CRITICAL, verified live — unlike `--show-recording-
  * options`' OWN preview output (which xctrace happily prints as a partial-
  * looking diff), the `--recording-options <file>` LOADER requires the
  * COMPLETE key set for every instrument it mentions. A partial object (e.g.
@@ -260,7 +261,7 @@ export const TEMPLATE_RECORDING_OPTIONS: Record<string, Record<string, Record<st
  * scoped down to genuinely unguessable resources instead of every recipe.
  */
 export const CUSTOM_TEMPLATE_PATHS: Record<string, string> = {
-  // PMT:gold-haven: offline-validated custom template — VM Tracker's
+  // Offline-validated custom template — VM Tracker's
   // "Automatic Snapshotting" (3s interval) is baked in because it's
   // template-only configuration xctrace's own --recording-options can't
   // reach (verified live: --show-recording-options returns {} for VM
@@ -299,7 +300,7 @@ export interface ExpandedTemplates {
    * a template's tuned configuration or template-only auxiliary behavior
    * (e.g. Hangs' hangsThreshold defaults to 100 bare vs 250 via a real
    * template; os-log's subsystem/category scope never survives a bare
-   * addition at all — see PMT:gravel-falcon). Empty when every composed
+   * addition at all). Empty when every composed
    * instrument happens to already be covered by the base template's own
    * bundle (e.g. composing SwiftUI onto a Swift-Concurrency base costs
    * nothing extra here, since Swift Concurrency's own bundle already
@@ -312,7 +313,7 @@ export interface ExpandedTemplates {
 }
 
 /**
- * PMT:calm-starling: template names that do NOT also exist as a bare
+ * Template names that do NOT also exist as a bare
  * `--instrument` name — confirmed live against every key in TEMPLATE_BUNDLES
  * via `xcrun xctrace list instruments` (2026-07-08). This matters because
  * expandTemplates() below composes an EXTRA `template` array entry by pushing
@@ -337,12 +338,12 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
   "App Launch",
   "Swift Concurrency",
   "Animation Hitches",
-  // PMT:flint-crystal: RealityKit Trace is a template whose instruments are
+  // RealityKit Trace is a template whose instruments are
   // "RealityKit Frames"/"RealityKit Metrics" — there is no bare "RealityKit
   // Trace" instrument (`xctrace list instruments`), so composing it as an extra
   // would fail; usable only as the BASE template.
   "RealityKit Trace",
-  // PMT:open-mantle: real live xcodeAI feedback — passed `instruments:
+  // Real live xcodeAI feedback — passed `instruments:
   // ["System Trace"]` and got rejected (`xctrace list templates` has it,
   // `xctrace list instruments` does not). Belongs in this set for the exact
   // same reason as the others above.
@@ -356,7 +357,7 @@ export const TEMPLATE_ONLY_NAMES = new Set<string>([
 const INSTRUMENT_NOT_FOUND_RE = /Instrument with name ['"]([^'"]+)['"] cannot be found/i;
 
 /**
- * PMT:open-mantle: when an `instruments` entry is rejected by xctrace, check
+ * When an `instruments` entry is rejected by xctrace, check
  * whether the rejected name is actually a real TEMPLATE name (case-
  * insensitive) — the caller likely meant to pass it via `template` instead.
  * Live feedback: passing `instruments: ["System Trace"]` failed with xctrace's
@@ -386,11 +387,11 @@ export function instrumentNotFoundTemplateHint(stderr: string): string | undefin
 }
 
 /**
- * PMT:rough-bench item 4: fidelityAtRisk keeps flagging an instrument even
+ * fidelityAtRisk keeps flagging an instrument even
  * after its recordingOptions gap is closed — deliberately NOT stopping there.
  * mitigateHangsOsLogFidelity fires purely off `fidelityAtRisk.includes("Hangs")`
  * to compensate for Hangs' os-log subsystem/category scope, which ISN'T a
- * recordingOptions-configurable value at all (confirmed live, PMT:pine-basin:
+ * recordingOptions-configurable value at all (confirmed live:
  * "com.apple.runtime-issues" appears zero times in the raw bytes of every
  * Hangs-bearing template — it's the instrument's own runtime behavior, not
  * serialized template config) — restoring hangsThreshold via recordingOptions
@@ -456,7 +457,7 @@ export function expandTemplates(
   // `--instrument` addition. Anything in here (or the base name itself)
   // keeps its tuned config/auxiliary behavior even if a composed extra also
   // "wants" it; anything NOT in here that ends up in `instruments` only got
-  // there via a bare addition — see PMT:gravel-falcon.
+  // there via a bare addition (see the `fidelityAtRisk` doc above).
   const baseBundle = resolvedTemplate !== undefined ? TEMPLATE_BUNDLES[resolvedTemplate] ?? [] : [];
   const baseCovered = new Set<string>(resolvedTemplate !== undefined ? [resolvedTemplate, ...baseBundle] : []);
   const instruments: string[] = [];
@@ -493,14 +494,14 @@ export function expandTemplates(
         // enableLayoutTracing). It's the bundle items riding along implicitly
         // (e.g. Hangs, Time Profiler) whose tuned config/auxiliary behavior
         // the caller isn't necessarily thinking about that can silently
-        // degrade — see PMT:gravel-falcon.
+        // degrade (see the `fidelityAtRisk` doc above).
         if (inst !== name && !baseCovered.has(inst)) {
           fidelityAtRisk.add(inst);
           addedAtRisk.push(inst);
         }
       }
     }
-    // PMT:rough-bench: apply an extra's tuned recordingOptions PER INSTRUMENT,
+    // Apply an extra's tuned recordingOptions PER INSTRUMENT,
     // not by blindly merging its whole options object. The composed template's
     // OWN headline (`instKey === name`) is always safe — the caller explicitly
     // asked for this template, so its tuning applies whether or not it's
@@ -570,15 +571,15 @@ export function bareInstrumentTemplateNotes(
 }
 
 /**
- * PMT:birch-river: Hangs' com.apple.runtime-issues os-log coverage never
+ * Hangs' com.apple.runtime-issues os-log coverage never
  * survives a bare `--instrument` addition (see expandTemplates' fidelityAtRisk
  * doc) — a real xctrace behavior, not a far-swan bug, confirmed via
- * PMT:full-trace's template audit. When Hangs specifically lands in
+ * a full audit across every curated template. When Hangs specifically lands in
  * fidelityAtRisk, auto-add the bare "os_log" instrument to at least partially
  * compensate.
  *
- * Verified live (A/B test against a real attached process, 5s and 30s, PMT:
- * birch-river) before making this automatic: bare os_log's own bundle-size
+ * Verified live (A/B test against a real attached process, 5s and 30s)
+ * before making this automatic: bare os_log's own bundle-size
  * cost is small (+0.3% at 5s, +0.6% at 30s over a ~22MB baseline) and it stays
  * scoped to the attached/launched process by default
  * (recordAllProcessesInSingleProcessMode defaults false, so it is NOT a
@@ -594,7 +595,7 @@ export function bareInstrumentTemplateNotes(
  * Deliberately NOT generalized to every fidelityAtRisk instrument — only
  * Hangs is confirmed to correlate with os-log coverage today. Points of
  * Interest, Foundation Models, and Network each have their own DIFFERENT
- * os-log scope (per PMT:full-trace's per-template mapping), so auto-adding
+ * os-log scope, so auto-adding
  * os_log for those triggers would apply the wrong watchlist.
  */
 export function mitigateHangsOsLogFidelity(
@@ -615,7 +616,7 @@ export function mitigateHangsOsLogFidelity(
 }
 
 /**
- * PMT:stormy-coast: curated device-only instrument map, keyed by hardware
+ * Curated device-only instrument map, keyed by hardware
  * dependency. xctrace does NOT expose Simulator compatibility — only the
  * Instruments GUI does (greys out unsupported instruments for a sim target)
  * — so this is sourced from xcodeAI's GUI-derived list (2026-07-08), same
@@ -662,7 +663,7 @@ export const DEVICE_ONLY_INSTRUMENTS: Record<string, string> = {
 };
 
 /**
- * PMT:stormy-coast: WARN (never block — the map is curated, may drift as
+ * WARN (never block — the map is curated, may drift as
  * Xcode changes; the record() partial-success runIssues handling remains
  * the backstop for the actual outcome) when a Simulator target is asked for
  * a device-only instrument, whether requested directly (`resolvedExtra
@@ -752,7 +753,7 @@ export function hostArchInstrumentWarning(
 }
 
 /**
- * PMT:ash-stone gap #2: known-broken instrument/template combinations on a
+ * Known-broken instrument/template combinations on a
  * SPECIFIC Xcode version — a fundamentally different curation problem from
  * DEVICE_ONLY_INSTRUMENTS above. That map is a stable hardware fact (true
  * forever, sourced from the Instruments GUI's own compatibility list — an
@@ -799,7 +800,7 @@ export const KNOWN_BROKEN_INSTRUMENTS: Record<string, KnownBrokenInstrumentEntry
         "Connections alone, so retrying with FEWER composed instruments generally is the safer move, not " +
         "just swapping out this one name.",
       verifiedAt:
-        "2026-07-08, PMT:ash-stone (HTTPTraffic.trace device recording + manual Instruments.app GUI " +
+        "2026-07-08 (HTTPTraffic.trace device recording + manual Instruments.app GUI " +
         "repro that isolated Network Connections as the crashing instrument).",
     },
   ],
@@ -851,7 +852,7 @@ export function defaultPointsOfInterest(
     note:
       "\"Points of Interest\" was auto-added bare — the resolved template doesn't bundle it, and " +
       "composing it costs ~0 when the app never calls os_signpost (confirmed live at 5s/30s/60s " +
-      "against both quiet and busy targets). PMT:vivid-rill: this instrument alone is enough for " +
+      "against both quiet and busy targets). This instrument alone is enough for " +
       "emitEvent-style instant signposts on a category: .pointsOfInterest log handle (they land in " +
       "'PointsOfInterestEvents', no further config needed) and for the raw 'os-signpost' schema's " +
       "event rows — but it does NOT capture beginInterval/endInterval calls into 'OSSignpostIntervals' " +
@@ -874,7 +875,7 @@ export const LAUNCH_REQUIRED_TEMPLATES = new Set<string>(["App Launch"]);
 
 /**
  * Curated guidance notes, keyed by REAL template name — migrated verbatim
- * (PMT:stubborn-beck) from the old per-`type` RECORDING_INTENTS notes. Fires
+ * from the old per-`type` RECORDING_INTENTS notes. Fires
  * for the resolved BASE template only (matching the old behavior: a
  * composed EXTRA template via `template`'s array form only ever got
  * expandTemplates' generic "expanded to X+Y" note, never a `type`-specific
@@ -894,10 +895,10 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "resolve: query fs-syscall in that row's window (same process) for a real vnode value, then " +
     "relate(schemaA: \"fs-syscall\", schemaB: \"vnode-to-path\", joinCondition: \"equality\", " +
     "on: [{fromCol: \"vnode\", toCol: \"vnode\"}]) against it — vnode-to-path is a real schema here but " +
-    "isn't ingested until queried. IMPORTANT (PMT:loam-merlin FileActivity session): attach to an " +
+    "isn't ingested until queried. IMPORTANT: attach to an " +
     "ALREADY-RUNNING process only, never launch — matches the standard \"attach to a dev-started app\" " +
     "workflow. On this Xcode 27 beta specifically, do NOT compose Time Profiler or Hangs alongside " +
-    "this template — corroborating evidence (PMT:ash-stone, see KNOWN_BROKEN_INSTRUMENTS' Network " +
+    "this template — corroborating evidence (see KNOWN_BROKEN_INSTRUMENTS' Network " +
     "Connections entry) reproduced the identical \"Document Missing Template Error\" trace-corrupting " +
     "crash with this exact pairing; record File Activity alone.",
   "Time Profiler":
@@ -924,7 +925,7 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "effectively singleton, so the OS just activates/foregrounds the existing instance instead of " +
     "launching a new one — there is no real launch event for this template to capture, so the " +
     "recording silently produces no startup data (not an error, just an empty/uninteresting trace). " +
-    "Verified live (PMT:loam-merlin, FileActivity session): fully quit the target app first, THEN " +
+    "Verified live: fully quit the target app first, THEN " +
     "start this recording, so --launch triggers a genuine process-creation event.",
   "CPU Profiler":
     "Records hangs and hang-risk events at low overhead — verified live: this template's real " +
@@ -948,8 +949,8 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "for real main-thread work, distinct from benign \"Waiting For Events\" idle time. " +
     "TRYING TO CAPTURE A SEVERE HANG specifically (not routine profiling)? This template's low " +
     "overhead is exactly what you want — a heavier instrument (e.g. full SwiftUI tracing) adds " +
-    "real load that can worsen the exact condition you're trying to capture (verified live, " +
-    "PMT:onyx-spark: an 852K-row swiftui-updates stream measurably worsened an already-severe hang " +
+    "real load that can worsen the exact condition you're trying to capture (verified live: " +
+    "an 852K-row swiftui-updates stream measurably worsened an already-severe hang " +
     "during capture). Pair with a bounded timeLimit rather than open-ended interactive recording " +
     "— auto-finalize can preserve bundle structure even if the recording host itself freezes mid-" +
     "session, which open-ended recording can't. See aidocs/howRecordingWorks.md for the full case, " +
@@ -965,13 +966,13 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "hitch detection, vs. the default 250ms) — correlate a hitch's [start, start+duration] " +
     "against Time Profiler's samples directly, or call_tree(view: \"hot\" or \"spine\", " +
     "timeRange: <the hitch's window>), no re-recording needed. Its OWN os_signpost coverage is " +
-    "partial (verified live, PMT:calm-starling): only a bare 'os-signpost' schema, missing " +
+    "partial (verified live): only a bare 'os-signpost' schema, missing " +
     "OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. Composing instruments: " +
     "[\"Points of Interest\"] explicitly (safe to add bare — no fidelity loss) gets you " +
     "PointsOfInterestEvents for emitEvent-style instants, but NOT OSSignpostIntervals — " +
     "custom beginInterval/endInterval calls need the separate os_signpost instrument + " +
     "dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: [\"your.subsystem\"] " +
-    "to start_recording — see PMT:vivid-rill).",
+    "to start_recording).",
   "Swift Concurrency":
     "Records Swift Task and Actor lifetimes, executor queue depth, and task state transitions. " +
     "After opening, query SwiftTaskLifetime, SwiftActorLifetime, SwiftActorQueueSize, " +
@@ -1000,13 +1001,13 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "be FIRST in the template array (the base) — the reverse (template: [\"SwiftUI\", \"Data " +
     "Persistence\"]) fails outright (\"Data Persistence\" has no bare --instrument form xctrace can " +
     "compose as an extra; verified live, error kind \"template-only-name\"). Data Persistence's OWN " +
-    "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare 'os-signpost' " +
+    "os_signpost coverage is partial (verified live): only a bare 'os-signpost' " +
     "schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. Composing " +
     "instruments: [\"Points of Interest\"] explicitly (safe to add bare — no fidelity loss) gets " +
     "you PointsOfInterestEvents for emitEvent-style instants, but NOT OSSignpostIntervals — " +
     "custom beginInterval/endInterval calls need the separate os_signpost instrument + " +
     "dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: [\"your.subsystem\"] " +
-    "to start_recording — see PMT:vivid-rill). IMPORTANT (PMT:thick-gull): all four core-data-* " +
+    "to start_recording). IMPORTANT: all four core-data-* " +
     "schemas coming back EMPTY does not mean SwiftData/Core Data isn't emitting probes — it's " +
     "exactly what an idle trace looks like too (verified live: stopping immediately after attach " +
     "with no app interaction produces this). Before concluding there's no Core Data activity, " +
@@ -1021,18 +1022,18 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "interval, no thread/backtrace column), which correlate can pair against ModelInferenceTable's " +
     "own request timestamps on the shared clock to answer 'was the ANE busy for the full span of " +
     "this inference' — a provable hardware fact, not an assumption. Foundation Models' OWN " +
-    "os_signpost coverage is partial (verified live, PMT:calm-starling): only a bare " +
+    "os_signpost coverage is partial (verified live): only a bare " +
     "'os-signpost' schema, missing OSSignpostIntervals/os-signpost-arg/PointsOfInterestEvents. " +
     "Composing instruments: [\"Points of Interest\"] explicitly (safe to add bare — no fidelity " +
     "loss) gets you PointsOfInterestEvents for emitEvent-style instants, but NOT " +
     "OSSignpostIntervals — custom beginInterval/endInterval calls need the separate os_signpost " +
     "instrument + dynamicTracingEnabledSubsystems regardless (pass signpostSubsystems: " +
-    "[\"your.subsystem\"] to start_recording — see PMT:vivid-rill).",
+    "[\"your.subsystem\"] to start_recording).",
 };
 
 /**
  * Migrated from RECORDING_INTENTS' old "memory"/"leaks"/"leaks-backtraces"
- * entries (PMT:stubborn-beck) — the two-Leaks behavior (Leaks alone yields
+ * entries — the two-Leaks behavior (Leaks alone yields
  * no backtraces; Allocations+Leaks together gives leaked objects their
  * responsible frames) was previously reachable only via picking the right
  * `type` key. It now fires off the ACTUAL resolved template/instrument set
@@ -1125,7 +1126,7 @@ export function collectPrivacyNotices(names: (string | undefined)[]): string[] {
 
 /**
  * Filesystem-safe slug for an output filename. A shipped custom
- * .tracetemplate (PMT:gold-haven, e.g. "memory-vm") passes its resolved
+ * .tracetemplate (e.g. "memory-vm") passes its resolved
  * absolute FILE PATH here instead of a short template name — slug from the
  * basename (extension stripped), not the whole path, or the filename
  * balloons into a slugified copy of the entire directory tree (verified
@@ -1139,7 +1140,7 @@ export function slugFromTemplate(template: string): string {
 
 /**
  * Generate a timestamped output path in the recordings directory — the
- * user-configured one (set_recordings_dir, PMT:serene-wind) if set, else the
+ * user-configured one (set_recordings_dir) if set, else the
  * OS-convention default (~/Library/Application Support/far-swan/recordings/
  * <ts>-<slug>.trace). Creates the directory if it doesn't exist.
  */

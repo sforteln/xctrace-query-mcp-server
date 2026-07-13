@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #4 — allocations growth (high-water mark).
+ * Corpus detector #4 — allocations growth (high-water mark).
  *
  * Computes the running (cumulative) SUM(size) over time on the Allocations
  * list, ordered by timestamp, and fires on the PEAK of that cumulative curve
@@ -11,7 +11,7 @@
  * Reporting only the final sum would silently understate how bad it got.
  *
  * cost: EXPENSIVE — a running-total SQL window function over the whole table
- * (sqlHydrate.ts's buildWindowExpr, PMT:round-rime) — the core-vs-lens cost
+ * (sqlHydrate.ts's buildWindowExpr) — the core-vs-lens cost
  * rule places any window function outside "cheap" (aidocs/howLensesWork.md).
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";

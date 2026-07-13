@@ -1,5 +1,5 @@
 /**
- * PMT:pure-hail — the detector framework: rank findings, gate by schema + cost,
+ * The detector framework: rank findings, gate by schema + cost,
  * run the cheap ones, and shape them for the ranked nextActions list.
  *
  * Ranking is FRAMEWORK-COMPUTED from each finding's structured firing conditions
@@ -98,7 +98,7 @@ export function runCheapDetectors(
 /**
  * Run EVERY detector (cheap AND expensive) whose required schemas are all
  * ingested — mirrors runCheapDetectors but WITHOUT the `cost !== "cheap"`
- * guard (PMT:ruddy-elk). A detector's `expensive` flag exists to keep an
+ * guard. A detector's `expensive` flag exists to keep an
  * unbounded scan off a firehose schema, not to keep it off a schema that's
  * bounded BY NAME (see eagerSchemas.ts) and has already been eager-ingested
  * — an "expensive" p95/p99 band scan over a bounded ~800-row diagnosed-event

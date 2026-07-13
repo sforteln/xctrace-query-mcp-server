@@ -7,12 +7,13 @@ import type { NextAction } from "../../core/response.js";
 const OS_LOG_SCHEMA = "os-log";
 
 /**
- * PMT:full-trace's confirmed watchlist (audited across 19 real traces of ONE
- * app, PromptManager) — the subsystem/category pair a real Hangs-bundling
- * template (SwiftUI, Time Profiler, Swift Concurrency, Animation Hitches)
- * scopes its own os-log capture to. NOT confirmed universal/exhaustive across
- * apps with different framework dependencies (full-trace item 7, still open)
- * — treat this as the best confirmed approximation today, not a guarantee.
+ * The confirmed watchlist (audited across 19 real traces of one app — see
+ * adviceCaptureLog.md for the full os_log investigation) — the subsystem/
+ * category pair a real Hangs-bundling template (SwiftUI, Time Profiler, Swift
+ * Concurrency, Animation Hitches) scopes its own os-log capture to. NOT
+ * confirmed universal/exhaustive across apps with different framework
+ * dependencies — treat this as the best confirmed approximation today, not a
+ * guarantee.
  *
  * Confirmed live (2026-07-10) straight from a real trace's own TOC: a full
  * Hangs template's xctrace export ALREADY materializes this exact scope as a
@@ -26,16 +27,16 @@ const RUNTIME_ISSUES_MESSAGE_TYPE = "Fault";
 const RUNTIME_ISSUES_CATEGORIES = ["Hang Risk", "Severe Hang Risk", "CFNetwork", "Contacts", "CoreML"];
 
 /**
- * PMT:birch-river: bare os_log (however it ended up in the recording — the
- * Hangs-fidelity mitigation, or a caller's own explicit composition) comes
- * back completely UNSCOPED on subsystem/category — confirmed live, real
+ * Bare os_log (however it ended up in the recording — the Hangs-fidelity
+ * mitigation, or a caller's own explicit composition) comes back completely
+ * UNSCOPED on subsystem/category — confirmed live, real
  * traces show it mixed with unrelated system logging (com.apple.network,
  * com.apple.iCloudQuota, com.apple.DesktopServices in one 30s test). A real
  * template's own os-log capture is ALREADY scoped to one of a handful of
  * per-template watchlists (this one for Hangs; Points of Interest, Foundation
- * Models, and Network each have their own DIFFERENT scope per full-trace's
- * mapping) — filtering to this watchlist is therefore safe to default to
- * regardless of how os-log arrived: a no-op against an already-scoped
+ * Models, and Network each have their own DIFFERENT confirmed scope, not
+ * covered by this lens) — filtering to this watchlist is therefore safe to
+ * default to regardless of how os-log arrived: a no-op against an already-scoped
  * template capture, and an APPROXIMATION (not an exact match — xctrace gives
  * no way to apply a template's exact scope to a bare instrument) against an
  * unscoped bare one.
@@ -91,7 +92,10 @@ const osLogLens: Lens = {
   instruments: [OS_LOG_SCHEMA],
 
   registerTools(_server: McpServer): void {
-    // No lens-specific tools — this is a curated find() default, not new tool surface (PMT:full-trace item 2).
+    // No lens-specific tools — the confirmed watchlist above is expressed as
+    // curated args to the existing find() verb, not new tool surface; see
+    // howLensesWork.md's `registerTools` section for when a lens does vs.
+    // doesn't need its own tools.
   },
 
   nextActions(

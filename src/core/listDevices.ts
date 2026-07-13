@@ -6,7 +6,7 @@
  * Unlike listInstruments (which reads an OPEN trace's session state), this makes
  * no session assumptions — it's the "discover a target before picking a `device`
  * value" step, mirroring list_instruments' cheap-enumeration shape but for the
- * recording side (PMT:gravel-kite).
+ * recording side.
  *
  * `xctrace list devices` groups output into three sections — `== Devices ==`
  * (online, INCLUDING the host Mac), `== Devices Offline ==`, and
@@ -122,9 +122,9 @@ async function bootedSimulatorUdids(): Promise<Set<string>> {
 /**
  * Whether a `device` value (name or UDID given to start_recording/record) names
  * an iOS Simulator. LIVE (no cache) — used to recognize the "Simulator launched
- * but the injection instrument captured nothing" edge case (PMT:gravel-kite) and
- * turn xctrace's diagnostic-free exit into actionable guidance. Best-effort:
- * returns false on any lookup failure rather than throwing.
+ * but the injection instrument captured nothing" edge case and turn xctrace's
+ * diagnostic-free exit into actionable guidance. Best-effort: returns false on
+ * any lookup failure rather than throwing.
  */
 export async function isSimulatorTarget(device: string): Promise<boolean> {
   if (!device) return false;
@@ -156,9 +156,9 @@ export function resolveDeviceMatches(devices: DeviceInfo[], device: string): Dev
 
 /**
  * Fail BEFORE spawning xctrace when `device` name-substring-matches more
- * than one real target. Verified live (PMT:loam-merlin): device:"Simon"
- * matched three targets at once (an iPhone, "Simon's MacBook Air", "Simon's
- * Apple Watch") — start_recording optimistically returned
+ * than one real target. Verified live: device:"Simon" matched three targets
+ * at once (an iPhone, "Simon's MacBook Air", "Simon's Apple Watch") —
+ * start_recording optimistically returned
  * status:"recording" while xctrace was already dead with "Provided device
  * parameter 'Simon' is ambiguous" (exit 28), and the caller only found out
  * 30s later at stop_recording, after driving the app for nothing.

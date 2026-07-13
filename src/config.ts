@@ -22,14 +22,14 @@ export interface ServerConfig {
   /**
    * Fallback cache directory for a persisted trace .db when the trace's own
    * directory isn't writable (a read-only mount, a permissions issue, an
-   * Xcode-managed autosave dir — PMT:ruby-peak). null = use the OS-convention
+   * Xcode-managed autosave dir). null = use the OS-convention
    * default (`defaultFallbackCacheDir()`); user-configurable via
-   * set_cache_dir, mirroring the searchRoots pattern above.
+   * set_cache_dir, mirroring the searchRoots pattern above. See
+   * howSessionsWork.md for why each trace gets a persisted SQLite cache at all.
    */
   fallbackCacheDir: string | null;
   /**
-   * Directory new recordings are saved to (PMT:serene-wind). null = use the
-   * OS-convention default (`defaultRecordingsDir()`); user-configurable via
+   * Directory new recordings are saved to. null = use the
    * set_recordings_dir, mirroring fallbackCacheDir's pattern exactly. Whichever
    * directory is active (default or configured) is always scanned by
    * listTraces/findTrace as a built-in root (discovery.ts) — a recording made
@@ -51,12 +51,12 @@ export function configPath(): string {
   return join(homedir(), "Library", "Application Support", "far-swan", "config.json");
 }
 
-/** OS-convention default for the fallback trace-cache directory (PMT:ruby-peak) — sibling to config.json. */
+/** OS-convention default for the fallback trace-cache directory — sibling to config.json. */
 export function defaultFallbackCacheDir(): string {
   return join(homedir(), "Library", "Application Support", "far-swan", "trace-cache");
 }
 
-/** OS-convention default for where new recordings are saved (PMT:serene-wind) — sibling to config.json. */
+/** OS-convention default for where new recordings are saved — sibling to config.json. */
 export function defaultRecordingsDir(): string {
   return join(homedir(), "Library", "Application Support", "far-swan", "recordings");
 }

@@ -50,7 +50,7 @@ export interface SchemaDescription {
   rolesSummary: Record<ColumnRole, string[]>;
   /**
    * Queryable nested scalar fields as canonical dot-paths (thread.process.pid),
-   * usable anywhere a mnemonic is — filter/groupBy/where/sort (PMT:bare-shoal).
+   * usable anywhere a mnemonic is — filter/groupBy/where/sort (see howSessionsWork.md).
    * Ref-identical duplicates are already collapsed to ONE canonical path here.
    * Present only once the table has been ingested this session (the promoted
    * columns don't exist until then); a first query/aggregate/find on the schema
@@ -59,7 +59,7 @@ export interface SchemaDescription {
    */
   nestedFields?: string[];
   /**
-   * Four-part orientation (PMT:faint-trout): gross form / edges / correlation
+   * Four-part orientation: gross form / edges / correlation
    * / gotchas — what this schema IS, how it joins to siblings present in the
    * trace, whether it carries its own backtrace, and the traps that make a
    * naive query silently lie. Auto-derived from shape + the schemaEdges
@@ -85,7 +85,7 @@ export async function describeSchema(
   // shape + a count, so this avoids forcing a full parse+cache of a huge
   // table (e.g. swiftui-updates at 700K+ rows) just to answer "what columns
   // does this have," which was a contributing factor to a real OOM crash
-  // during live testing. See PMT:copper-duck.
+  // during live testing.
   const meta = await getSchemaMeta(sessionId, resolvedRun, schema, position);
 
   const classified = classifyWithHints(schema, meta.cols);
@@ -139,7 +139,8 @@ export async function describeSchema(
     if (nested.length > 0) nestedFields = nested;
   }
 
-  // Four-part orientation (PMT:faint-trout). Metadata-only: the present-schema
+  // Four-part orientation (see the queryHints field's own doc comment above).
+  // Metadata-only: the present-schema
   // list comes from the run's TOC (getSchemaModel), and edge derivation reuses
   // each sibling's roleHints pin (free) or its already-inspected columns —
   // never a per-sibling xctrace call, so describe_schema stays cheap.

@@ -1,5 +1,5 @@
 /**
- * PMT:lean-pass — the off-CPU interval classifier (the "dig" layer of
+ * The off-CPU interval classifier (the "dig" layer of
  * show → narrow → dig).
  *
  * Time Profiler samples only ON-CPU threads, so a call_tree over a window

@@ -6,11 +6,11 @@
  * deferred to getRow. Role awareness lets callers specify a timeRange window
  * without knowing which column carries timestamps.
  *
- * PMT:dusk-floe: runs as SQL against the SQLite table PMT:gravel-cape
- * ingested, instead of a JS-array scan. getTable() always ensures ingestion
- * happened first — SQLite's own WHERE/ORDER BY/LIMIT means there's no longer
- * a reason for the old "projected fetch to avoid materializing everything in
- * JS" optimization the pre-SQLite correlate() relied on.
+ * Runs as SQL against the SQLite table getTable() ingested, instead of a
+ * JS-array scan. getTable() always ensures ingestion happened first —
+ * SQLite's own WHERE/ORDER BY/LIMIT means there's no longer a reason for the
+ * old "projected fetch to avoid materializing everything in JS" optimization
+ * the pre-SQLite correlate() relied on.
  */
 import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
@@ -107,7 +107,7 @@ export interface QueryResult {
   /**
    * Present only when totalRows is 0 — distinguishes "your filter/timeRange
    * excluded everything" (the schema has data) from "this schema genuinely
-   * has 0 rows" (PMT:thorny-verge).
+   * has 0 rows".
    */
   note?: string;
 }
@@ -145,7 +145,7 @@ export async function queryTable(
 
   // Column shape only, no row data yet — enough to classify and pick which
   // mnemonics are actually needed before paying for a potentially huge
-  // fetch (see correlate.ts's matching comment / PMT:still-wisp).
+  // fetch (see correlate.ts's matching comment).
   const meta = await getSchemaMeta(sessionId, run, schema, position);
   const classified = classifyWithHints(schema, meta.cols);
   const timeColumn = hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
@@ -159,10 +159,10 @@ export async function queryTable(
   const db = await getDb(sessionId);
   const table = quoteIdent(handle.tableName);
 
-  // Dot-path field resolution (PMT:bare-shoal) — needs the ingested table's
-  // promoted-column metadata, so it's built after getTable. A mnemonic or a
-  // nested dot-path (thread.process.pid) both resolve here; resolveComparable
-  // also rejects backtrace columns with a clear error (was
+  // Dot-path field resolution (see howSessionsWork.md) — needs the ingested
+  // table's promoted-column metadata, so it's built after getTable. A
+  // mnemonic or a nested dot-path (thread.process.pid) both resolve here;
+  // resolveComparable also rejects backtrace columns with a clear error (was
   // assertNotBacktraceMnemonic — the same guard, now dot-path aware).
   const resolver = buildFieldResolver(db, handle.tableName, meta.cols);
 
@@ -239,7 +239,9 @@ export async function queryTable(
   if (displayPlan.backtraceMnemonics.length > 0) {
     sqlRows = resolveBacktraceDisplayValues(sqlRows, displayPlan.backtraceMnemonics, makeFrameLookup(db));
   }
-  // Resolve any interned large display values back to their content (PMT:lime-bluff).
+  // Resolve any interned large display values back to their content — large
+  // values get replaced with a sentinel token at ingestion time to keep rows
+  // compact (see sqlHydrate.ts's makeInternResolver).
   sqlRows = resolveInternedDisplayValues(sqlRows, columnsShown, makeInternResolver(db));
 
   const rows: QueryRow[] = sqlRows.map((sqlRow, pageIdx) => {
@@ -252,9 +254,9 @@ export async function queryTable(
       // 12-row ModelInferenceTable query() returned 163,000 characters,
       // forcing the caller to work around it by saving to a file and reading
       // in chunks. query()'s own contract is "summary rows, full detail via
-      // get_row" — cap + redact the same way get_row already does (PMT:loam-
-      // merlin), so a caller who genuinely needs the full value reaches for
-      // get_row instead of query silently handing back a multi-hundred-KB response.
+      // get_row" — cap + redact the same way get_row already does, so a
+      // caller who genuinely needs the full value reaches for get_row instead
+      // of query silently handing back a multi-hundred-KB response.
       cells[mnemonic] = raw !== null ? sanitizeCellText(mnemonic, raw).text : null;
     }
     return {

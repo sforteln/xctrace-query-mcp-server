@@ -1,17 +1,17 @@
 /**
- * PMT:lean-knoll corpus detector — QoS classes mismatch (the hitch "narrow"
+ * Corpus detector — QoS classes mismatch (the hitch "narrow"
  * layer, step 1 of show(vsync table) → narrow(QoS/priority) → dig(ThreadActivity)).
  *
  * ThreadQoSTable's `mismatch-qo-s` column IS the signal — Apple's own kernel
  * flags a thread "QoS classes mismatch" when its EFFECTIVE QoS class was
  * demoted below what it REQUESTED (e.g. UI-class work silently downgraded to
- * Background). Verified live against a real PromptManager trace: a thread
+ * Background). Verified live against a real trace: a thread
  * requested "Unspecified", effective landed at "Background" — a genuine
  * demotion, not noise. No numeric threshold to compute here — same "surface
- * Apple's own category" philosophy dim-chalk §3 documents for Hangs'
- * runtime-issue faults: the state IS the finding.
+ * Apple's own category" philosophy documented in aidocs/appleModelerHarvest.md
+ * for Hangs' runtime-issue faults: the state IS the finding.
  *
- * Main-thread identification follows dim-chalk §3's technique exactly:
+ * Main-thread identification follows that same technique exactly:
  * runloop-events' own `is-main` flag (per-thread, per Apple's own comment
  * "more reliable than symbolication"), NOT a symbolication-based guess. This
  * is deliberately NOT a SQL JOIN between the two tables — it's two small,

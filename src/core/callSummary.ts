@@ -1,5 +1,5 @@
 /**
- * callSummary (PMT:thick-haze) — a compact, one-line, HONEST echo of what an
+ * callSummary — a compact, one-line, HONEST echo of what an
  * investigative call effectively did + its headline result, so the AI's
  * "show your work" narration is grounded in the query that actually ran
  * rather than a paraphrase that drifts. The intent ("what I'm looking for")

@@ -1,11 +1,12 @@
 /**
- * PMT:thorny-verge — the auto-derived "why is this empty" note shared across
+ * The auto-derived "why is this empty" note shared across
  * query/find/aggregate/call_tree/relate.
  *
- * Scratchpad 062's throughline: nearly every misstep in the cross-AI
- * investigation log was "an empty/negative/absent result read as a positive
- * conclusion." A bare `[]` is a conclusion-shaped void the reader fills in —
- * usually wrong. The single highest-value fix: attach the total UNFILTERED
+ * Motivating pattern: nearly every misstep observed across AI-driven
+ * investigation sessions with this server was "an empty/negative/absent
+ * result read as a positive conclusion." A bare `[]` is a conclusion-shaped
+ * void the reader fills in — usually wrong. The single highest-value fix:
+ * attach the total UNFILTERED
  * count alongside a filtered 0, so "0 matched your filter" and "this table
  * genuinely has nothing" are distinguishable from the response itself,
  * without re-querying to check.

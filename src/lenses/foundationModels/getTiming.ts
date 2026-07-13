@@ -96,9 +96,10 @@ export async function getFmTiming(
 
   const eventsHandle = await getTable(sessionId, run, EVENT_SCHEMA);
 
-  // A scoped SELECT instead of fetchAllRowsHydrated's whole-table fetch
-  // (PMT:warm-mica) — FMEventTable can carry many more rows than this one
-  // request cares about. The message format is "TAG,eventId,requestId,
+  // A scoped SELECT instead of fetchAllRowsHydrated's whole-table fetch (see
+  // howLensesWork.md's "Lenses use bespoke scoped SQL" note) — FMEventTable
+  // can carry many more rows than this one request cares about. The message
+  // format is "TAG,eventId,requestId,
   // turnId,sessionId::{json}" (see this file's header), so requestId is
   // always bounded by a comma on both sides — INSTR(...) is a correctness-
   // preserving PRE-FILTER (a literal substring match, no LIKE wildcard risk),
@@ -107,10 +108,12 @@ export async function getFmTiming(
   const table = quoteIdent(eventsHandle.tableName);
   const msgCol = quoteIdent(fmtCol("message"));
   const requestIdMarker = `,${requestId},`;
-  // A large message is stored as an intern sentinel (PMT:lime-bluff), so the
-  // INSTR pre-filter can't see its content — widen the pre-filter to ALSO admit
-  // every sentinel row (SUBSTR = char(1)), then resolve + re-check in JS. Inline
-  // messages still get the cheap INSTR narrowing; interned ones are never missed.
+  // A large message is stored not as literal text but as a short sentinel
+  // token (a marker byte + an id into a dedup side table of large values), so
+  // the INSTR pre-filter can't see its content by substring match — widen the
+  // pre-filter to ALSO admit every sentinel row (SUBSTR = char(1)), then
+  // resolve + re-check in JS. Inline messages still get the cheap INSTR
+  // narrowing; interned ones are never missed.
   const candidateRows = db
     .prepare(
       `SELECT ${quoteIdent(rawCol("timestamp"))} AS ts, ${msgCol} AS msg ` +

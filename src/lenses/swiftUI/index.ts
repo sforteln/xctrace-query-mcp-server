@@ -100,8 +100,9 @@ const HEAVY_COLUMNS = new Set([
 /**
  * Paginate and format a SqliteTableHandle's rows into the standard query
  * result shape — a direct scoped SQL page (ORDER BY/LIMIT/OFFSET), not a
- * fetchAllRowsHydrated full-table scan (PMT:warm-mica). handle.rowCount is
- * already known (from ingestion) so totalRows needs no extra query.
+ * fetchAllRowsHydrated full-table scan (see howLensesWork.md's "Lenses use
+ * bespoke scoped SQL" note). handle.rowCount is already known (from
+ * ingestion) so totalRows needs no extra query.
  */
 async function paginateTable(
   sessionId: string,
@@ -134,7 +135,10 @@ async function paginateTable(
   // Sort on the raw column, like query.ts's own ORDER BY — same known minor
   // divergence from the old JS natural-sort comparator (localeCompare with
   // {numeric:true}) for TEXT columns with embedded digits, already accepted
-  // there (PMT:dusk-floe); no explicit sort falls back to insertion order.
+  // there since query/aggregate/find/get_row moved to reading via SQL against
+  // the ingested table instead of an in-memory rows array (see
+  // howSessionsWork.md's lifecycle section — "the cutover is complete"); no
+  // explicit sort falls back to insertion order.
   const orderBy = opts.sort?.by
     ? `ORDER BY ${quoteIdent(rawCol(opts.sort.by))} ${(opts.sort.dir ?? "asc").toUpperCase()}`
     : `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC`;
@@ -146,8 +150,10 @@ async function paginateTable(
   if (displayPlan.backtraceMnemonics.length > 0) {
     sqlRows = resolveBacktraceDisplayValues(sqlRows, displayPlan.backtraceMnemonics, makeFrameLookup(db));
   }
-  // swiftui-updates' blob columns (view-hierarchy, cause-graph-node) are the
-  // canonical interned values (PMT:lime-bluff) — resolve them for display.
+  // swiftui-updates' blob columns (view-hierarchy, cause-graph-node) are large
+  // repeated values, so they're stored on disk as a short sentinel token
+  // pointing into a dedup side table rather than the literal content — resolve
+  // them back to real content for display.
   sqlRows = resolveInternedDisplayValues(sqlRows, columnsShown, makeInternResolver(db));
 
   return {
@@ -605,11 +611,12 @@ const swiftUILens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     // swiftui-updates is the comprehensive update view — prefer it when present.
-    // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces a
-    // full-table scan regardless of size, and quickStart runs from schema
-    // names alone (no row count known yet). This is the ACTUAL schema that
-    // crashed the server at 736,282 rows (see engine/memoryGuard.ts) — the
-    // concrete case this policy exists for. aggregate by view-name answers
+    // Bounded-by-construction (see howLensesWork.md's `quickStart` section for
+    // the standing rule) — a raw sorted query forces a full-table scan
+    // regardless of size, and quickStart runs from schema names alone (no row
+    // count known yet). This is the ACTUAL schema that crashed the server at
+    // 736,282 rows in production (see engine/memoryGuard.ts) — the concrete
+    // case this policy exists for. aggregate by view-name answers
     // "which view cost the most total main-thread time" instead of "the
     // single slowest update", staying bounded regardless of trace size.
     if (schemas.includes(SWIFTUI_UPDATES_SCHEMA)) {
@@ -651,9 +658,9 @@ const swiftUILens: Lens = {
     }
 
     // SwiftUILayoutUpdates2 adds depth to swiftui-layout-updates — prefer it.
-    // Bounded-by-construction (PMT:spare-goat) — same reasoning as
-    // swiftui-updates above: quickStart can't know row count up front, so
-    // default to the aggregate that stays bounded regardless of trace size.
+    // Bounded-by-construction — same reasoning as swiftui-updates above:
+    // quickStart can't know row count up front, so default to the aggregate
+    // that stays bounded regardless of trace size.
     if (schemas.includes(SWIFTUI_LAYOUT_UPDATES2_SCHEMA)) {
       return {
         schema: SWIFTUI_LAYOUT_UPDATES2_SCHEMA,

@@ -10,12 +10,13 @@
  * derived from the measure column's inferred role, so the agent sees "1.23 s"
  * not "1234567890".
  *
- * PMT:dusk-floe: the WHERE+GROUP BY+aggregate computation runs as SQL against
- * PMT:gravel-cape's ingested table instead of a hand-rolled JS Map — but the
- * sort/topN slice and the blank-top-group/NON_PARTITIONING_GROUPBY note logic
- * stay identical JS, operating on SQL-computed group sums instead of ones
- * accumulated by hand. This keeps behavior byte-identical for the parts that
- * were never the memory/speed problem in the first place.
+ * The WHERE+GROUP BY+aggregate computation runs as SQL against the table
+ * ingested by session.ts's getTable (see the import below), instead of a
+ * hand-rolled JS Map — but the sort/topN slice and the
+ * blank-top-group/NON_PARTITIONING_GROUPBY note logic stay identical JS,
+ * operating on SQL-computed group sums instead of ones accumulated by hand.
+ * This keeps behavior byte-identical for the parts that were never the
+ * memory/speed problem in the first place.
  */
 import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
@@ -44,7 +45,7 @@ import { emptyResultNote } from "./emptyResultNote.js";
  * registered nearest-rank percentile UDFs (see sqlHydrate.ts); the rest map to
  * native SQL aggregates. Every non-count op REQUIRES a measure — asking for a
  * p95 or a max with no column to compute it over is a caller error, not a
- * silent zero (PMT:round-rime).
+ * silent zero.
  */
 export type AggOp =
   | "sum" | "count" | "avg" | "min" | "max"
@@ -251,10 +252,10 @@ export async function aggregateTable(
   const db = await getDb(sessionId);
   const table = quoteIdent(handle.tableName);
 
-  // Dot-path field resolution (PMT:bare-shoal), built after getTable so the
-  // promoted-column metadata exists. groupBy/measure/filter keys may be nested
-  // dot-paths (thread.process.pid); resolveComparable also rejects backtrace
-  // columns with a clear error (was assertNotBacktraceMnemonic).
+  // Dot-path field resolution — see howSessionsWork.md — built after getTable
+  // so the promoted-column metadata exists. groupBy/measure/filter keys may be
+  // nested dot-paths (thread.process.pid); resolveComparable also rejects
+  // backtrace columns with a clear error (was assertNotBacktraceMnemonic).
   const resolver = buildFieldResolver(db, handle.tableName, meta.cols);
   const groupByBases = groupByCols.map((gb) => resolver.resolveComparable(gb, "group by").base);
   const measureBase = measure ? resolver.resolveComparable(measure, "aggregate (measure)").base : undefined;
@@ -324,7 +325,7 @@ export async function aggregateTable(
   // Materialize each group's composite key parts + value + rowCount. A group
   // key can be an interned sentinel if the groupBy column holds large values
   // (grouping by the sentinel is a correct partition — same content, same
-  // sentinel — so only the DISPLAY key needs resolving here). PMT:lime-bluff.
+  // sentinel — so only the DISPLAY key needs resolving here).
   const unintern = makeInternResolver(db);
   const isMulti = groupByCols.length > 1;
   let groups = rawGroups.map((r) => {
@@ -363,7 +364,7 @@ export async function aggregateTable(
 
   const notes: string[] = [];
 
-  // PMT:thorny-verge: an empty `groups` array is ambiguous on its own — did
+  // An empty `groups` array is ambiguous on its own — did
   // the filter/timeRange exclude everything, or did every row that DID match
   // have a null groupBy/measure value (excluded from GROUP BY, not from the
   // filter)? Distinguish both from "this schema genuinely has 0 rows".

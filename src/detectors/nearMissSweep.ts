@@ -1,6 +1,7 @@
 /**
- * PMT:tidy-shore — near-miss sweep (the leading-indicator twin of
- * PMT:shingle-bluff's outlier sweep, over the SAME band map, bands.ts).
+ * Near-miss sweep (the leading-indicator twin of the outlier sweep, over
+ * the SAME band map, bands.ts — see aidocs/appleModelerHarvest.md for the
+ * modeling behind the over/near-miss bands).
  *
  * Where outlierSweep flags rows already OVER an Apple-meaningful band ("this
  * is already bad"), this flags the sub-threshold population sitting just
@@ -8,7 +9,7 @@
  * the line, but a hitch at 0.9x the frame budget is a trend, not noise. Frame
  * every finding as an early warning, always naming BOTH the Apple cutoff
  * being approached (the frame budget itself) and the lower band used to spot
- * it (0.5x-1x, aidocs #1's tidy-shore mapping) — never presented as if it
+ * it (0.5x-1x, aidocs #1's near-miss mapping) — never presented as if it
  * were an actual dropped frame.
  *
  * Only the hitches band is wired today; see bands.ts for why FileActivity's
@@ -19,7 +20,7 @@
  * different slice of the same table; the core-vs-lens cost rule reserves any
  * full-table band scan for a named, on-demand lens (aidocs/howLensesWork.md).
  *
- * PMT:still-hail: the frame budget is resolved live (frameBudget.ts) instead
+ * The frame budget is resolved live (frameBudget.ts) instead
  * of assuming DEFAULT_REFRESH_INTERVAL_MS's 60Hz — same resolver outlierSweep
  * uses, so the two lenses never disagree on which budget is "the line."
  */

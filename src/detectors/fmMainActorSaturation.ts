@@ -1,10 +1,12 @@
 /**
- * PMT:flint-larch corpus detector #9 — Main Actor queue depth saturation.
+ * Corpus detector #9 — Main Actor queue depth saturation.
  *
  * SwiftActorQueueSize is a time-series of how many tasks are waiting on each
- * Swift actor's executor (the `count` column, PMT:round-rime's weight-unit
- * "count"). A deep, sustained queue on an actor — especially the Main Actor —
- * means tasks are piling up faster than the actor can drain them: a real
+ * Swift actor's executor (the `count` column — a task COUNT, not a duration,
+ * the same "count" vs. duration distinction call_tree's own weight-unit
+ * labeling makes explicit elsewhere). A deep, sustained queue on an actor —
+ * especially the Main Actor — means tasks are piling up faster than the
+ * actor can drain them: a real
  * concurrency bottleneck. Fires when the PEAK queue depth crosses a band AND
  * enough samples show it (a single one-sample spike isn't "sustained").
  *
@@ -13,8 +15,8 @@
  * detector's GROUP BY scan is.
  *
  * Not validated against a real trace — no Swift Concurrency recording was
- * available at authoring time (see the PMT:flint-larch completion report).
- * Unit-tested against a synthetic SwiftActorQueueSize table only.
+ * available at authoring time. Unit-tested against a synthetic
+ * SwiftActorQueueSize table only.
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { rawCol } from "../engine/sqlHydrate.js";

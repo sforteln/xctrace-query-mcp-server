@@ -13,8 +13,10 @@ const EVENTS_SCHEMA = "runloop-events";
 const RUNLOOP_WEIGHT = hintFor(INTERVALS_SCHEMA)!.primaryWeight!;
 
 /**
- * PMT:steel-spruce, verified live with real production data: a naive
- * duration-sort of main-thread "Runloop Run" turns is misleading — several
+ * Verified live with real production data (the Run Loops + SwiftUI instrument
+ * pairing used for a deliberate hang-induction test — see howRecordingWorks.md
+ * for that recording setup): a naive duration-sort of main-thread "Runloop
+ * Run" turns is misleading — several
  * looked alarming (~1s, one 2.94s) but their child interval was "Waiting For
  * Events" (the runloop correctly parked while async work ran elsewhere, e.g.
  * a Foundation Models inference on the ANE), not a real block. Filtering to
@@ -76,8 +78,9 @@ const runLoopsLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(INTERVALS_SCHEMA)) return null;
-    // Bounded-by-construction (PMT:spare-goat) — quickStart runs from schema
-    // names alone, before any row count is known, so it defaults to the safe
+    // Bounded-by-construction (see howLensesWork.md's `quickStart` section) —
+    // quickStart runs from schema names alone, before any row count is known,
+    // so it defaults to the safe
     // aggregate breakdown rather than the (still filtered, but individually
     // row-returning) Busy-vs-Waiting finder above, which nextActions already
     // surfaces on the very next call against this schema.

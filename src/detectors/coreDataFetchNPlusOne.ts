@@ -1,5 +1,5 @@
 /**
- * PMT:thick-gull — Core Data / SwiftData N+1 fetch detector.
+ * Core Data / SwiftData N+1 fetch detector.
  *
  * core-data-fetch carries `fetch-count` — the number of OBJECTS that ONE
  * fetch call actually returned, distinct from the row count itself (one

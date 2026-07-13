@@ -1,5 +1,5 @@
 /**
- * PMT:lean-pass — "explain this off-CPU interval": the windowed wrapper around
+ * explainOffCpu — "explain this off-CPU interval": the windowed wrapper around
  * offCpuClassifier.ts. Given a time window where a call_tree came back empty
  * (thread off-CPU), this reads the OFF-CPU-side schemas the trace carries —
  * `syscall` primarily (which captures the actual wait + its backtrace), with
@@ -13,7 +13,9 @@
  *
  * ThreadActivity (a ~494k-row firehose) is deliberately NOT read here — it's
  * offered as a scoped-window HANDLE for the deepest who-preempted/woke-whom
- * dig, never eager-ingested (PMT:ruddy-elk calibration).
+ * dig, never eager-ingested (parsing the whole table on every off-CPU
+ * explanation call would dwarf the cost of the single window actually asked
+ * about).
  */
 import { getTable, getDb, getSchemaModel, lastRun as sessionLastRun } from "../engine/session.js";
 import { classifyWithHints } from "../engine/roleHints.js";
@@ -162,7 +164,7 @@ export async function explainOffCpuInterval(
     // No blocking syscall overlaps the window, but thread-state shows a real
     // Runnable gap — the thread WAS off-CPU, just not because of a syscall
     // wait a backtrace could show. That's the scheduling-delay class itself,
-    // not an absence of classification (PMT:slow-cobble).
+    // not an absence of classification.
     const classification: OffCpuClassification | null = scheduling
       ? {
           class: "scheduling-delay",
@@ -226,7 +228,7 @@ export async function explainOffCpuInterval(
       `explain off-CPU [${fmtMs(startNs)}, ${fmtMs(endNs)}]${thread ? ` thread~${thread}` : ""} → dominant wait: ` +
       `${dominant.syscall ?? "?"} for ${(dominant.waitNs / 1e6).toFixed(1)}ms → classified ${classification.class} ` +
       `(${classification.headline})` +
-      // PMT:serene-elk: verified live that a co-occurring scheduling delay was
+      // Verified live that a co-occurring scheduling delay was
       // ALREADY attached (schedulingDelay), but this one-line narration never
       // mentioned it — an agent skimming just this line had no cue to look for
       // it, which is the real mechanism behind the retrospective's "a Thread.sleep

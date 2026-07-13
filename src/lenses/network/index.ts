@@ -41,8 +41,10 @@ function preExistingSnapshotHint(sessionId: string, run: number, schema: string)
   if (!table || !db || table.rowCount === 0) return null;
 
   // A scalar COUNT(*) WHERE time__fmt = sentinel instead of fetching+hydrating
-  // every row just to count a subset (PMT:warm-mica) — table.rowCount already
-  // gives the denominator for free (peekTable/getTable's own row count).
+  // every row just to count a subset — see howLensesWork.md's "Lenses use
+  // bespoke scoped SQL" note for why lenses reach for scoped SQL like this
+  // instead of a whole-table fetch. table.rowCount already gives the
+  // denominator for free (peekTable/getTable's own row count).
   const preExisting = (
     db
       .prepare(`SELECT COUNT(*) AS n FROM ${quoteIdent(table.tableName)} WHERE ${quoteIdent(fmtCol("time"))} = ?`)

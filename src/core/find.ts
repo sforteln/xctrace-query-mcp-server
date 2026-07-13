@@ -11,9 +11,10 @@
  *   FM needsReform  → [{ col: "response",      op: "contains", val: "needsReformulation\": true" }]
  *   FM slow request → [{ col: "duration",      op: "gt",       val: 5000000000 }]  // >5 s in ns
  *
- * PMT:dusk-floe: conditions compile to SQL WHERE clauses (see sqlHydrate.ts's
- * buildCondition, which mirrors the raw+fmt dual-check semantics the old
- * testCondition used) instead of a JS-array scan; regex runs via a registered
+ * Conditions compile to SQL WHERE clauses (see sqlHydrate.ts's buildCondition,
+ * which mirrors the raw+fmt dual-check semantics the old JS-array-based
+ * testCondition used) instead of a JS-array scan, so filtering scales with a
+ * SQL index instead of a full in-memory pass; regex runs via a registered
  * SQLite UDF since there's no native REGEXP.
  */
 import { getTable, getSchemaMeta, getDb, lastRun as sessionLastRun } from "../engine/session.js";
@@ -50,22 +51,21 @@ export interface Condition {
   /** Value to compare against. Not needed for is-null/not-null. Mutually exclusive with compareCol. */
   val?: string | number;
   /**
-   * PMT:narrow-ochre: compare `col` against another column on the same row
-   * instead of the literal `val` (e.g. find rows where downstream-cost
-   * exceeds direct-cost: {col: "downstream-cost", op: "gt", compareCol:
-   * "direct-cost"}). Only valid with eq/ne/gt/gte/lt/lte. Mutually exclusive
-   * with val.
+   * Compare `col` against another column on the same row instead of the
+   * literal `val` (e.g. find rows where downstream-cost exceeds direct-cost:
+   * {col: "downstream-cost", op: "gt", compareCol: "direct-cost"}). Only
+   * valid with eq/ne/gt/gte/lt/lte. Mutually exclusive with val.
    */
   compareCol?: string;
 }
 
 /**
- * PMT:narrow-ochre's shallow AND/OR condition tree. A bare array (the
- * existing, unchanged shape) is an implicit allOf. `allOf`/`anyOf` nest to
- * express "any of several patterns" or mixed AND-OR — deliberately NOT a
- * general expression grammar (see find.ts's header comment / the prompt's
- * explicit scope guardrail): every leaf is still a structured, parameterized
- * Condition, never an arbitrary expression string.
+ * A shallow AND/OR condition tree. A bare array (the existing, unchanged
+ * shape) is an implicit allOf. `allOf`/`anyOf` nest to express "any of
+ * several patterns" or mixed AND-OR — deliberately NOT a general expression
+ * grammar: every leaf is still a structured, parameterized Condition, never
+ * an arbitrary expression string, so a caller can't smuggle in raw SQL or an
+ * unbounded predicate through this shape.
  */
 export type ConditionGroup = Condition | { allOf: ConditionGroup[] } | { anyOf: ConditionGroup[] };
 
@@ -139,7 +139,7 @@ export interface FindResult {
   /**
    * Present only when matchCount is 0 — distinguishes "your where/timeRange
    * excluded everything" (the schema has data) from "this schema genuinely
-   * has 0 rows" (PMT:thorny-verge).
+   * has 0 rows" — see emptyResultNote.ts for why that distinction matters.
    */
   note?: string;
 }
@@ -202,10 +202,11 @@ export async function findRows(
   const db = await getDb(sessionId);
   const table = quoteIdent(handle.tableName);
 
-  // Dot-path field resolution (PMT:bare-shoal), built after getTable. A
-  // condition's col / sort.by / a display column may be a nested dot-path
-  // (thread.process.pid); resolveComparable also rejects backtrace columns
-  // with a clear error (was assertNotBacktraceMnemonic).
+  // Dot-path field resolution, built only after getTable because it needs
+  // handle.tableName (the resolver queries the ingested table's actual
+  // columns). A condition's col / sort.by / a display column may be a
+  // nested dot-path (thread.process.pid); resolveComparable also rejects
+  // backtrace columns with a clear error (was assertNotBacktraceMnemonic).
   const resolver = buildFieldResolver(db, handle.tableName, meta.cols);
   const columnsShown =
     columns && columns.length > 0

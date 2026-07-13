@@ -59,7 +59,9 @@ export class LensRegistry {
    * Return a QuickStart from the first lens that recognises the given schema
    * names, or null if no lens matches. Used by open_trace to give the agent a
    * cheap, pre-filled next call without any intermediate navigation — folded
-   * into `nextActions` as the one `recommended: true` entry (PMT:spare-goat).
+   * into `nextActions` as the one `recommended: true` entry (see
+   * howLensesWork.md's `quickStart` section for why this replaced a separate
+   * `suggestedStart` field).
    */
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     for (const lens of this.allLenses) {

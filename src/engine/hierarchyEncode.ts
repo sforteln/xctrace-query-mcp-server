@@ -1,6 +1,5 @@
 /**
- * PMT:dry-glen — structural node-dedup for interned view-hierarchy / cause
- * strings.
+ * Structural node-dedup for interned view-hierarchy / cause strings.
  *
  * The dominant remaining on-disk cost after interning is ~2.4 GB of genuinely-
  * DISTINCT large strings that no cross-row dedup touches: swiftui view-hierarchy

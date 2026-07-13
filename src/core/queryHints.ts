@@ -1,15 +1,17 @@
 /**
- * queryHints (PMT:faint-trout) — describe_schema's four-part orientation:
+ * queryHints — describe_schema's four-part orientation:
  * gross form / edges / correlation / gotchas. describe_schema is the low-
  * frequency, one-schema ORIENTATION call the AI reads right before querying,
- * so its noise budget is HIGH (scratchpad 008) — the right home for per-schema
- * advice that would bloat open_trace (which must stay compact — the ruddy-elk
- * constraint). Until now that advice lived only as roleHints code comments,
- * never surfaced to the AI.
+ * so its noise budget is HIGH — the right home for per-schema advice that
+ * would bloat open_trace if it lived there instead (open_trace lists every
+ * schema at once and must stay compact enough to scan in a single read).
+ * Until now that advice lived only as roleHints code comments, never
+ * surfaced to the AI.
  *
  * Two-layer, per the aidocs/howHintsWork.md auto-derived-vs-curated axis:
  *  - AUTO-DERIVED: grain, size tier, load-bearing columns, the join graph
- *    (from the PMT:rust-gravel registry), carries-own-backtrace, and the
+ *    (from the schemaEdges cross-schema connection registry — connectionsFor),
+ *    carries-own-backtrace, and the
  *    computable gotchas (thread/time-role counts, the START/END point-event
  *    shape) — recomputed live, version-proof, no drift guard needed.
  *  - CURATED-STATIC: the handful of semantic gotchas you can't compute from
@@ -71,7 +73,7 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
       note: "For a stutter, sort by 'duration' (the inclusive main-thread time of the update — the stutter itself), NOT 'downstream-cost' (the size of the invalidation cascade to OTHER views — a related but different question).",
     },
     {
-      note: "This schema is commonly 1M+ rows. correlate()'s intervalsFilter/eventsFilter runs POST-parse, not during streaming — passing a filter WITHOUT timeRange still materializes the full schema and can abort with table-too-large. Only timeRange triggers real streaming narrowing. Always pass timeRange when this schema is the intervalsSchema or eventsSchema — get a window from a list_swiftui_view_body_updates/query row's start+duration. Verified live, PMT:onyx-spark.",
+      note: "This schema is commonly 1M+ rows. correlate()'s intervalsFilter/eventsFilter runs POST-parse, not during streaming — passing a filter WITHOUT timeRange still materializes the full schema and can abort with table-too-large. Only timeRange triggers real streaming narrowing. Always pass timeRange when this schema is the intervalsSchema or eventsSchema — get a window from a list_swiftui_view_body_updates/query row's start+duration. Verified live against a real 1M+ row trace.",
     },
   ],
   SwiftUIFilteredUpdates: [
@@ -88,17 +90,17 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
   ],
   "hang-risks": [
     {
-      note: "If this is empty but 'potential-hangs' has rows, that's expected, not a data problem: hang-risks only populates from the FULL Hangs template; Hangs composed BARE (e.g. via template's array-composition fidelityAtRisk, common when composing Hangs onto another base) produces potential-hangs but not hang-risks. Use call_tree(schema:\"time-profile\", view:\"hot\", timeRange: <a potential-hangs row's [start, start+duration]>) to get the hang's call stack instead. Verified live, PMT:onyx-spark.",
+      note: "If this is empty but 'potential-hangs' has rows, that's expected, not a data problem: hang-risks only populates from the FULL Hangs template; Hangs composed BARE (e.g. via template's array-composition fidelityAtRisk, common when composing Hangs onto another base) produces potential-hangs but not hang-risks. Use call_tree(schema:\"time-profile\", view:\"hot\", timeRange: <a potential-hangs row's [start, start+duration]>) to get the hang's call stack instead. Verified live against a real Hangs-composed-bare trace.",
     },
   ],
   "core-data-fetch": [
     {
       column: "spid",
-      note: "spid is a SENTINEL, not a real id — every row reads 18,446,744,073,709,551,615 (max uint64, 0xFFFFFFFFFFFFFFFF). Verified live (PMT:onyx-spark): it is NOT a join key, don't filter or group on it.",
+      note: "spid is a SENTINEL, not a real id — every row reads 18,446,744,073,709,551,615 (max uint64, 0xFFFFFFFFFFFFFFFF). Verified live against a real trace: it is NOT a join key, don't filter or group on it.",
     },
     {
       column: "fetch-entity",
-      note: "N+1 detection, self-contained (no external object-count needed — PMT:thick-gull): each row also carries `fetch-count`, the number of objects THAT ONE fetch call actually returned. aggregate(groupBy: \"fetch-entity\", measure: \"fetch-count\", op: \"avg\") alongside aggregate(groupBy: \"fetch-entity\", op: \"count\") — an entity with a HIGH call count and a LOW avg fetch-count (near 1) is a strong N+1 signal (many separate single-object fetches instead of one bulk query); verified live against a real trace: one entity fetched 830 times averaging 1.00 objects/call, a textbook case. The coreDataFetchNPlusOne detector already surfaces this automatically when both cross their bands. Correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
+      note: "N+1 detection, self-contained (no external object-count needed): each row also carries `fetch-count`, the number of objects THAT ONE fetch call actually returned. aggregate(groupBy: \"fetch-entity\", measure: \"fetch-count\", op: \"avg\") alongside aggregate(groupBy: \"fetch-entity\", op: \"count\") — an entity with a HIGH call count and a LOW avg fetch-count (near 1) is a strong N+1 signal (many separate single-object fetches instead of one bulk query); verified live against a real trace: one entity fetched 830 times averaging 1.00 objects/call, a textbook case. The coreDataFetchNPlusOne detector already surfaces this automatically when both cross their bands. Correlate against swiftui-updates (time-window) to find which view body triggered the burst, then get_row a fetch's backtrace for the exact callsite.",
     },
   ],
   "core-data-fault": [
@@ -114,7 +116,7 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
   ],
   OSSignpostIntervals: [
     {
-      note: "Empty is NOT necessarily a coverage gap — verified live, PMT:vivid-rill: this schema only ever receives a CUSTOM app subsystem's rows when the recording was started with signpostSubsystems set (start_recording composes the separate `os_signpost` instrument + dynamicTracingEnabledSubsystems from it). No template or instrument composition choice substitutes for this — it's the only gate. Empty here does not mean emitEvent-style instant signposts are missing too; check PointsOfInterestEvents separately (a completely different capture path, gated by the Points of Interest instrument + category: .pointsOfInterest, not by signpostSubsystems).",
+      note: "Empty is NOT necessarily a coverage gap — verified live: this schema only ever receives a CUSTOM app subsystem's rows when the recording was started with signpostSubsystems set (start_recording composes the separate `os_signpost` instrument + dynamicTracingEnabledSubsystems from it). No template or instrument composition choice substitutes for this — it's the only gate. Empty here does not mean emitEvent-style instant signposts are missing too; check PointsOfInterestEvents separately (a completely different capture path, gated by the Points of Interest instrument + category: .pointsOfInterest, not by signpostSubsystems).",
     },
     {
       column: "name",
@@ -123,7 +125,7 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
   ],
   PointsOfInterestEvents: [
     {
-      note: "Captures only emitEvent-style INSTANT signposts on a log handle with category: .pointsOfInterest — never beginInterval/endInterval calls, no matter which instruments are composed. Verified live, PMT:vivid-rill: the Points of Interest instrument alone is sufficient (already auto-composed by default, no signpostSubsystems needed) — but interval-type signposts will NEVER appear here regardless; check OSSignpostIntervals for those (which needs signpostSubsystems set instead).",
+      note: "Captures only emitEvent-style INSTANT signposts on a log handle with category: .pointsOfInterest — never beginInterval/endInterval calls, no matter which instruments are composed. Verified live: the Points of Interest instrument alone is sufficient (already auto-composed by default, no signpostSubsystems needed) — but interval-type signposts will NEVER appear here regardless; check OSSignpostIntervals for those (which needs signpostSubsystems set instead).",
     },
   ],
 };
@@ -257,7 +259,7 @@ export function buildQueryHints(input: QueryHintsInput): QueryHints {
   let correlation: string;
   if (carriesOwnBacktrace(schema, cols)) {
     // carriesOwnBacktrace alone conflates two different shapes — verified
-    // live (PMT:onyx-spark's SwiftUI × Core Data retrospective) this
+    // live (a SwiftUI x Core Data investigation) this
     // produced a WRONG hint for core-data-fetch ("call_tree this schema
     // directly" — actually returns 0 samples). Foldable (tagged-backtrace,
     // many samples call_tree aggregates) vs. resolved-per-row (ONE already-

@@ -1,5 +1,5 @@
 /**
- * PMT:ruddy-elk — schema-kind classifier + the curated eager-ingest allowlist.
+ * Schema-kind classifier + the curated eager-ingest allowlist.
  *
  * There is NO cheap schema-size probe (verified empirically): no xctrace
  * count flag; `--toc` carries zero row counts (`<table schema="hitches"/>`);
@@ -81,7 +81,7 @@ export function isBoundedKind(schema: string): boolean {
  * render-hitch-sweep needs hitches-renders).
  *
  * device-display-info: not a detector requirement but a CONTEXT dependency —
- * frameBudget.ts's resolveFrameBudgetMs() reads it (PMT:still-hail) so the
+ * frameBudget.ts's resolveFrameBudgetMs() reads it so the
  * hitch detectors threshold against the REAL per-display refresh rate
  * instead of assuming 60Hz. Eager-ingesting it makes the hitch detectors
  * device-accurate on the very first sweep (validated live against a 120Hz
@@ -94,9 +94,9 @@ export function isBoundedKind(schema: string): boolean {
  * wasn't — here: assumed bounded, might not be). Verify their real row
  * counts on a live trace before promoting them into this list.
  *
- * Also deliberately NOT included — PMT:plain-creek's Points of Interest
+ * Also deliberately NOT included — the Points of Interest
  * schemas (os-signpost, OSSignpostIntervals, os-signpost-arg,
- * PointsOfInterestEvents), even though that prompt made POI's INSTRUMENT
+ * PointsOfInterestEvents), even though POI's INSTRUMENT is made to
  * default onto every recording (see defaultPointsOfInterest in
  * recording.ts). Row count there is event-driven — one row per app
  * os_signpost call — so unlike hitches/device-display-info it has no

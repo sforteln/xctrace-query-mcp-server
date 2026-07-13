@@ -10,16 +10,15 @@
  * the ambiguous-schema check existed on that tool. driftGuard.test.ts only
  * checks tool description STRINGS; it never validates the runtime
  * `{tool, args}` objects a lens's nextActions()/quickStart() actually return.
- * See PMT:gravel-trace.
  *
  * KNOWN GAP (documented, not silently skipped): the Leaks and Network lenses'
  * unattributableFractionHint/buildAllocationJoinAction/preExistingSnapshotHint
  * call `peekTable()`, which requires a real, already-open session — these
  * specific branches can't be exercised here without a live/fixture-backed
- * session (the heavier "actually invoke against a fixture session" stretch
- * goal the prompt explicitly deprioritized). They were checked by manual
- * code review instead (see PMT:gravel-trace's completion report) and found
- * consistent with their target tools' current schemas at the time of writing.
+ * session, which this suite deliberately treats as out of scope (heavier than
+ * the fixture-free registry/schema validation the rest of this file does).
+ * They were checked by manual code review instead and found consistent with
+ * their target tools' current schemas at the time of writing.
  */
 import { describe, it, expect } from "vitest";
 import { createServer } from "../src/index.js";

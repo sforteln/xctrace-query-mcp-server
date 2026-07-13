@@ -377,10 +377,10 @@ export async function exportXPathStream(
         return;
       }
       // A crash (as opposed to a normal non-zero exit) reports code:null and
-      // the terminating signal instead — verified live (PMT:loam-merlin):
-      // xctrace crashed silently exporting core-data-fetch (SIGTRAP, no
-      // stderr at all), which a code-only message would render as just
-      // "exited with an error" with no hint that it actually crashed.
+      // the terminating signal instead — verified live: xctrace crashed
+      // silently exporting core-data-fetch (SIGTRAP, no stderr at all),
+      // which a code-only message would render as just "exited with an
+      // error" with no hint that it actually crashed.
       reject(
         new XctraceError(
           "export-failed",
@@ -407,10 +407,10 @@ export async function exportXPathStream(
 
 /**
  * Await a streaming parse against exportXPathStream's `done` signal, giving
- * PRIORITY to a non-zero xctrace exit over a parse failure — verified live
- * (PMT:loam-merlin, Data Persistence session): xctrace crashed (silently,
- * exit 133, no stderr) partway through exporting core-data-fetch, truncating
- * its stdout mid-stream; the streaming XML parser correctly noticed the
+ * PRIORITY to a non-zero xctrace exit over a parse failure — verified live:
+ * xctrace crashed (silently, exit 133, no stderr) partway through exporting
+ * core-data-fetch, truncating its stdout mid-stream; the streaming XML
+ * parser correctly noticed the
  * truncation and threw "Unclosed root tag", and a naive `Promise.all([parse,
  * done])` surfaced THAT generic parse error to the caller instead of the far
  * more diagnostic exit-code one — Promise.all rejects with whichever promise

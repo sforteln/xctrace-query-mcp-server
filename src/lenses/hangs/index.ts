@@ -138,9 +138,10 @@ const hangsLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (schemas.includes(HANGS_SCHEMA)) {
-      // Bounded-by-construction (PMT:spare-goat) — a raw sorted query forces
-      // a full-table scan regardless of size, and quickStart runs from
-      // schema names alone (no row count known yet). aggregate by hang-type
+      // Bounded-by-construction — see howLensesWork.md's `quickStart` section:
+      // a raw sorted query forces a full-table scan regardless of size, and
+      // quickStart runs from schema names alone (no row count known yet).
+      // aggregate by hang-type
       // (the same column this lens's own correlate call already keys on for
       // this schema) answers "which kind of hang dominates" instead of "the
       // single worst hang", staying bounded on a huge trace.

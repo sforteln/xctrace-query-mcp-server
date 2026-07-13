@@ -71,8 +71,9 @@ export async function listFmRequests(
 
   // A direct scoped page — SELECT only the fmt/raw columns this one-liner
   // needs, LIMIT/OFFSET at the SQL layer — instead of fetchAllRowsHydrated's
-  // whole-table fetch (PMT:warm-mica). Natural table order (no sort param
-  // here), so tableIndex is exactly _row_idx, matching the prior offset+pageIdx.
+  // whole-table fetch (see howLensesWork.md's "Lenses use bespoke scoped SQL"
+  // note). Natural table order (no sort param here), so tableIndex is exactly
+  // _row_idx, matching the prior offset+pageIdx.
   const FMT_FIELDS = ["start", "duration", "agent-name", "prompt", "total-tokens", "prompt-tokens", "response-tokens", "cached-tokens", "resolve", "color"];
   const selectCols = [
     quoteIdent(ROW_IDX_COLUMN),
@@ -84,8 +85,12 @@ export async function listFmRequests(
       `ORDER BY ${quoteIdent(ROW_IDX_COLUMN)} ASC LIMIT ? OFFSET ?`
   );
   let page = pageStmt.all(limit, offset) as Record<string, unknown>[];
-  // prompt (and other one-liner fields) can be a large interned value — resolve
-  // the display columns back to content before snippeting (PMT:lime-bluff).
+  // prompt (and other one-liner fields) can be a large interned value: a large
+  // repeated blob (e.g. prompt text) is stored on disk as a short sentinel
+  // token pointing into a dedup side table rather than the literal string, to
+  // avoid duplicating it across every row that shares it. Resolve the display
+  // columns back to their real content before snippeting, or the snippet would
+  // be the literal token instead of the prompt text.
   page = resolveInternedDisplayValues(page, FMT_FIELDS, makeInternResolver(db));
 
   const requests: FmRequestRow[] = page.map((row, pageIdx) => {

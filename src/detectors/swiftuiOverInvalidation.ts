@@ -1,6 +1,6 @@
 /**
- * Example detector (PMT:pure-hail) — proves the contract end to end; the real
- * corpus detectors come from PMT:flint-larch.
+ * Example detector — proves the Detector contract end to end; the real
+ * corpus detectors follow this same shape.
  *
  * SwiftUI over-invalidation: one view body re-evaluated far more than the rest,
  * costing real main-thread time — the SidebarView cascade that cost three live

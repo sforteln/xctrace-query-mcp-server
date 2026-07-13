@@ -58,8 +58,8 @@ function swapIdGotchaAction(sessionId: string, run: number): NextAction {
  *
  * Three tiers by what the trace carries: (1) if it has the off-CPU-side
  * schemas (syscall/thread-state), point straight at the DIG —
- * explain_off_cpu_interval NAMES the class by backtrace (PMT:lean-pass), the
- * strongest answer; (2) else if it has Time Profiler, correlate to at least
+ * explain_off_cpu_interval NAMES the class by backtrace, the strongest
+ * answer; (2) else if it has Time Profiler, correlate to at least
  * split on-CPU vs off-CPU (but that can't say idle-vs-blocked); (3) else
  * re-record. Mirrors hangsLens's timeProfileCorrelationHint's escalation.
  */
@@ -167,12 +167,16 @@ const animationHitchesLens: Lens = {
 
   quickStart(schemas: string[], sessionId: string, run: number): QuickStart | null {
     if (!schemas.includes(HITCHES_SCHEMA)) return null;
-    // Bounded-by-construction (PMT:spare-goat) — aggregate by display, not a
-    // raw duration-sort. The richer "vsync-cadence frames held" table
-    // (still-hail's vsyncCadenceTable.ts) is already computed automatically
-    // around the worst hitch by the eager sweep (PMT:ruddy-elk) whenever one
-    // fires — this quickStart is the fallback entry point for when nothing
-    // fired yet (or this schema is being explored outside that sweep).
+    // Bounded-by-construction (see howLensesWork.md's `quickStart` section) —
+    // aggregate by display, not a raw duration-sort. The richer "vsync-cadence
+    // frames held" table (vsyncCadenceTable.ts, in src/detectors/) is already
+    // computed automatically around the worst hitch by the eager sweep — at
+    // open_trace, a small curated allowlist of bounded schemas is eagerly
+    // ingested and run through the detectors before any row is fetched on
+    // demand, so a fresh trace already has a finding to show if one fires —
+    // whenever one fires; this quickStart is the fallback entry point for
+    // when nothing fired yet (or this schema is being explored outside that
+    // sweep).
     return {
       schema: HITCHES_SCHEMA,
       tool: "aggregate",

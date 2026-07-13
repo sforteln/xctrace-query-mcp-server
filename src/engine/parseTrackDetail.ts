@@ -44,7 +44,7 @@ function asArray<T>(v: T | T[] | undefined): T[] {
  * Mirror parseTable.ts coerceRaw: all-digit → number, else string — except a
  * value past Number.MAX_SAFE_INTEGER stays the exact digit string instead of
  * silently rounding (see parseTable.ts's coerceRaw for the verified uint64
- * sentinel precision-loss case this guards against; PMT:loam-merlin).
+ * sentinel precision-loss case this guards against).
  */
 export function coerceRaw(s: string): number | string {
   const trimmed = s.trim();
@@ -63,7 +63,7 @@ const TIME_ENG_TYPES = new Set(["start-time", "sample-time", "start", "timestamp
  * raw keeps the sub-µs nanoseconds the fmt drops; track-detail only ever gives
  * us the fmt), which is orders of magnitude finer than any timeRange/join
  * window. Verified against schema-table pairs: fmt "00:06.181.618" ↔ raw
- * 6181618125 ns → this returns 6181618000 (the µs-truncation). See PMT:light-reed.
+ * 6181618125 ns → this returns 6181618000 (the µs-truncation).
  */
 function parseInstrumentsTimeToNs(s: string): number | null {
   const dot = s.indexOf(".");
@@ -90,7 +90,7 @@ function parseInstrumentsTimeToNs(s: string): number | null {
  * all-digit→number behavior. Keyed on engineering-type (not a value-shape
  * guess) so a non-time string that happens to look like a clock is never
  * mis-converted; and a hypothetical future track-detail schema that emits a
- * plain-integer timestamp still works (parse returns null → coerceRaw). (PMT:light-reed)
+ * plain-integer timestamp still works (parse returns null → coerceRaw).
  */
 function coerceTrackDetailRaw(engType: string, strVal: string): number | string {
   if (TIME_ENG_TYPES.has(engType)) {
@@ -148,7 +148,7 @@ type FrameCache = Map<number, ResolvedFrame>;
  * ""}` instead of the real frame — and because these ref'd call-site frames
  * dominate real backtraces (most non-leaf frames after the first occurrence
  * are refs), the practical effect was ~14 of 15 frames in a typical
- * Allocations backtrace coming back blank. See PMT:spare-cairn / PMT:tundra-mallard.
+ * Allocations backtrace coming back blank.
  */
 function parseBacktrace(
   backtraceNode: Record<string, any>,
@@ -374,7 +374,7 @@ function buildSchemaMetaFromDiscovery(discovery: ColumnDiscovery, rowCount: numb
  * `%` is not a legal XML NameChar, so sax's strict mode throws "Invalid
  * attribute name" the instant it reads that byte, before ever emitting an
  * opentag event we could patch after the fact. A DOM-style parse (fast-xml-
- * parser, the row-level path this codebase no longer has — PMT:black-jay)
+ * parser, the row-level path this codebase no longer has)
  * tolerated this fine — Apple ships it and Instruments.app reads it, so this
  * is a strict-tokenizer-specific gap, not genuinely malformed data. `%`
  * inside a QUOTED attribute value
@@ -437,7 +437,7 @@ interface CollectResult {
  * the "meta-only" path held the ENTIRE table's backtrace/binary data in
  * memory before ever getting to skip the heavier per-row Cell build —
  * confirmed live to still OOM (V8 heap exhaustion, ~4 GB) on a real,
- * large Allocations+Leaks recording. See PMT:copper-duck / PMT:spare-cairn.
+ * large Allocations+Leaks recording.
  *
  * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
  *         on malformed XML.
@@ -588,9 +588,9 @@ export async function parseTrackDetailStreamMeta(stdout: Readable, syntheticSche
 }
 
 /**
- * Streams rows straight into a SQLite table instead of a JS array —
- * PMT:gravel-cape's ingestion path for track-detail schemas (Allocations,
- * Leaks, VM Tracker).
+ * Streams rows straight into a SQLite table instead of a JS array — the
+ * ingestion path for track-detail schemas (Allocations, Leaks, VM Tracker)
+ * described in howSessionsWork.md's "Large-table hardening" section.
  *
  * Unlike parseTable.ts's schema-table format (which has an upfront <schema>
  * block, so columns are known before any row arrives), track-detail has NO

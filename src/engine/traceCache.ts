@@ -1,10 +1,12 @@
 /**
- * Persistent trace cache, colocated with the .trace file — PMT:ruby-peak.
+ * Persistent trace cache, colocated with the .trace file (see
+ * howSessionsWork.md for the full design rationale).
  *
- * Once rows live in a SQLite file instead of process memory (PMT:gravel-cape
- * onward), there's no technical reason the cache has to die with the server
- * process the way the old session-scoped temp db did. This module resolves,
- * for a given trace path, WHERE that trace's persistent .db file lives and
+ * Once ingestion streams rows straight into a SQLite file instead of holding
+ * them in a JS array in process memory, there's no technical reason the
+ * cache has to die with the server process the way the old session-scoped
+ * temp db did. This module resolves, for a given trace path, WHERE that
+ * trace's persistent .db file lives and
  * whether an existing one is still fresh — so a brand-new server process
  * reopening a trace a previous process already ingested pays zero re-parse
  * cost, not just "free within one session."
@@ -121,8 +123,11 @@ async function tryOpenAt(
   const storedPath = readMeta(db, META_PATH_KEY);
   // A .db written by an older build has a different (or absent) schema version;
   // reusing it against new-code reads would hit a mismatched frames/symbols
-  // shape (PMT:tidy-warbler). Treat a version mismatch exactly like an mtime
-  // staleness — wipe + re-ingest, no in-place migration.
+  // shape (e.g. an older build's frames table predating frames.symbol_id, or
+  // backtrace fingerprints stored as raw-stack JSON instead of the current
+  // sha256 hash — see sqliteStore.ts's INGEST_SCHEMA_VERSION history). Treat
+  // a version mismatch exactly like an mtime staleness — wipe + re-ingest,
+  // no in-place migration.
   const storedVersion = readMeta(db, META_SCHEMA_VERSION_KEY);
   const fresh =
     storedMtime !== null &&

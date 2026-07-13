@@ -1,7 +1,7 @@
 /**
- * PMT:ruddy-owl pass-1: per-column repetition/size stats, gathered in a cheap
- * stats-only parse (no SQLite writes, no row materialization), used to decide
- * which columns are worth flavor-2 interning.
+ * Pass 1: per-column repetition/size stats, gathered in a cheap stats-only
+ * parse (no SQLite writes, no row materialization), used to decide which
+ * columns are worth flavor-2 interning.
  *
  * The dedup opportunity has a schema-agnostic signature — a column whose
  * distinct-value count is far below its row count AND whose values are

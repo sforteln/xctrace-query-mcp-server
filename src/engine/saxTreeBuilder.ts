@@ -1,7 +1,7 @@
 /**
  * SAX-driven mini-tree builder — the ONLY XML-to-object reconstruction this
- * codebase uses (PMT:black-jay removed the old DOM/fast-xml-parser row-level
- * path entirely; it had zero production callers and, being deliberately
+ * codebase uses (the old DOM/fast-xml-parser row-level path was removed
+ * entirely; it had zero production callers and, being deliberately
  * shape-matched to this builder, shared this same class of bug rather than
  * catching it).
  *
@@ -28,8 +28,8 @@ interface BuilderFrame {
    * Tag names of this frame's OWN children, in TRUE document order — one
    * entry per child close, including a `<sentinel/>` and including repeats.
    * Stamped onto `obj.__childOrder` when this frame itself closes (only when
-   * it has children — a leaf has nothing to order). PMT:black-jay: this is
-   * what lets parseRow walk a row's children by true position instead of
+   * it has children — a leaf has nothing to order). This is what lets
+   * parseRow walk a row's children by true position instead of
    * blind per-engineering-type FIFO queues — a `<sentinel/>` sitting at one
    * position used to be invisible to a same-typed LATER column's queue, so
    * that column silently consumed a value that actually belonged to a

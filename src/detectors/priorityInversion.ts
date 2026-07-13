@@ -1,5 +1,5 @@
 /**
- * PMT:lean-knoll corpus detector — thread priority inversion (the hitch
+ * Corpus detector — thread priority inversion (the hitch
  * "narrow" layer, sibling to qosMismatch.ts — together they complete
  * show(vsync table) → narrow(QoS/priority) → dig(ThreadActivity)).
  *
@@ -24,8 +24,9 @@
  * tuned against a real inversion.
  *
  * cost: CHEAP — a single-table indexed cross-column comparison + duration
- * filter (the same shape find()'s own compareCol, PMT:narrow-ochre, exposes
- * to the AI directly via the callSpec below).
+ * filter (the same shape find()'s own compareCol — comparing two columns on
+ * the same row instead of a literal — exposes to the AI directly via the
+ * callSpec below).
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { fmtCol, rawCol } from "../engine/sqlHydrate.js";

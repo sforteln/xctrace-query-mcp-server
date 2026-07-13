@@ -48,7 +48,7 @@ export interface FindTraceResult {
 // ─── Built-in roots ───────────────────────────────────────────────────────────
 
 /**
- * PMT:serene-wind: `recordingsDir` is whichever directory new recordings are
+ * `recordingsDir` is whichever directory new recordings are
  * ACTUALLY saved to right now — the user-configured one if set, else
  * defaultRecordingsDir(). Always included as a built-in root (not part of the
  * user-facing searchRoots list) so a trace made in one session stays

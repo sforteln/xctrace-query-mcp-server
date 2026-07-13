@@ -5,10 +5,11 @@ import type { CellDetail } from "../core/getRow.js";
 /**
  * Structured entry-point recommendation returned by a lens's quickStart() hook.
  * Folded into the open_trace response's `nextActions` as the single entry
- * flagged `recommended: true` (PMT:spare-goat; `core/response.ts`'s
- * `withRecommended`) so the agent can make the right second call without any
- * intermediate navigation, without a separate `suggestedStart` field that
- * used to duplicate the top of that same list.
+ * flagged `recommended: true` (`core/response.ts`'s `withRecommended`) so the
+ * agent can make the right second call without any intermediate navigation,
+ * without a separate `suggestedStart` field that used to duplicate the top
+ * of that same list. See howLensesWork.md's `quickStart` section for why the
+ * two fields were merged.
  */
 export interface QuickStart {
   /** Schema the agent should focus on. */
@@ -78,15 +79,19 @@ export interface Lens {
    * on schema names alone — no data fetch, no xctrace calls. The registry
    * calls this for every registered lens and returns the first non-null
    * result, folded into open_trace's `nextActions` as the one entry flagged
-   * `recommended: true` (PMT:spare-goat).
+   * `recommended: true`.
    *
    * Because this runs from schema names alone, before any row count is known,
    * prefer a call that's bounded-by-construction regardless of table size
    * (an aggregate/lens tool) over a raw sorted query with no filter/timeRange
-   * bound — a full-table ORDER BY is a real latency (and, pre-dusk-floe, OOM)
-   * risk on a large table, and this hook has no cheap way to tell big from
-   * small up front. See PMT:spare-goat's completion report for the concrete
-   * schemas this bit swiftUI/coreData/hangs/thermal/leaks live in production.
+   * bound — a full-table ORDER BY is a real latency (and, in an earlier version
+   * of this server before verbs read via SQL against an ingested table instead
+   * of a JS array, an OOM) risk on a large table, and this hook has no cheap
+   * way to tell big from small up front. This isn't hypothetical: swiftUI's own
+   * quickStart used to recommend exactly this raw-sort shape, and that schema
+   * is the one that crashed the server at 736,282 rows in production — see
+   * howLensesWork.md's `quickStart` section for the full story and the list of
+   * lenses (swiftUI, coreData, hangs, thermal, leaks) that follow this rule.
    *
    * Implement this when the lens can identify its instrument from schema names
    * and knows a single tool call that surfaces the key finding immediately.

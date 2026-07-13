@@ -13,9 +13,9 @@
  * from a normal structured XctraceError response, which is caught, returned
  * as ordinary content, and logged as ok:true with responseKeys ["error",
  * "message", "details"]). Without this field an ok:false line carries no
- * diagnostic information at all — confirmed a real, live problem during
- * PMT:icy-cedar's log review: a rare uncaught-exception sequence left zero
- * trace of what actually broke, un-investigatable after the fact.
+ * diagnostic information at all — confirmed a real, live problem during a
+ * review of an earlier session log: a rare uncaught-exception sequence left
+ * zero trace of what actually broke, un-investigatable after the fact.
  *
  * Use this to compare unprimed vs. primed AI call sequences:
  *   - Unprimed: let the AI navigate naturally, review the log after.

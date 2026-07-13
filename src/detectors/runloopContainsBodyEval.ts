@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #7 — main-thread runloop turns that CONTAIN
+ * Corpus detector #7 — main-thread runloop turns that CONTAIN
  * a SwiftUI body eval.
  *
  * Counts main-thread "Busy" runloop turns (runloop-intervals: interval-type =

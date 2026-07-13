@@ -1,5 +1,6 @@
 /**
- * Xcode version tracking (PMT:hollow-crystal).
+ * Xcode version tracking — see howVersionResolutionWorks.md for the full
+ * design history.
  *
  * This project has only ever been verified against ONE Xcode build.
  * detectXcodeVersion() (xcodeVersion.ts) still runs so we know what the

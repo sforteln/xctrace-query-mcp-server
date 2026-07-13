@@ -25,12 +25,16 @@ import { detectXcodeVersion } from "./xcodeVersion.js";
 import type { Toc, TocRun } from "./xctrace.js";
 
 /**
- * A schema-per-table SQLite ingestion result (PMT:gravel-cape) — the handle
- * every verb reads through. No `rows` array: callers read data back out via
- * SQL against (dbPath, tableName), not by iterating a JS array. Every verb
+ * A schema-per-table SQLite ingestion result — the handle every verb reads
+ * through. No `rows` array: callers read data back out via SQL against
+ * (dbPath, tableName), not by iterating a JS array. This is the structural
+ * fix for the large-table OOM crashes described in howSessionsWork.md's
+ * "Large-table hardening" section (a large enough table's parsed rows could
+ * exceed Node's heap and crash the whole process; streaming into SQLite
+ * bounds memory use by batch size instead of table size). Every verb
  * (query/aggregate/find/get_row/call_tree/relate/correlate/timeline) reads
- * from SQL against this handle — the JS-array `.rows` shape this replaced is
- * gone entirely (PMT:dusk-floe onward).
+ * from SQL against this handle — the older JS-array `.rows` shape is gone
+ * entirely.
  */
 export interface SqliteTableHandle {
   schema: string;
@@ -87,15 +91,16 @@ export interface TraceSession {
   /** Per-(run,schema) SQLite ingestion cache. Key: `${run}:${schema}`. This
    *  is the real load-once cache — a schema is ingested into SQLite at most
    *  once per session; a cache hit means "already a table in dbPath," not
-   *  "rows held in this Map" (see PMT:gravel-cape). */
+   *  "rows held in this Map" (see the SqliteTableHandle comment above). */
   tableCache: Map<string, SqliteTableHandle>;
   /** Absolute path to this session's persisted SQLite DB file — one file,
    *  one SQL table per (run,schema) inside it. Colocated next to the .trace
-   *  (or in the fallback cache directory) and NOT deleted on close_trace
-   *  (PMT:ruby-peak) — a later session reopening the same trace path reuses
-   *  it, including tables a PRIOR PROCESS already ingested. Null until the
-   *  first table fetch resolves+opens it (see getSessionDb) — open_trace
-   *  itself never touches this. */
+   *  (or in the fallback cache directory) and NOT deleted on close_trace —
+   *  a later session reopening the same trace path reuses it, including
+   *  tables a PRIOR PROCESS already ingested (see howSessionsWork.md's
+   *  "persisted cache" notes for the full design). Null until the first
+   *  table fetch resolves+opens it (see getSessionDb) — open_trace itself
+   *  never touches this. */
   dbPath: string | null;
   /** Lazily opened on first table fetch — cheap to defer since open_trace
    *  itself never touches row data. */
@@ -217,7 +222,11 @@ export async function openTrace(
 
 /**
  * Lazily resolve + open (and cache on the session) the persisted SQLite DB
- * backing this session's ingested tables (PMT:ruby-peak). Deferred until the
+ * backing this session's ingested tables — persisted across process
+ * restarts and colocated with the .trace file, so a later process reopening
+ * the same trace path can reuse tables a prior process already ingested; see
+ * howSessionsWork.md for the full design (staleness check, fallback
+ * directory, WAL-off rationale). Deferred until the
  * first table fetch — cheap to defer since open_trace never touches row
  * data, and this itself stays cheap regardless of WHEN it runs (a local
  * sqlite file open + a one-row _meta read, no xctrace call).
@@ -229,7 +238,7 @@ async function getSessionDb(session: TraceSession): Promise<DatabaseSync> {
   session.db = resolved.db;
   // Registered once per connection, not per query — find()'s regex op compiles
   // down to the regex UDF, aggregate()'s percentile ops to the percentile
-  // aggregates (see PMT:dusk-floe / PMT:round-rime / sqlHydrate.ts's headers).
+  // aggregates (see sqlHydrate.ts's header comments for the UDF implementations).
   registerRegexpUdf(session.db);
   registerPercentileUdfs(session.db);
   registerInternDecodeUdf(session.db);
@@ -240,7 +249,7 @@ async function getSessionDb(session: TraceSession): Promise<DatabaseSync> {
  * Index the columns query/aggregate/find actually filter/group/sort by most —
  * time/thread/weight roles, per aggregate's own "top N by weight" workhorse
  * pattern. Done ONCE, right after ingestion completes, not lazily at query
- * time (PMT:dusk-floe) — a schema should arrive "ready to go." Indexes both
+ * time — a schema should arrive "ready to go." Indexes both
  * the raw column (numeric comparisons, timeRange) and the __fmt column
  * (equality/groupBy, which key off the display value — see aggregate.ts's
  * `groupCell.fmt` groupBy key).
@@ -284,7 +293,7 @@ export function getSession(sessionId: string): TraceSession {
 
 /**
  * Public accessor for the session's SQLite connection — used by
- * query/aggregate/find/get_row (PMT:dusk-floe) to run SQL directly against
+ * query/aggregate/find/get_row to run SQL directly against
  * an already-ingested table. Always call getTable/getTableAtPosition FIRST
  * (this never triggers ingestion itself) so the target table actually exists.
  */
@@ -335,7 +344,8 @@ export async function getTableAtPosition(
 
   const db = await getSessionDb(session);
 
-  // PMT:ruby-peak reuse check — see getTable's matching comment.
+  // Cross-process reuse check — see getTable's matching comment below for
+  // the full explanation.
   const reusedCols = loadIngestedSchemaCols(db, cacheKey);
   let cols: SchemaCol[];
   let rowCount: number;
@@ -375,7 +385,7 @@ export async function getTableAtPosition(
 /**
  * Return (and cache) the ingested-table handle for a given run + schema within
  * a session. First call ingests (xctrace export → SQLite, or a zero-parse reuse
- * of a persisted cache — see getSessionDb/PMT:ruby-peak); subsequent calls
+ * of a persisted cache — see getSessionDb); subsequent calls
  * return the cached SqliteTableHandle.
  *
  * Pass `position` (1-based) when the schema appears more than once in this run's
@@ -414,7 +424,7 @@ export async function getTable(
   //       on the one connection at once, so each ingestion awaits any prior
   //       one on this session before touching the db.
   //
-  // PMT:harsh-brook: layer (2) used to serialize the ENTIRE pipeline,
+  // Historical measurement: layer (2) used to serialize the ENTIRE pipeline,
   // including the `xctrace export` subprocess's own startup/query-compile
   // wait — measured live to be the DOMINANT cost for small/medium schemas
   // (15-17s of a 15.6s total before a single byte arrives), while genuinely
@@ -445,7 +455,7 @@ export async function getTable(
     // (getSchemaMeta already calls this unserialized today).
     const db = await getSessionDb(session);
 
-    // PMT:ruby-peak reuse check — this exact (run,schema) table may already
+    // Cross-process reuse check — this exact (run,schema) table may already
     // sit fully ingested in this SAME persisted db file, left by a PRIOR
     // PROCESS that opened this trace path before (getSessionDb already
     // confirmed the file is fresh — its mtime matches the live .trace — so a
@@ -482,15 +492,15 @@ export async function getTable(
         //
         // The discovery pass never touches `db` (parseTrackDetailStreamMeta
         // takes no db param) — safe to spawn AND fully consume with zero
-        // serialization (PMT:harsh-brook).
+        // serialization (see the layer-(2) serialization note above).
         const discoverExport = await exportXPathStream(session.tracePath, xpath);
         const meta = await raceParseAgainstExport(
           parseTrackDetailStreamMeta(discoverExport.stdout, schema),
           discoverExport.done
         );
         cols = meta.cols;
-        // Spawn immediately (PMT:harsh-brook) — the ingest pass re-runs the
-        // identical xpath and doesn't need `cols` to start the subprocess,
+        // Spawn immediately (see the export/serialization note above) — the
+        // ingest pass re-runs the identical xpath and doesn't need `cols` to start the subprocess,
         // only to parse its output. Only consuming its stdout (which writes
         // rows) waits its turn.
         const ingestExport = await exportXPathStream(session.tracePath, xpath);
@@ -502,7 +512,7 @@ export async function getTable(
         rowCount = ingested.rowCount;
       } else {
         const xpath = buildTableXPath(run, schema);
-        // Spawn immediately (PMT:harsh-brook) — see the layer-(2) comment above.
+        // Spawn immediately — see the layer-(2) comment above.
         const exportHandle = await exportXPathStream(session.tracePath, xpath);
         await prior.catch(() => {});
         const ingested = await raceParseAgainstExport(
@@ -594,7 +604,7 @@ export async function getSchemaMeta(
     return { cols: cachedFull.cols, rowCount: cachedFull.rowCount };
   }
 
-  // PMT:ruby-peak fast path — a PRIOR PROCESS may have already ingested this
+  // Cross-process reuse fast path — a PRIOR PROCESS may have already ingested this
   // exact table into the SAME persisted db file this session just opened,
   // even though THIS process's own in-memory schemaModel/tableCache (both
   // process-local, checked above) don't know about it yet. Opening the
@@ -696,10 +706,11 @@ export function lastRun(sessionId: string): number {
  * dying achieves the same thing, but explicit close lets agents hand back
  * resources.
  *
- * Does NOT delete the session's SQLite DB file (PMT:ruby-peak) — it's now a
+ * Does NOT delete the session's SQLite DB file — it's now a
  * persisted cache colocated with the .trace (or in the fallback cache
  * directory), meant to outlive this process so a later session reopening the
- * same trace path pays zero re-parse cost. Only the connection is closed;
+ * same trace path pays zero re-parse cost (see howSessionsWork.md for the
+ * full persisted-cache design). Only the connection is closed;
  * the file, and every table already ingested into it, stays on disk.
  */
 export function closeSession(sessionId: string): void {
@@ -713,7 +724,8 @@ export function closeSession(sessionId: string): void {
 /**
  * Find the session's overall time bounds from a just-ingested table via a
  * SQL MIN/MAX query — the SQLite-backed counterpart of the old JS loop over
- * `table.rows` (PMT:gravel-cape; there is no rows array to loop over anymore).
+ * `table.rows` (see the SqliteTableHandle comment at the top of this file —
+ * there is no rows array to loop over anymore).
  */
 function updateTimeRange(session: TraceSession, db: DatabaseSync, handle: SqliteTableHandle): void {
   const timeCol = handle.cols.find((c) => TIME_ENGINEERING_TYPES.has(c.engineeringType));

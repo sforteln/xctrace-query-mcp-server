@@ -79,16 +79,16 @@ const SERVER_VERSION = "0.1.0";
 
 // ─── Heap guard ─────────────────────────────────────────────────────────────
 //
-// As of PMT:gravel-cape, session.tableCache holds a lightweight
+// session.tableCache holds a lightweight
 // SqliteTableHandle (column metadata + a row count), not a fully-parsed
 // table — ingested rows live in an on-disk SQLite DB, not this process's
 // heap (see howSessionsWork.md's "Large-table hardening" section). This
 // ceiling is still real insurance, not dead weight: ref/id resolution
 // caches (RefCache, binaryCache, frameCache) are still retained per-parse,
 // column-role classification and response serialization still need
-// headroom, and query/aggregate/find/get_row/call_tree (once PMT:dusk-floe/
-// PMT:elm-swamp rewire them to read via SQL) will still process real
-// result sets in memory — just bounded by result size now, not table size.
+// headroom, and query/aggregate/find/get_row/call_tree (which read via SQL
+// against that on-disk table rather than an in-memory rows array) still
+// process real result sets in memory — just bounded by result size now, not table size.
 // Re-exec with a larger heap if the launch config (Xcode's MCP
 // registration, `claude mcp add`, etc.) didn't already request one, rather
 // than requiring every possible launcher to know to pass this flag.
@@ -308,7 +308,7 @@ export function createServer(): McpServer {
         const versionWarning = buildVersionWarning(result.xcodeVersion);
         const lastRunNum = Math.max(...result.runs.map((r) => r.number));
         const lastRunSchemas = result.runs.find((r) => r.number === lastRunNum)?.schemas ?? [];
-        // PMT:spare-goat: a lens's quickStart becomes the single `recommended:
+        // A lens's quickStart becomes the single `recommended:
         // true` nextAction (was a separate `suggestedStart` payload field that
         // duplicated the top of nextActions) — one ranked list, not two
         // overlapping fields to reconcile.
@@ -316,7 +316,7 @@ export function createServer(): McpServer {
         const quickStartAction: NextAction | null = quickStart
           ? { tool: quickStart.tool, args: quickStart.args, description: quickStart.hint }
           : null;
-        // PMT:ruddy-elk: eager-ingest a curated bounded-schema allowlist (so a
+        // Eager-ingest a curated bounded-schema allowlist (so a
         // cold trace has something to fire on, not just a re-opened one whose
         // tables the .db already held) and sweep EVERY detector — cheap AND
         // expensive — whose schemas are now ingested. A FIRED finding becomes
@@ -1417,7 +1417,7 @@ export function createServer(): McpServer {
     {
       title: "Set Recordings Directory",
       description:
-        "Set (or reset) the directory new recordings are saved to (PMT:serene-wind) — e.g. a " +
+        "Set (or reset) the directory new recordings are saved to — e.g. a " +
         "project-specific folder or an external drive, instead of the default " +
         "~/Library/Application Support/far-swan/recordings. The active directory (default or " +
         "configured) is always scanned by list_traces/find_trace as a built-in root, so a " +
@@ -1455,7 +1455,7 @@ export function createServer(): McpServer {
       description:
         "Set (or reset) the fallback directory used to persist a trace's SQLite cache when the " +
         "trace's own directory isn't writable (a read-only mount, permissions, an Xcode-managed " +
-        "autosave directory) — PMT:ruby-peak. Every trace's cache is normally colocated right next " +
+        "autosave directory). Every trace's cache is normally colocated right next " +
         "to the .trace file itself (same basename, .db extension); this fallback directory is only " +
         "used for the traces that can't do that, and serves many traces at once (each keyed by a " +
         "hash of its absolute path). Omit `path` to reset to the OS-convention default. " +
@@ -1677,7 +1677,7 @@ export function createServer(): McpServer {
         "start_recording",
         { instruments, template, attach, launch, timeLimit, device, signpostSubsystems },
         async () => {
-          // PMT:ash-stone gap #1: `instruments` alone (no `template` at all)
+          // Gap: `instruments` alone (no `template` at all)
           // is valid — xctrace has an implicit "Blank template" fallback when
           // --template is never passed, verified live (`xcrun xctrace record
           // --instrument "HTTP Traffic" --attach <pid> ...` with no
@@ -1753,7 +1753,7 @@ export function createServer(): McpServer {
         const result = await stopSession(recordingId);
         const opened = await tryOpenTrace(result.tracePath);
         const sessionId = "session" in opened ? opened.session.sessionId : undefined;
-        // PMT:ruddy-elk: run the eager bounded-schema sweep right here — this
+        // Run the eager bounded-schema sweep right here — this
         // is the exact moment (nothing ingested yet) the old detector sweep
         // always returned empty for. Best-effort: the sweep itself must never
         // stop stop_recording from returning the .trace path it just finalized.

@@ -1,5 +1,5 @@
 /**
- * PMT:flint-larch corpus detector #8 — Foundation Models prompt-caching
+ * Corpus detector #8 — Foundation Models prompt-caching
  * misses.
  *
  * ModelInferenceTable rows carry a `cached-tokens` count — how many of the
@@ -15,9 +15,8 @@
  * percentile), the same intrinsically-bounded shape as the template detector.
  *
  * Not validated against a real trace — no Foundation Models recording was
- * available in ~/Documents/traces or the recordings dir at authoring time
- * (see the PMT:flint-larch completion report). Unit-tested against a synthetic
- * ModelInferenceTable only.
+ * available in ~/Documents/traces or the recordings dir at authoring time.
+ * Unit-tested against a synthetic ModelInferenceTable only.
  */
 import { quoteIdent, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
 import { rawCol } from "../engine/sqlHydrate.js";

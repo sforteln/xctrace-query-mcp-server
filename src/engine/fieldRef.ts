@@ -1,8 +1,8 @@
 /**
- * Dot-path field references (PMT:bare-shoal) — the AI-facing complement to
- * PMT:tall-bench's nested-column promotion.
+ * Dot-path field references — the AI-facing complement to this codebase's
+ * nested-column promotion.
  *
- * tall-bench made nested values queryable by promoting them to real SQL columns
+ * Promotion made nested values queryable by promoting them to real SQL columns
  * (thread.process.pid -> physical column thread__process__pid). This layer lets
  * an agent REACH them by a clean dot-path ("thread.process.pid") without ever
  * seeing the physical "__" column names, and — critically — collapses provably
@@ -12,7 +12,8 @@
  *
  * The identity is a recorded FACT from ingestion (ColumnIdentityTracker's
  * object-identity observation, persisted to column_identity), not a runtime
- * re-inference from lossy leftovers — see PMT:bare-shoal's approach note.
+ * re-inference from lossy leftovers — see howSessionsWork.md's "Nested fields
+ * are addressable by dot-path" note for how that observation is made.
  *
  * Physical naming makes resolution mostly mechanical: a dot-path a.b.c maps to
  * base column a__b__c, and sqlHydrate's fmtCol/rawCol already append __fmt / use
@@ -145,7 +146,7 @@ export class FieldResolver {
   }
 }
 
-/** Build a resolver for one ingested (run,schema) table — reads PMT:bare-shoal's persisted metadata. */
+/** Build a resolver for one ingested (run,schema) table — reads the promoted_column/column_identity metadata this file's header describes, persisted at ingestion. */
 export function buildFieldResolver(db: DatabaseSync, tableName: string, cols: SchemaCol[]): FieldResolver {
   return new FieldResolver(cols, loadPromotedColumns(db, tableName), loadColumnIdentity(db, tableName));
 }

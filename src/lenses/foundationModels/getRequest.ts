@@ -23,8 +23,9 @@ import { FM_SCHEMA } from "./listRequests.js";
 
 /**
  * A single hydrated row by _row_idx — the same scoped WHERE _row_idx=? lookup
- * get_row.ts uses, NOT fetchAllRowsHydrated's whole-table fetch (PMT:warm-mica).
- * Each of getRequest/getResponse/getPrompt needs exactly one row; there's no
+ * get_row.ts uses, NOT fetchAllRowsHydrated's whole-table fetch (see
+ * howLensesWork.md's "Lenses use bespoke scoped SQL" note). Each of
+ * getRequest/getResponse/getPrompt needs exactly one row; there's no
  * reason to hydrate every other row in the table (fmt/raw/children/frame
  * lookups) just to discard all but one.
  */
@@ -34,7 +35,9 @@ export function fetchHydratedRow(db: DatabaseSync, handle: SqliteTableHandle, ro
     .get(rowIndex) as Record<string, unknown> | undefined;
   if (!sqlRow) throw new Error(`rowIndex ${rowIndex} out of range (0–${handle.rowCount - 1})`);
   // FM tables hold large interned values (instructions/response/content) —
-  // resolve them back on hydration (PMT:lime-bluff).
+  // large repeated blobs are stored on disk as a short sentinel token pointing
+  // into a dedup side table rather than the literal string, so they must be
+  // resolved back to real content on hydration or the caller sees the token.
   return hydrateNormalizedRow(handle.cols, sqlRow, makeFrameLookup(db), makeInternResolver(db));
 }
 
@@ -191,7 +194,8 @@ export async function getFmEvents(
   const table = quoteIdent(handle.tableName);
 
   // Anchor's model-request-id, via a single scoped row lookup — not a
-  // full-table hydration just to read one column of one row (PMT:warm-mica).
+  // full-table hydration just to read one column of one row (see
+  // howLensesWork.md's "Lenses use bespoke scoped SQL" note).
   const anchorRow = db
     .prepare(`SELECT ${quoteIdent(fmtCol("model-request-id"))} AS rid FROM ${table} WHERE ${quoteIdent(ROW_IDX_COLUMN)} = ?`)
     .get(rowIndex) as { rid: string | null } | undefined;
@@ -224,7 +228,7 @@ export async function getFmEvents(
       duration: row.duration,
       resolve: row.resolve,
       color: row.color,
-      content: unintern(row.content) as string | null, // content may be interned (PMT:lime-bluff)
+      content: unintern(row.content) as string | null, // content may be a large interned value stored as a sentinel token — resolve it back before returning
       errorCount,
       hasError: errorCount > 0,
     };

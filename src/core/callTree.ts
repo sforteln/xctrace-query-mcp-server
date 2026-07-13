@@ -4,7 +4,7 @@
  * The `time-profile`/`cpu-profile` schemas carry inline symbolicated call
  * stacks as `<tagged-backtrace>` frames; Allocations (track-detail) carries a
  * resolved `<backtrace>` per row. Both now ingest through the normal streaming
- * path (PMT:elm-swamp) — the tagged-backtrace column is a backtrace column
+ * path — the tagged-backtrace column is a backtrace column
  * like any other (see sqliteStore.ts's isBacktraceCol), its frames stored as
  * queryable rows in the shared `frames` table. call_tree issues ONE bounded
  * SELECT (weight + backtrace_id, filtered by thread/timeRange), resolves each
@@ -59,7 +59,7 @@ export interface CallTreeNode {
  * Time Profiler shows THAT a thread is blocked here, never WHAT it's blocked
  * on — that requires System Trace or thread-state instrumentation instead.
  *
- * Exported so the off-CPU classifier (PMT:lean-pass, offCpuClassifier.ts) —
+ * Exported so the off-CPU classifier (offCpuClassifier.ts) —
  * which works the OTHER direction, from System-Trace/syscall backtraces where
  * WHAT it's blocked on IS visible — reuses this same wait-primitive vocabulary
  * rather than duplicating a drifting copy. That classifier folds in a few more
@@ -200,7 +200,7 @@ function getOrCreate(map: Map<string, TreeNode>, key: string, name: string, bina
 
 /**
  * Add one distinct stack to the tree with its AGGREGATED weight + sample count
- * (PMT:elm-swamp folds per distinct backtrace, not per row — identical stacks
+ * (folds per distinct backtrace, not per row — identical stacks
  * share a backtrace_id, so `weight` is the SUM and `count` the COUNT across all
  * that stack's samples). Arithmetically identical to `count` individual
  * single-sample adds, because every accumulation here is additive.
@@ -427,7 +427,7 @@ const WINDOW_CAPTURE_THRESHOLD_PCT = 50;
 const DEGENERATE_BACKTRACE_MIN_SAMPLES = 10;
 
 /**
- * Verified live (PMT:clear-crow, triaging the "attach-mode-degenerate-
+ * Verified live (triaging the "attach-mode-degenerate-
  * backtraces" candidate in aidocs/adviceCaptureLog.md): recording Allocations
  * via `--attach` against an already-running process produced 275,314 rows
  * where EVERY backtrace resolved to the SAME single degenerate frame
@@ -793,7 +793,7 @@ function emptyCallTreeResult(
 }
 
 /**
- * Fold a call tree from the ingested SQLite table (PMT:elm-swamp), bounded in
+ * Fold a call tree from the ingested SQLite table, bounded in
  * memory: AGGREGATE weight + sample count per DISTINCT backtrace_id in SQL
  * first (identical stacks already share a backtrace_id via the frames dedup),
  * then process each distinct stack ONCE — resolving its frames on the spot and
@@ -813,7 +813,7 @@ interface FoldResult {
 }
 
 /**
- * PMT:thorny-verge — the deferred f3203f0 bonus: when a fold produces
+ * The deferred f3203f0 bonus: when a fold produces
  * totalSamples===0 despite a real backtrace column being present (the
  * wrong-schema case is already handled upstream by emptyCallTreeResult
  * before this ever runs), distinguish WHY: a thread filter that matched
@@ -904,7 +904,7 @@ function foldFromSql(
     // Large/low-cardinality columns (a thread column on any real, multi-
     // thousand-sample trace is exactly this shape — a handful of distinct
     // thread identities repeated across every sample) get flavor-2 interned
-    // at ingest (PMT:ruddy-owl): the physical __fmt cell holds a sentinel
+    // at ingest: the physical __fmt cell holds a sentinel
     // token, not the display text. find/query already decode through
     // internResolved() before matching (see sqlHydrate.ts's buildCondition);
     // a bare LIKE against the raw column here would silently compare against
@@ -934,7 +934,7 @@ function foldFromSql(
     `FROM ${quoteIdent(tableName)} WHERE ${conds.join(" AND ")} GROUP BY ${btIdCol}`
   );
   const framesStmt = db.prepare(
-    // Frame content is deduped into `symbols` — join to read it (PMT:tidy-warbler).
+    // Frame content is deduped into `symbols` — join to read it.
     "SELECT s.name AS name, s.binary AS binary FROM frames f JOIN symbols s ON f.symbol_id = s.id " +
       "WHERE f.backtrace_id = ? ORDER BY f.frame_index ASC"
   );
@@ -968,11 +968,11 @@ function backtraceMnemonic(cols: SchemaCol[]): string | null {
 /**
  * call_tree for track-detail schemas (Allocations/Allocations List) — weighted
  * by allocated bytes (the schema's pinned primaryWeight, "size") instead of
- * sample duration, folding from the SQLite table (PMT:elm-swamp) the same way
+ * sample duration, folding from the SQLite table the same way
  * the schema-table path does.
  *
  * Supports `timeRange` now that track-detail's timestamp is parsed to numeric
- * ns at ingest (PMT:light-reed) — the filter pushes into foldFromSql's SELECT
+ * ns at ingest — the filter pushes into foldFromSql's SELECT
  * exactly like the schema-table path. `thread` is still unsupported: an
  * Allocations row's thread is a bare hex `thread-id` (engineering-type
  * "string"), not a "thread"-role column with a display name to substring-match
@@ -1016,7 +1016,7 @@ async function buildTrackDetailCallTree(
   }
 
   const weightMnemonic = hintFor(schema)?.primaryWeight ?? "size";
-  // Time filter pushes into the fold's SELECT (PMT:light-reed) — the timestamp
+  // Time filter pushes into the fold's SELECT — the timestamp
   // is now a numeric-ns column just like a schema-table time role. thread has
   // no comparable column here, so it's still ignored (noted below).
   const classified = classifyWithHints(schema, handle.cols);
@@ -1061,7 +1061,7 @@ export async function callTree(
   // different XML shape (no <schema>/<col> block, no tagged-backtrace sample
   // tree) — dispatch to the dedicated path instead of building a
   // table[@schema=...] xpath that structurally can't match a track/detail
-  // resource. See PMT:spare-cairn.
+  // resource.
   const modelEntry = session.schemaModel.find((e) => e.run === run && e.toc.schema === schema);
   if (modelEntry?.source === "track-detail") {
     return buildTrackDetailCallTree(sessionId, schema, run, position, view, thread, timeRange, maxDepth, topN, spineLeaf, spineFull);
@@ -1069,7 +1069,7 @@ export async function callTree(
 
   // Ingest via the NORMAL streaming path — no bespoke XML parser anymore
   // (getTable handles the ambiguity guard + position). tagged-backtrace is a
-  // backtrace column like any other now (PMT:elm-swamp).
+  // backtrace column like any other now.
   let handle;
   try {
     handle = await getTable(sessionId, run, schema, position);

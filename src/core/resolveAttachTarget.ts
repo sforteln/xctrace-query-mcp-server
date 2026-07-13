@@ -1,7 +1,7 @@
 /**
  * resolveAttachTarget — turn an attach target (CFBundleIdentifier, app name, or
  * PID) into a live PID for a device/Simulator recording, so far-swan attaches by
- * PID (PMT:sleek-vault).
+ * PID.
  *
  * Why this exists: xctrace's attach-by-NAME does NOT resolve on a device or
  * Simulator even when the named process is running (verified — "cannot find

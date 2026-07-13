@@ -1,5 +1,5 @@
 /**
- * relate — the generic cross-schema join operator (PMT:ruddy-stork).
+ * relate — the generic cross-schema join operator.
  *
  * Two orthogonal knobs (scratchpad entry 039.B's 2×2) collapse four distinct
  * profiling questions into one operator instead of one tool each:
@@ -19,7 +19,7 @@
  * drill-down that returns the actual matched (exists) or unmatched
  * (not-exists) A rows (progressive disclosure, not a count-only dead end).
  *
- * Runs as SQL against PMT:gravel-cape's ingested tables (getTable ensures both
+ * Runs as SQL against the SQLite-ingested tables (getTable ensures both
  * are ingested + role-indexed), NOT a JS-array parse — the time-range corners
  * are RANGE joins whose speed depends entirely on the time column being indexed
  * (dusk-floe's indexRoleColumns does this at ingest); see ruddy-stork's 039.C caution.
@@ -123,7 +123,7 @@ export interface RelateResult {
   /**
    * Present only when totalA is 0 — distinguishes "your aFilter/timeRange
    * excluded every schemaA row" (schemaA has data) from "schemaA genuinely
-   * has 0 rows" (PMT:thorny-verge). totalMatches/totalGroups being 0 with
+   * has 0 rows". totalMatches/totalGroups being 0 with
    * totalA > 0 is often a legitimate finding (e.g. "0 unmatched" for a
    * not-exists/leak check is good news), so this deliberately does NOT fire
    * on that case — only on the genuinely ambiguous "no A rows at all" one.
@@ -135,7 +135,7 @@ export interface RelateResult {
 
 /**
  * Duration column must be nanoseconds-shaped (added to start to form end) —
- * see correlate.ts's original note. Exported for PMT:coral-cliff's timeline(),
+ * see correlate.ts's original note. Exported for timeline(),
  * which resolves duration the same way (a schema's dur is only meaningful as
  * a genuine time span, not an arbitrary weight unit like bytes).
  */
@@ -149,7 +149,7 @@ export function preferredDurationColumn(classified: ClassifiedColumn[], primaryW
   return firstWithRole(classified, "weight")?.mnemonic ?? null;
 }
 
-/** Exported for PMT:coral-cliff's timeline(), which resolves each merged schema's time column the same way. */
+/** Exported for timeline(), which resolves each merged schema's time column the same way. */
 export function primaryTime(schema: string, classified: ClassifiedColumn[]): string | null {
   return hintFor(schema)?.primaryTime ?? firstWithRole(classified, "time")?.mnemonic ?? null;
 }
@@ -224,7 +224,7 @@ export async function relate(
 
   // A-side WHERE (aFilter + A timeRange on A's own time column).
   const aTimeCol = primaryTime(schemaA, classA);
-  // PMT:ruddy-owl: a joined/filtered column may be flavor-2 interned in one
+  // A joined/filtered column may be flavor-2 interned in one
   // table but not the other (per-table decision), so equality targets resolve
   // to their stored sentinel and join keys resolve column content on BOTH sides.
   const internTarget = makeInternTargetResolver(db);
@@ -251,8 +251,8 @@ export async function relate(
   // are for BOTH source formats: schema-table time roles carry ns element text
   // (coerceRaw turns all-digit strings into numbers), and track-detail's
   // "MM:SS.mmm.µµµ" timestamp — which used to land here as a string that
-  // compared lexically — is parsed to ns at ingest (PMT:light-reed,
-  // parseTrackDetail.ts's coerceTrackDetailRaw). The A side is a per-A-row
+  // compared lexically — is parsed to ns at ingest
+  // (parseTrackDetail.ts's coerceTrackDetailRaw). The A side is a per-A-row
   // constant (outer loop), so its + arithmetic is fine bare too.
   const coreMatch =
     joinCondition === "time-range"
@@ -364,7 +364,7 @@ export async function relate(
         "then retry matchThread:false if they genuinely differ before concluding there's no relation."
       : undefined;
 
-  // PMT:thorny-verge: only fires on totalA===0 (no schemaA rows at all to
+  // Only fires on totalA===0 (no schemaA rows at all to
   // relate) — NOT on totalMatches/totalGroups===0 with totalA>0, since that's
   // often the legitimate finding itself (e.g. "0 unmatched" for a leak check).
   const note =
@@ -416,7 +416,7 @@ function aliasedEqualityFilter(
       clauses.push(`(${raw} = ? OR CAST(${raw} AS TEXT) = ?)`);
       params.push(expected, String(expected));
     } else {
-      // Resolve an interned target to its stored sentinel (PMT:ruddy-owl).
+      // Resolve an interned target to its stored sentinel.
       const stored = internTarget ? internTarget(expected) : expected;
       clauses.push(`(${fmt} = ? OR CAST(${raw} AS TEXT) = ?)`);
       params.push(stored, stored);
