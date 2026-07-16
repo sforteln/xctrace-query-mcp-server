@@ -1,5 +1,5 @@
 /**
- * The detector registry. Every detector far-swan ships is
+ * The detector registry. Every detector this server ships is
  * listed here; runCheapDetectors / availableExpensiveDetectors filter it by
  * cost + which schemas are ingested. The corpus detectors and
  * the outlier-sweep / near-miss lenses register here as they land.

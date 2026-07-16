@@ -79,9 +79,9 @@ This is the standing rule for EVERY "should this be a free verb or a named lens/
 
 Two consequences that fall out of the rule:
 - **The eager-on-open_trace detector sweep is affordable** precisely because only intrinsically-cheap detectors run eagerly — so open_trace stays fast on any trace size.
-- **SQL is never the AI's surface.** SQL is the internal implementation language of verbs and detectors; a detector returns a structured Finding (summary + firing conditions + a re-runnable callSpec in far-swan's OWN verbs + get_row/timeRange handles), never a SQL string. Exposing SQL is far-swan's analog of handing the model a delete tool (injection, runaway scans, unbounded surface).
+- **SQL is never the AI's surface.** SQL is the internal implementation language of verbs and detectors; a detector returns a structured Finding (summary + firing conditions + a re-runnable callSpec in this server's OWN verbs + get_row/timeRange handles), never a SQL string. Exposing SQL is this server's analog of handing the model a delete tool (injection, runaway scans, unbounded surface).
 
-(The core-vs-lens principle also belongs in the `mcp-server-design` skill as a general MCP rule; recorded here as the far-swan-specific home.)
+(The core-vs-lens principle also belongs in the `mcp-server-design` skill as a general MCP rule; recorded here as this project's specific home.)
 
 ## What looks surprising but is intentional
 

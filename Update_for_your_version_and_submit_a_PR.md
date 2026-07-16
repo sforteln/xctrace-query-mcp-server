@@ -247,7 +247,7 @@ npm run build
 **Wire it into Claude Code** (replaces the published server for this project):
 
 ```bash
-claude mcp add instruments-mcp-server -- node /absolute/path/to/your/fork/dist/index.js
+claude mcp add xctrace-query-mcp-server -- node /absolute/path/to/your/fork/dist/index.js
 ```
 
 **Or in Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
@@ -255,7 +255,7 @@ claude mcp add instruments-mcp-server -- node /absolute/path/to/your/fork/dist/i
 ```json
 {
   "mcpServers": {
-    "instruments-mcp-server": {
+    "xctrace-query-mcp-server": {
       "command": "node",
       "args": ["/absolute/path/to/your/fork/dist/index.js"]
     }
@@ -269,6 +269,6 @@ To enable session call logging (useful for debugging which tools the agent is se
 
 ```bash
 # Claude Code — add --log to the args
-claude mcp add instruments-mcp-server -- node /path/to/fork/dist/index.js --log
-# Logs appear in ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
+claude mcp add xctrace-query-mcp-server -- node /path/to/fork/dist/index.js --log
+# Logs appear in ~/Library/Logs/xctrace-query-mcp-server/session-<timestamp>.jsonl
 ```

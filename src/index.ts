@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * instruments-mcp-server — headless stdio MCP server entry point.
+ * xctrace-query-mcp-server — headless stdio MCP server entry point.
  *
  * Registers the universal core MCP tools. The server is schema-agnostic:
  * it works on any Instruments .trace by introspecting column roles at runtime.
@@ -74,7 +74,7 @@ import {
 import type { NextAction } from "./core/response.js";
 import { eagerSweep } from "./detectors/surface.js";
 
-const SERVER_NAME = "instruments-mcp-server";
+const SERVER_NAME = "xctrace-query-mcp-server";
 const SERVER_VERSION = "0.1.0";
 
 // ─── Heap guard ─────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ const SERVER_VERSION = "0.1.0";
 // Re-exec with a larger heap if the launch config (Xcode's MCP
 // registration, `claude mcp add`, etc.) didn't already request one, rather
 // than requiring every possible launcher to know to pass this flag.
-const HEAP_MB = Number(process.env.INSTRUMENTS_MCP_MAX_HEAP_MB) || 8192;
+const HEAP_MB = Number(process.env.XCTRACE_QUERY_MCP_MAX_HEAP_MB) || 8192;
 if (
   process.argv[1] === fileURLToPath(import.meta.url) &&
   !process.execArgv.some((a) => a.startsWith("--max-old-space-size"))
@@ -1419,7 +1419,7 @@ export function createServer(): McpServer {
       description:
         "Set (or reset) the directory new recordings are saved to — e.g. a " +
         "project-specific folder or an external drive, instead of the default " +
-        "~/Library/Application Support/far-swan/recordings. The active directory (default or " +
+        "~/Library/Application Support/xctrace-query-mcp-server/recordings. The active directory (default or " +
         "configured) is always scanned by list_traces/find_trace as a built-in root, so a " +
         "recording made in one session stays discoverable by name in a later one. Omit `path` to " +
         "reset to the OS-convention default. " +
@@ -1593,10 +1593,10 @@ export function createServer(): McpServer {
       .optional()
       .describe(
         "PID, CFBundleIdentifier, or process name of an ALREADY-RUNNING process to attach to. " +
-          "For a device/Simulator target, prefer the CFBundleIdentifier (e.g. \"com.acme.MyApp\") — far-swan " +
+          "For a device/Simulator target, prefer the CFBundleIdentifier (e.g. \"com.acme.MyApp\") — this server " +
           "resolves it to the live PID, because attach-by-NAME doesn't resolve on a device/sim and the process " +
           "name is CFBundleExecutable, NOT the display name shown on the Home Screen / in Instruments. The app " +
-          "must already be running (start it in Xcode) — far-swan attaches, it never launches or deploys. " +
+          "must already be running (start it in Xcode) — this server attaches, it never launches or deploys. " +
           "Attach to a STABLE running instance, not one that just launched or was just relaunched — a " +
           "freshly-(re)started process's PID can churn or briefly report stale in launchctl/devicectl, so a " +
           "resolve immediately after Xcode → Run can attach to the wrong (or a dead) PID; give it a moment to " +
@@ -1683,7 +1683,7 @@ export function createServer(): McpServer {
           // --instrument "HTTP Traffic" --attach <pid> ...` with no
           // --template flag works and prints "Starting recording with the
           // Blank template and HTTP Traffic Instrument"). This is a self-
-          // imposed far-swan restriction being relaxed, not new xctrace
+          // imposed restriction of this server being relaxed, not new xctrace
           // behavior. `signpostSubsystems` alone is ALSO sufficient — it
           // composes bare os_signpost, giving something concrete to record.
           const hasBase = template !== undefined && (!Array.isArray(template) || template.length > 0);

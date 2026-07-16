@@ -17,10 +17,10 @@ describe("builtInRootPaths", () => {
   });
 
   it("reflects whichever recordings directory is passed — default or reconfigured", () => {
-    const withDefault = builtInRootPaths("/Users/x/Library/Application Support/far-swan/recordings");
+    const withDefault = builtInRootPaths("/Users/x/Library/Application Support/xctrace-query-mcp-server/recordings");
     const withCustom = builtInRootPaths("/Volumes/External/traces");
-    expect(withDefault).toContain("/Users/x/Library/Application Support/far-swan/recordings");
+    expect(withDefault).toContain("/Users/x/Library/Application Support/xctrace-query-mcp-server/recordings");
     expect(withCustom).toContain("/Volumes/External/traces");
-    expect(withCustom).not.toContain("/Users/x/Library/Application Support/far-swan/recordings");
+    expect(withCustom).not.toContain("/Users/x/Library/Application Support/xctrace-query-mcp-server/recordings");
   });
 });

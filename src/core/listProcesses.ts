@@ -69,7 +69,7 @@ export function parsePsOutput(
       return { pid: Number(cols[0]), user: cols[1], stat: cols[2], command: cols.slice(3).join(" ") };
     })
     .filter((p) => {
-      if (p.command.includes("xctrace") || p.command.includes("instruments-mcp-server")) return false;
+      if (p.command.includes("xctrace") || p.command.includes("xctrace-query-mcp-server")) return false;
       if (searchLower !== undefined) return p.command.toLowerCase().includes(searchLower);
       return p.user === opts.currentUser && !SYSTEM_PREFIXES.some((prefix) => p.command.startsWith(prefix));
     })

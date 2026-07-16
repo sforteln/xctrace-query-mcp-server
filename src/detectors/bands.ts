@@ -22,7 +22,7 @@
  * `type` ("Excessive Writes"/"Suboptimal Caching"/...) and `significance`
  * ("High"/"Moderate"/"Low") columns ARE aidocs #2's rate-per-window and
  * same-key-correlation rules, already evaluated by Apple before the row
- * ever reaches this server — there's no raw metric here for a far-swan band
+ * ever reaches this server — there's no raw metric here for this server
  * to threshold. The real gotcha (verified live, documented in the File
  * Activity lens/TEMPLATE_NOTES instead of here) is that `significance`
  * itself doesn't reliably track `duration` — a "Moderate" row can dwarf

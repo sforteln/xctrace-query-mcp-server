@@ -146,7 +146,7 @@ export interface TocInstrumentSettings {
 
 /**
  * The `<summary>` block from `--toc`'s `<run><info>` — what this run was
- * ACTUALLY recorded with, straight from xctrace itself (not far-swan's
+ * ACTUALLY recorded with, straight from xctrace itself (not this server's
  * memory of what it asked for). Genuinely useful for two things: (1) a
  * reminder when reopening a trace later ("what was this?"), and (2) a
  * self-check — comparing this against what start_recording was actually

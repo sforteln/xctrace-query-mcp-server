@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
 
-const tempRecordingsDir = mkdtempSync(join(tmpdir(), "far-swan-open-mantle-test-"));
+const tempRecordingsDir = mkdtempSync(join(tmpdir(), "xctrace-query-mcp-server-open-mantle-test-"));
 
 vi.mock("../src/config.js", () => ({
   getConfig: async () => ({ searchRoots: [], fallbackCacheDir: null, recordingsDir: tempRecordingsDir }),

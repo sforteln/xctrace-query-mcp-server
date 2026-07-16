@@ -400,7 +400,7 @@ export async function startSession(
 
   // Attach-by-NAME doesn't resolve on a device/Simulator, so when
   // targeting one, resolve the CFBundleIdentifier/name to a live PID and attach by
-  // PID (the app must already be running — far-swan attaches, never launches). On
+  // PID (the app must already be running — this server attaches, never launches). On
   // the host Mac (no device) attach-by-name works, so pass it through unchanged.
   const resolvedAttach =
     attach !== undefined && device !== undefined

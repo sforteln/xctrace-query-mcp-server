@@ -8,7 +8,7 @@
  * offline-validated template in the first place. A future Xcode/xctrace
  * update could silently break either half of that: the template itself (a
  * private, undocumented NSKeyedArchiver format Apple gives no compatibility
- * guarantee on) or far-swan's OWN track-detail parser reading it back. This
+ * guarantee on) or this server's OWN track-detail parser reading it back. This
  * script is NOT part of `npm test` — it needs a real, non-SIP-restricted
  * local process to attach to and takes several seconds, so it can't be fast
  * or deterministic enough for the CI-run suite (verified live: SIP blocks

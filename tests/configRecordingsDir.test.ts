@@ -1,6 +1,6 @@
 /**
  * PMT:serene-wind — config.ts's recordingsDir field. Mocks node:fs/promises
- * so this never touches the real ~/Library/Application Support/far-swan/
+ * so this never touches the real ~/Library/Application Support/xctrace-query-mcp-server/
  * config.json on the machine running the test (config.ts has no path-
  * injection seam — configPath() is hardcoded to the real homedir()).
  */
@@ -18,9 +18,9 @@ vi.mock("node:fs/promises", () => ({
 const { loadConfig, defaultRecordingsDir } = await import("../src/config.js");
 
 describe("defaultRecordingsDir", () => {
-  it("returns a path under far-swan's Application Support directory, ending in 'recordings'", () => {
+  it("returns a path under xctrace-query-mcp-server's Application Support directory, ending in 'recordings'", () => {
     const dir = defaultRecordingsDir();
-    expect(dir).toMatch(/far-swan[\\/]recordings$/);
+    expect(dir).toMatch(/xctrace-query-mcp-server[\\/]recordings$/);
   });
 });
 

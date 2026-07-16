@@ -7,7 +7,7 @@
  * xctrace export is still streaming, well before this server actually
  * finishes (confirmed live: query/describe_schema/correlate calls have taken
  * 5-13 minutes on large traces — see session logs under
- * ~/Library/Logs/instruments-mcp-server/). Nothing cancels the in-flight
+ * ~/Library/Logs/xctrace-query-mcp-server/). Nothing cancels the in-flight
  * work just because the client gave up waiting, so the call still completes
  * and its result is worth keeping: the AI's next-turn retry with the exact
  * same args should get the already-computed answer instantly instead of

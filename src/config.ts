@@ -1,8 +1,8 @@
 /**
- * Server-owned runtime config at ~/Library/Application Support/far-swan/config.json.
+ * Server-owned runtime config at ~/Library/Application Support/xctrace-query-mcp-server/config.json.
  *
  * Two-owner model:
- *   Client-owned: `claude mcp add … -- npx instruments-mcp-server` (launch + scope, static)
+ *   Client-owned: `claude mcp add … -- npx xctrace-query-mcp-server` (launch + scope, static)
  *   Server-owned: this file (runtime prefs that must survive the short-lived subprocess)
  *
  * Writes are atomic: write to a .tmp sibling then fs.rename(), which is an
@@ -48,17 +48,17 @@ const DEFAULT_CONFIG: ServerConfig = {
 // ─── Path ─────────────────────────────────────────────────────────────────────
 
 export function configPath(): string {
-  return join(homedir(), "Library", "Application Support", "far-swan", "config.json");
+  return join(homedir(), "Library", "Application Support", "xctrace-query-mcp-server", "config.json");
 }
 
 /** OS-convention default for the fallback trace-cache directory — sibling to config.json. */
 export function defaultFallbackCacheDir(): string {
-  return join(homedir(), "Library", "Application Support", "far-swan", "trace-cache");
+  return join(homedir(), "Library", "Application Support", "xctrace-query-mcp-server", "trace-cache");
 }
 
 /** OS-convention default for where new recordings are saved — sibling to config.json. */
 export function defaultRecordingsDir(): string {
-  return join(homedir(), "Library", "Application Support", "far-swan", "recordings");
+  return join(homedir(), "Library", "Application Support", "xctrace-query-mcp-server", "recordings");
 }
 
 // ─── Load ─────────────────────────────────────────────────────────────────────

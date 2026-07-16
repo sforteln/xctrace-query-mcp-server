@@ -3,7 +3,7 @@
  * A shipped custom .tracetemplate (e.g. "memory-vm") passes its resolved
  * ABSOLUTE PATH as `template`, not a short name — verified live before this
  * fix existed: the recorded filename ballooned into a slugified copy of the
- * entire directory tree ("…-users-simonfortelny-git-instruments-mcp-server-
+ * entire directory tree ("…-users-simonfortelny-git-xctrace-query-mcp-server-
  * assets-allocvmtrackerauto3s-tracetemplate.trace").
  */
 import { describe, it, expect } from "vitest";
@@ -16,7 +16,7 @@ describe("slugFromTemplate", () => {
   });
 
   it("slugs from the BASENAME of an absolute path, not the whole path", () => {
-    const path = "/Users/simonfortelny/git/instruments-mcp-server/assets/AllocVMTrackerAuto3s.tracetemplate";
+    const path = "/Users/simonfortelny/git/xctrace-query-mcp-server/assets/AllocVMTrackerAuto3s.tracetemplate";
     expect(slugFromTemplate(path)).toBe("allocvmtrackerauto3s");
   });
 

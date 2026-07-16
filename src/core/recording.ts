@@ -365,7 +365,7 @@ const INSTRUMENT_NOT_FOUND_RE = /Instrument with name ['"]([^'"]+)['"] cannot be
  * "System Trace" IS a real, valid template name (`xctrace list templates`),
  * just not a bare instrument. Cross-references the EXISTING template-name
  * sources (TEMPLATE_ONLY_NAMES ∪ TEMPLATE_BUNDLES's keys) rather than
- * introducing a new one — this reliably covers every template far-swan
+ * introducing a new one — this reliably covers every template this server
  * already curates, though it won't recognize a real template name that has
  * never been added to either table (a genuinely unrecognized name, matching
  * neither instruments nor known templates, correctly gets no hint at all).
@@ -573,7 +573,7 @@ export function bareInstrumentTemplateNotes(
 /**
  * Hangs' com.apple.runtime-issues os-log coverage never
  * survives a bare `--instrument` addition (see expandTemplates' fidelityAtRisk
- * doc) — a real xctrace behavior, not a far-swan bug, confirmed via
+ * doc) — a real xctrace behavior, not a bug in this server, confirmed via
  * a full audit across every curated template. When Hangs specifically lands in
  * fidelityAtRisk, auto-add the bare "os_log" instrument to at least partially
  * compensate.
@@ -1141,7 +1141,7 @@ export function slugFromTemplate(template: string): string {
 /**
  * Generate a timestamped output path in the recordings directory — the
  * user-configured one (set_recordings_dir) if set, else the
- * OS-convention default (~/Library/Application Support/far-swan/recordings/
+ * OS-convention default (~/Library/Application Support/xctrace-query-mcp-server/recordings/
  * <ts>-<slug>.trace). Creates the directory if it doesn't exist.
  */
 export async function defaultOutputPath(template: string): Promise<string> {

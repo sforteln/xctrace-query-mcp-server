@@ -1,6 +1,6 @@
 /**
  * Read-only NSKeyedArchiver decoder for `.tracetemplate`
- * files, so far-swan can AUTHORITATIVELY enumerate every instrument and every
+ * files, so this server can AUTHORITATIVELY enumerate every instrument and every
  * private config key a stock Instruments template actually configures —
  * instead of `plutil` + grepping for known key-name substrings, which only
  * ever finds what you already thought to look for. See templateBundlesAudit.md
@@ -19,8 +19,8 @@
  *   whole format" — but recon changed both sides of that trade:
  *     - Neither Python decoder is installed on the target machine, so that path
  *       means a runtime `pip install` into the user's env — a poor fit for a
- *       `npx far-swan` pure-Node npm package.
- *     - `plutil -convert xml1` (a macOS system tool; far-swan already shells
+ *       `npx xctrace-query-mcp-server` pure-Node npm package.
+ *     - `plutil -convert xml1` (a macOS system tool; this server already shells
  *       out to `xcrun xctrace`, so this is fully in-band) does layer (1) — the
  *       binary-plist parse — for free. So layer (2), the ONLY new code, is a
  *       small pure-data graph resolver over ~a dozen known classes. No new npm
@@ -350,7 +350,7 @@ export async function decodeTraceTemplate(path: string): Promise<DecodedTemplate
     const e = err as NodeJS.ErrnoException & { stderr?: string };
     if (e.code === "ENOENT") {
       throw new Error(
-        "`plutil` not found — it ships with macOS command line tools, which far-swan already requires for xctrace."
+        "`plutil` not found — it ships with macOS command line tools, which this server already requires for xctrace."
       );
     }
     throw new Error(

@@ -42,7 +42,7 @@ const REAL_KEY_SETS: Record<string, string[]> = JSON.parse(
   )
 );
 
-const tempRecordingsDir = mkdtempSync(join(tmpdir(), "far-swan-signpost-test-"));
+const tempRecordingsDir = mkdtempSync(join(tmpdir(), "xctrace-query-mcp-server-signpost-test-"));
 
 vi.mock("../src/config.js", () => ({
   getConfig: async () => ({ searchRoots: [], fallbackCacheDir: null, recordingsDir: tempRecordingsDir }),

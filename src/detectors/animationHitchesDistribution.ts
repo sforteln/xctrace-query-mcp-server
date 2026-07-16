@@ -15,7 +15,7 @@
  * never a free/cheap verb (aidocs/howLensesWork.md).
  *
  * Verified live against a real Animation Hitches recording
- * (~/Library/Application Support/far-swan/recordings/…-swiftui.trace): 248
+ * (~/Library/Application Support/xctrace-query-mcp-server/recordings/…-swiftui.trace): 248
  * app-caused hitches, p95 ≈ 50.0ms, p99 ≈ 66.7ms — comfortably over both
  * bands, a real finding, not just a synthetic one.
  *

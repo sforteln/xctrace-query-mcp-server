@@ -50,7 +50,7 @@ export interface RunGroup {
   /**
    * What THIS run was ACTUALLY recorded with — template, recording mode,
    * time limit, and per-instrument settings, straight from xctrace's own
-   * <info><summary> (not far-swan's memory of a start_recording call). Two
+   * <info><summary> (not this server's memory of a start_recording call). Two
    * uses: a reminder when reopening a trace later ("what was this?"), and a
    * self-check against what start_recording was actually asked to compose —
    * catches silent fidelity loss (e.g. a bare-composed instrument losing a

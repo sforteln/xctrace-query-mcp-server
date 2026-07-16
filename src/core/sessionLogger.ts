@@ -2,9 +2,9 @@
  * Session call logger for A/B testing tool navigation behaviour.
  *
  * Activated by passing --log on the command line when starting the server:
- *   npx instruments-mcp-server --log
+ *   npx xctrace-query-mcp-server --log
  * When enabled, every tool call is appended as a JSON line to:
- *   ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
+ *   ~/Library/Logs/xctrace-query-mcp-server/session-<timestamp>.jsonl
  *
  * Each line:
  *   { seq, ts, tool, args, responseKeys, durationMs, ok, errorMessage? }
@@ -30,7 +30,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const LOG_DIR = join(homedir(), "Library", "Logs", "instruments-mcp-server");
+const LOG_DIR = join(homedir(), "Library", "Logs", "xctrace-query-mcp-server");
 const enabled = process.argv.includes("--log");
 
 let logPath: string | null = null;

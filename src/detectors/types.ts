@@ -8,7 +8,7 @@
  * AI gets is a structured Finding: a plain-language headline, the structured
  * firing conditions (from which the framework derives the criterion text and
  * the rank — detectors never hand-pick a severity that could drift), a
- * re-runnable callSpec in far-swan's OWN verbs (so the AI can tweak the
+ * re-runnable callSpec in this server's OWN verbs (so the AI can tweak the
  * threshold/window and re-issue — a live handle, not a dead result — and never
  * sees SQL), and handles into the raw data.
  *
@@ -36,7 +36,7 @@ export interface FiringCondition {
   direction: "over" | "under";
 }
 
-/** A re-runnable spec in far-swan's OWN verbs — never a SQL string. */
+/** A re-runnable spec in this server's OWN verbs — never a SQL string. */
 export interface CallSpec {
   verb: "query" | "aggregate" | "find" | "relate" | "call_tree" | "timeline";
   schema: string;
@@ -57,7 +57,7 @@ export interface Finding {
   summary: string;
   /** Structured firing conditions — the framework ranks + renders the criterion. */
   firing: FiringCondition[];
-  /** A spec the AI can tweak and re-issue, in far-swan verbs. */
+  /** A spec the AI can tweak and re-issue, in this server's verbs. */
   callSpec: CallSpec;
   /** get_row / timeRange entry points into the flagged data. */
   handles: Handle[];

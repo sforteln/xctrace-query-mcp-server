@@ -1,7 +1,10 @@
-# instruments-mcp-server
+# xctrace-query-mcp-server
 A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode **Instruments `.trace`** files — Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more — without dumping raw `xctrace` XML into the model's context.
 
 Raw `xctrace` output is ~95% noise (XML envelope, ref-id indirection, triplicated columns). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down — for **any** instrument type, not just the ones it was written for.
+
+## Version Support
+This tool was built to support xcode 27's beta versions as I needed it for looking at Foundatin Models; Once the final is out I'll do a run through of the traces to see if anything changed. I don't know how much the existing templates and instruments recording has changed since the last full release.  Even for a wrong version its likely this tool will still work you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using SQL directly instead of having to navigate the whole dataset using the base tools.
 
 ## How it works
 Every Instruments trace has the same shape underneath: `run[] → instrument[] → schema/table[] → row[]` with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on **any** instrument — including ones added in future Xcode versions — with zero per-instrument code:
@@ -13,44 +16,51 @@ Every Instruments trace has the same shape underneath: `run[] → instrument[] �
 
 Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory — see [Memory](#memory) below. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call — including, when a lens recognises the trace type, one entry flagged `recommended: true`.
 
+### More questions
+1. `git co xxx`
+1. `cd xxx`
+1. Start a new `claude(or your chosen AI) session` or reuse an existing one
+1. Ask `Read aiDocs/*`
+1. Ask `How does the correlate function work?` or `how does the lens for Hangs work?`
+
 ## Requirements
 - **Node.js ≥ 22**
 - **Xcode** installed (the server shells out to `xcrun xctrace` to export trace data). Xcode is a runtime CLI dependency only — not the build environment.
 
 ## Memory
 
-`.trace` files are archives of very large XML tables — a single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from the XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size, but it's no longer the primary defense the way it was before the SQLite rewrite.
+A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size.
 
 Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
 
 The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
 
 Override it if needed:
-- Set `INSTRUMENTS_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
+- Set `XCTRACE_QUERY_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
 - Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
 
 ## Install
-### From source (until the package is published on npm)
+### From source
 
 ```bash
-git clone https://github.com/your-org/instruments-mcp-server
-cd instruments-mcp-server
+git clone https://github.com/your-org/xctrace-query-mcp-server
+cd xctrace-query-mcp-server
 npm install
 npm run build
 ```
 
 **Claude Code:**
 ```bash
-claude mcp add instruments-mcp-server -- node /absolute/path/to/instruments-mcp-server/dist/index.js
+claude mcp add xctrace-query-mcp-server -- node /absolute/path/to/xctrace-query-mcp-server/dist/index.js
 ```
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 ```json
 {
   "mcpServers": {
-    "instruments-mcp-server": {
+    "xctrace-query-mcp-server": {
       "command": "node",
-      "args": ["/absolute/path/to/instruments-mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/xctrace-query-mcp-server/dist/index.js"]
     }
   }
 }
@@ -60,9 +70,9 @@ claude mcp add instruments-mcp-server -- node /absolute/path/to/instruments-mcp-
 ```json
 {
   "mcpServers": {
-    "instruments-mcp-server": {
+    "xctrace-query-mcp-server": {
       "command": "/opt/homebrew/bin/node",
-      "args": ["/absolute/path/to/instruments-mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/xctrace-query-mcp-server/dist/index.js"]
     }
   }
 }
@@ -72,7 +82,7 @@ After editing, start a **new Claude conversation** in the Xcode panel — the co
 ### Once published on npm
 
 ```bash
-claude mcp add instruments-mcp-server -- npx instruments-mcp-server@latest
+claude mcp add xctrace-query-mcp-server -- npx xctrace-query-mcp-server@latest
 ```
 
 
@@ -93,7 +103,7 @@ AI:     [calls open_trace]
         800 ms and 310 ms, also main-thread.
 
         [calls get_row on the 4.2s hang]
-        Backtrace points to -[MyViewController viewDidAppear:] → a synchronous
+        Backtrace points to MyView's `onAppear` closure → a synchronous
         URLSession.dataTask call blocking the main thread. That's your freeze.
 
 User:   Can you check if the shorter hangs are in the same place?
@@ -106,7 +116,7 @@ AI:     [calls find on potential-hangs with duration filter]
 ### Recording live then analysing — Foundation Models instrument
 
 ```
-User:   I want to see what inference calls my app is making. It's already running.
+User:   I want to see what inference calls my app is making. It's already running start a trace using the Foundation Model template.
 
 AI:     [calls start_recording, template "Foundation Models", attach to MyApp process]
         Recording started. Interact with the AI feature in your app, then tell me
@@ -114,12 +124,10 @@ AI:     [calls start_recording, template "Foundation Models", attach to MyApp pr
 
 User:   Done. I triggered the search feature a few times.
 
-AI:     [calls stop_recording]
-        Trace saved. Opening it now.
-
-        [calls open_trace]
-        1 run. nextActions has one entry flagged recommended: list_fm_requests —
-        let me pull the inference calls.
+AI:     [calls stop_recording — auto-opens the trace, sessionId ready]
+        [calls list_instruments]
+        nextActions has one entry flagged recommended: list_fm_requests — let me
+        pull the inference calls.
 
         [calls list_fm_requests, limit 50]
         12 requests. Most complete in 200–400 ms. Two stand out: requests 7 and 11
@@ -139,23 +147,60 @@ AI:     [calls find_fm_requests, emptyContext true]
         request was "bluetooth settings" — worth checking whether that term is covered
         in your indexed content.
 ```
+
+### Capturing a hang as it happens — Feed screen
+
+```
+User:   I'm seeing a hang on the Feed screen — it freezes for a second or two,
+        but I can't tell what's causing it.
+
+AI:     I'll use template: "Time Profiler" — it bundles Hangs, Points of Interest,
+        and Thermal State for free, so whether this is a straightforward CPU
+        stall or something more like resource contention, it's covered either way.
+
+        Navigate to right before you'd normally hit the freeze — one screen back
+        from Feed, not already sitting inside it — then let me know and I'll
+        start recording.
+
+User:   Ready.
+
+AI:     [calls start_recording, template: "Time Profiler", attach to MyApp process]
+        Recording started. Now reproduce it: open Feed and scroll the way you
+        normally would until it freezes. Tell me once it's happened at least once.
+
+User:   Just hit it — froze for a couple seconds while scrolling. You can stop.
+
+AI:     [calls stop_recording — auto-opens the trace, sessionId ready]
+        [calls list_instruments, then the recommended aggregate on potential-hangs]
+        One hang, 2.1 s, main thread — matches what you described.
+
+        [calls get_row on the hang, correlates against time-profile for that window]
+        Backtrace shows FeedRow's `body` synchronously decoding a full-resolution
+        image on the main thread for every row as it scrolls into view. Image
+        decoding needs to move off the main thread — ideally decoded once and
+        cached, not redone every time the row's body re-evaluates.
+```
 ---
-For the most common instruments, `open_trace`'s `nextActions` includes one entry flagged `recommended: true` — a pre-filled tool call that gets you to the key data in one step. The rest of `nextActions` are plain, unranked alternatives — if you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
+For the most common instruments, `open_trace`'s `nextActions` includes one entry flagged `recommended: true` — a pre-filled tool call that gets you to the key data in one step. `stop_recording` auto-opens the trace too, but its own response doesn't compute this yet — call `list_instruments` right after (its `nextActions` carries the same `recommended: true` entry) rather than a separate `open_trace`. The rest of `nextActions` are plain, unranked alternatives — if you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
 
 ## Want to test the relative health of your app?
 
 You don't need a known bug to get value out of this — pick a category of concern and let the AI do the rest:
 
 ```
-User:   I want to check my app's memory health.
+User:   We just added an "add attachments" feature — I want to make sure we're
+        handling the images correctly and not wasting memory.
 
-AI:     [reads your codebase, finds a real, specific flow likely to exercise it —
-        e.g. a screen that repeatedly allocates images, or a list that inserts/
-        removes rows — not a generic "click around the app"]
-        To exercise memory allocation patterns, do this: open the photo import
-        screen and import/remove the same 10 photos five times in a row.
-        Starting a launch-mode recording now — launch mode is required here so
-        allocations from before the recording started aren't invisible.
+AI:     [reads the attachments feature's code — finds where images are picked,
+        decoded, and held onto]
+        Looking at AttachmentPicker.swift and AttachmentStore.swift: images are
+        decoded at full resolution and stay in the view model's array even after
+        being removed from the compose screen — that's the part worth checking
+        for a leak. I'll use template: ["Allocations", "Leaks"] in launch mode
+        (attach can't symbolicate objects already live before it attached).
+
+        Do this: open the compose screen, attach 5 photos, remove them, and
+        repeat that five times in a row.
 
         [calls start_recording, template: ["Allocations", "Leaks"], launch: <your app path>]
         Recording started — go ahead and run through that flow.
@@ -182,23 +227,15 @@ The same pattern works for any category — the AI picks the `template` (and com
 
 Whichever category you pick, if your app already calls `os_signpost` around its own operations, that's not a separate concern — it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
 
-This is a genuinely validated workflow, not a hopeful one: it's exactly what happened when a fresh Claude Code instance was given only *"I saw a stutter in PromptManager's UI, capture a trace and see what's happening"* — no mention of this tool, no prior context — and it reached a specific, code-level root cause end-to-end unaided. You don't need to know which instrument to reach for or how profiling works — describe what you're seeing (or what you want to check), and the AI handles the rest.
+This is a genuinely validated workflow, not a hopeful one: it's exactly what happened when a fresh Claude Code instance was given only *"I saw a stutter in MyApp's UI, capture a trace and see what's happening"* — no mention of this tool, no prior context — and it reached a specific, code-level root cause end-to-end unaided. You don't need to know which instrument to reach for or how profiling works — describe what you're seeing (or what you want to check), and the AI handles the rest.
 
 ## Instrument your app with signposts
 
 Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
 
-Whether a template gives you the full Points of Interest instrument varies more than you'd expect — verified live against real recordings, not assumed. Time Profiler, Swift Concurrency, Network, Hangs (CPU Profiler), Allocations, Leaks, Animation Hitches, and CPU Counters all include the full instrument automatically (`os-signpost`, `PointsOfInterestEvents`, and `OSSignpostIntervals` all present). Core Data and Foundation Models include only a bare `os-signpost` schema — present, but missing the two more useful structured views — so composing `instruments: ["Points of Interest"]` explicitly is still worth doing there. SwiftUI, App Launch, and Processor Trace include none of it at all; pass `instruments: ["Points of Interest"]` explicitly for these too. `start_recording`'s response tells you what actually got composed either way.
+Whether a template gives you the full Points of Interest instrument varies more than you'd expect — verified live against real recordings, not assumed. Time Profiler, Swift Concurrency, Network, Hangs (CPU Profiler), Allocations, Leaks, Animation Hitches, and CPU Counters all include the full instrument automatically (`os-signpost`, `PointsOfInterestEvents`, and `OSSignpostIntervals` all present). Core Data and Foundation Models include only a bare `os-signpost` schema — present, but missing the two more useful structured views — so composing `instruments: ["Points of Interest"]` explicitly is still worth doing there. This isn't the *template's* doing, either: verified live by decomposing both down to their bare instruments with no template at all (`--instrument "Data Faults"/"Data Fetches"/"Data Saves"` for Core Data, `--instrument "Foundation Models"` alone) — the bare `os-signpost` schema still showed up. It's likely Core Data's and Foundation Models' own internal diagnostics emitting signposts, independent of how they're packaged.  `start_recording`'s response tells you what actually got composed either way.
 
 Once you have both, use `correlate()` — signposts show up as `os-signpost` (raw begin/end/event signposts), `OSSignpostIntervals` (paired begin→end durations), and `PointsOfInterestEvents` (discrete events). Correlating one of these against whatever you're actually investigating (a hang interval, a CPU sample, a SwiftData fetch) answers "which of my named operations was active when this happened" directly, instead of inferring it from timestamps by hand.
-
-## If the AI seems stuck
-These prompts reliably get things moving again:
-- **"Which nextAction is recommended?"** — `open_trace`'s response includes a ready-to-run first call flagged `recommended: true` when a lens recognises the trace type. Ask the AI to read it and follow it.
-- **"List all instruments in this trace."** — `list_instruments` shows every schema with its row count and the AI can pick the most relevant one.
-- **"Describe the schema for [schema name] before you query it."** — `describe_schema` returns each column's role (time, weight, backtrace, etc.) so the AI can form the right query.
-- **"I want to look at run 2, not the most recent run."** — The AI defaults to the most recent run; remind it that `open_trace` returned all run numbers and it can pass a different one.
-- **"Use aggregate to find the top 10 by [metric]."** — When the AI is fetching raw rows without summarising, pushing it toward `aggregate` usually surfaces the signal faster.
 
 ## Supported instruments
 
@@ -227,15 +264,15 @@ Two PRs in order. The AI does the mechanical work — your job is to record the 
 
 ### PR 1 — Compatibility
 
-1. **Record a trace** with the new instrument in Xcode Instruments
-2. **Start a Claude session** in the repo directory, attach the trace file, and say:
+1. **Record a trace** with the new instrument in Xcode Instruments or via the AI integration.
+2. **Start an AI session** in the trace-query repo directory and s ay:
    *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add `<InstrumentName>` support using `<trace-file>`."*
 3. **Review the fixture** the AI produces — check that it contains no sensitive content (real process names, IP addresses, private class names from your app). The AI will flag anything it's unsure about.
 4. **Open the PR**
 
 ### PR 2 — Curated lens (optional)
 
-A lens adds a `quickStart` shortcut so `open_trace` immediately suggests the right first call. Merge PR 1 first, then:
+A lens adds a `quickStart` shortcut so `open_trace` immediately suggests a likely useful first call — a best guess, not a guarantee it's the right one for every trace. Merge PR 1 first, then:
 
 1. **Start a Claude session** in the repo directory and say:
    *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B PR 2 to add a curated lens for `<InstrumentName>`."*
@@ -257,8 +294,8 @@ npm run watch     # incremental rebuilds
 
 To enable session logging (useful for debugging which tools the agent selects):
 ```bash
-claude mcp add instruments-mcp-server -- node /path/to/dist/index.js --log
-# Logs appear in ~/Library/Logs/instruments-mcp-server/session-<timestamp>.jsonl
+claude mcp add xctrace-query-mcp-server -- node /path/to/dist/index.js --log
+# Logs appear in ~/Library/Logs/xctrace-query-mcp-server/session-<timestamp>.jsonl
 ```
 
 If a call seems to be taking far longer than expected, ask the AI to call `server_info` — Node doesn't hot-reload, so a long-lived server process keeps running whatever code was in memory when it started, even after you rebuild. `server_info` reports the running code's actual on-disk build time and process start time so you can tell whether it predates a fix you just shipped (and needs restarting by whatever spawned it) before assuming the fix didn't work.
@@ -266,3 +303,7 @@ If a call seems to be taking far longer than expected, ask the AI to call `serve
 ## License
 
 MIT
+
+---
+
+Not affiliated with or endorsed by Apple Inc. "Xcode," "Instruments," and "xctrace" are trademarks of Apple Inc.; this project just talks to their CLI output.

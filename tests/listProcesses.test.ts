@@ -80,7 +80,7 @@ describe("parsePsOutput", () => {
     const stdout = [
       HEADER,
       psLine(1, ME, "R", "/usr/bin/xcrun xctrace record --foo"),
-      psLine(2, ME, "R", "node /path/to/instruments-mcp-server/dist/index.js"),
+      psLine(2, ME, "R", "node /path/to/xctrace-query-mcp-server/dist/index.js"),
       psLine(333, ME, "S", "/Applications/MyApp.app/Contents/MacOS/MyApp"),
     ].join("\n");
 

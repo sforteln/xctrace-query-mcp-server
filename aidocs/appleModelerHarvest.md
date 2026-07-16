@@ -11,7 +11,7 @@ significance to.
 **The single most durable lesson:** Apple's own bands are almost all **relative**
 (to a frame budget, to a baseline, to a per-second rate) rather than absolute ms
 — so the technique survives across devices/refresh-rates/OS versions where a
-magic-number cutoff would rot. Prefer relative bands in far-swan detectors too.
+magic-number cutoff would rot. Prefer relative bands in this server's detectors too.
 
 Only ~4 of the 29 packages are analysis-bearing; the rest are pure
 signpost→typed-table transport (`binding-rules.clp`), no detection logic. The
@@ -34,9 +34,9 @@ The load-bearing signal is **duration measured in FRAME BUDGETS**, never ms.
 - Render hitches account for pipeline depth: `baseline = ((buffer-count − 1) / 2)
   × refresh-interval`; render-duration ≤ baseline → Low, ≥ 2× baseline → High.
 - **Column-choices**: `duration` relative to `refresh-interval` (+ `buffer-count`
-  for render). far-swan's hitches table carries `duration` and an is-system flag;
+  for render). this server's hitches table carries `duration` and an is-system flag;
   the refresh-interval is the per-trace frame budget.
-- **far-swan mapping**: a hitch outlier detector fires when `duration >
+- **this server's mapping**: a hitch outlier detector fires when `duration >
   1×frameBudget` (Moderate) / `2×frameBudget` (High). The near-miss band
   (tidy-shore) is `0.5–1× frameBudget` — "approaching a dropped frame."
 

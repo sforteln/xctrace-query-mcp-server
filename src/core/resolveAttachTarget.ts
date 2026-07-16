@@ -1,6 +1,6 @@
 /**
  * resolveAttachTarget — turn an attach target (CFBundleIdentifier, app name, or
- * PID) into a live PID for a device/Simulator recording, so far-swan attaches by
+ * PID) into a live PID for a device/Simulator recording, so this server attaches by
  * PID.
  *
  * Why this exists: xctrace's attach-by-NAME does NOT resolve on a device or
@@ -8,14 +8,14 @@
  * process matching name"), and the name a human/AI reads off the Home Screen or
  * Instruments' process picker is CFBundleDisplayName ("Goldfish"), NOT the
  * process's CFBundleExecutable ("NoSky") — the trap every caller falls into. So
- * the caller passes the stable CFBundleIdentifier and far-swan finds the PID via
+ * the caller passes the stable CFBundleIdentifier and this server finds the PID via
  * the platform's own tools:
  *   - Simulator: `simctl spawn <udid> launchctl list` — the launchd LABEL carries
  *     the bundle id (ps-via-spawn is unreliable on modern sims).
  *   - Device:    `devicectl device info processes --device <udid>` — match the
  *     app's executable path.
  *
- * The app must already be RUNNING: far-swan attaches to a dev-started app, it
+ * The app must already be RUNNING: this server attaches to a dev-started app, it
  * never launches/deploys (a freshly-launched PID isn't immediately attachable —
  * attach a STABLE instance). On the host Mac attach-by-name works, so the caller
  * path skips this for Mac targets.
@@ -116,9 +116,9 @@ export async function resolveAttachTarget(attach: string, device: string): Promi
   if (!pid) {
     throw new XctraceError(
       "target-not-found",
-      `No running process for "${attach}" on device ${device}. far-swan attaches to an app you have ` +
+      `No running process for "${attach}" on device ${device}. This server attaches to an app you have ` +
         `ALREADY started — run it (Xcode → Run) on the device/Simulator, then try again. Note: ` +
-        `attach-by-NAME doesn't resolve on a device/sim, so far-swan resolves the CFBundleIdentifier to a ` +
+        `attach-by-NAME doesn't resolve on a device/sim, so this server resolves the CFBundleIdentifier to a ` +
         `PID; and the process name is CFBundleExecutable, NOT the display name shown on the Home Screen.`,
       {}
     );

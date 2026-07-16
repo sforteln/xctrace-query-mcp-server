@@ -3,7 +3,7 @@
  *
  * bands.ts's hitchBandNs() has always taken a `frameBudgetMs` param, but every
  * caller left it defaulted to DEFAULT_REFRESH_INTERVAL_MS (60Hz) because
- * far-swan didn't ingest anything that carried the display's ACTUAL refresh
+ * this server didn't ingest anything that carried the display's ACTUAL refresh
  * interval — the `hitches` schema itself has no refresh column (verified:
  * start/duration/process/is-system/swap-id/label/display/narrative-description
  * only). This resolver reads the two Display-instrument schemas that DO carry

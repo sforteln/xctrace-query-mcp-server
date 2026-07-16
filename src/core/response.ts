@@ -1,5 +1,5 @@
 /**
- * Shared response envelope for every instruments-mcp-server tool.
+ * Shared response envelope for every xctrace-query-mcp-server tool.
  *
  * The envelope wraps any tool payload with a `nextActions` array so an agent
  * can navigate an unfamiliar trace without knowing its schema. Every tool

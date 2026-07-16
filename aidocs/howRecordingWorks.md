@@ -14,7 +14,7 @@ and measured independently — a burst of 30 rapid `updatePrompt` calls showed m
 mechanism as earlier MCP-stall findings. But the trace itself could not be captured across 3
 attempts, and the reason is itself a real, generalizable finding: **the induced hang was severe
 enough to freeze Xcode, which hosts both the app being profiled and every MCP connection including
-far-swan's own.** When the target's main thread saturates hard enough, the IDE hosting the recorder
+this server's own.** When the target's main thread saturates hard enough, the IDE hosting the recorder
 can beachball too, cutting the recording off before it finishes — the tool trying to capture the
 hang became a casualty of the hang.
 

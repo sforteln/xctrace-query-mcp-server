@@ -24,7 +24,7 @@ spot, all confirmed live:
 The template archive itself is the fourth and best source: it is what
 Instruments/xctrace actually load, so its `stubInfoByUUID` map (instrument-type
 identifier → `{name, identifier}`) is the ground-truth bundle. Cross-checked
-against far-swan's own independently-recorded `TEMPLATE_BUNDLES["Time Profiler"]`
+against this server's own independently-recorded `TEMPLATE_BUNDLES["Time Profiler"]`
 (`[Hangs, Points of Interest, Thermal State]`): the decoder returns exactly
 those three **plus** the headline `Time Profiler` — i.e. decoder = headline +
 `TEMPLATE_BUNDLES` auxiliaries, an exact match.
@@ -191,7 +191,7 @@ Metal System Trace/Game Performance/Audio System Trace → 100, else → 250.
 
 ### VM Tracker "Automatic Snapshotting" (item 3)
 
-Decoded from far-swan's own shipped `assets/AllocVMTrackerAuto3s.tracetemplate`.
+Decoded from this server's own shipped `assets/AllocVMTrackerAuto3s.tracetemplate`.
 The auto-snapshot config lives on the `XRVMInstrument` object, authoritatively
 (replacing the earlier grep-for-known-substrings guess):
 
@@ -207,7 +207,7 @@ XRVMInstrument:
 
 This is a template-only setting with **no CLI-reachable equivalent** (confirms
 PMT:gravel-falcon's finding): `snapRateMicros` + `autoSnapshot` cannot be set
-via bare `--instrument`, which is exactly why far-swan ships a pre-built,
+via bare `--instrument`, which is exactly why this server ships a pre-built,
 GUI-validated template asset instead of composing it.
 
 Caveat surfaced here: this custom template's `stubInfoByUUID` lists only

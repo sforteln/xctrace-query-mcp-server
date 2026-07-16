@@ -1,7 +1,7 @@
 /**
  * PMT:sleek-vault — attach-target → PID resolution.
  *
- * attach-by-NAME doesn't resolve on a device/Simulator, so far-swan resolves a
+ * attach-by-NAME doesn't resolve on a device/Simulator, so this server resolves a
  * CFBundleIdentifier / app name to a live PID (simctl launchctl on a sim,
  * devicectl on a device) and attaches by PID. Pins the parsing of both tools'
  * output + the bundle-id candidate matching (no live hardware needed).

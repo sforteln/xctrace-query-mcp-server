@@ -11,7 +11,7 @@
  * no diagnostic (a fatal OOM aborts mid-handler, before the response — or
  * even a log line — can be written). A prior stopgap (commit cdaa5eb)
  * re-execs with a larger --max-old-space-size heap (default 8192 MB,
- * INSTRUMENTS_MCP_MAX_HEAP_MB), which raises the ceiling but doesn't remove
+ * XCTRACE_QUERY_MCP_MAX_HEAP_MB), which raises the ceiling but doesn't remove
  * it — an even larger table can still exceed it.
  *
  * Row count alone is NOT a safe trigger — confirmed live: 823,471 Allocations
@@ -27,7 +27,7 @@ import { XctraceError } from "./xctrace.js";
 
 /**
  * Fraction of the process's ACTUAL configured heap ceiling (reflects
- * --max-old-space-size / INSTRUMENTS_MCP_MAX_HEAP_MB, not a hardcoded
+ * --max-old-space-size / XCTRACE_QUERY_MCP_MAX_HEAP_MB, not a hardcoded
  * number) at which a streaming parse aborts. A judgment call, not a
  * measured threshold, same spirit as this codebase's other percentage
  * thresholds (WINDOW_CAPTURE_THRESHOLD_PCT, SPINE_DOMINANCE_THRESHOLD_PCT)
