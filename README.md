@@ -1,4 +1,6 @@
 # xctrace-query-mcp-server
+### What happens if you give your AI access to your source and Instruments?
+
 A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode Instruments .trace files: Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more- without dumping raw xctrace XML into the model's context.
 
 Raw xctrace output is ~95% noise (XML envelope, ref-id indirection, triplicated columns). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down; for any instrument type, not just the ones it was written for.
@@ -23,34 +25,53 @@ Every Instruments trace has the same shape underneath: run[] → instrument[] �
 Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call — including, when a lens recognizes the trace type, one entry flagged `recommended: true`.
 
 ### More questions
+Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
+
+For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/your-org/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
 1. `git clone https://github.com/your-org/xctrace-query-mcp-server`
 1. `cd xctrace-query-mcp-server`
-1. Start a new `claude(or your chosen AI) session`
-1. Ask `Read aiDocs/*`
-1. Ask `How does the correlate function work?` or `How does the lens for Hangs work?`
+1. Start a new `claude` (or your chosen AI) session
+1. Ask it to `Read aidocs/*`, then ask your question
 
 ## Requirements
 - **Node.js ≥ 22**
 - **Xcode** installed (the server shells out to `xcrun xctrace` to export trace data). Xcode is a runtime CLI dependency only — not the build environment.
 
-## Trace Data
-
-A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size.
-
-Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
-
-The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
-
-Override it if needed:
-- Set `XCTRACE_QUERY_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
-- Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
-
 ## Install
 ### From npm
 
+**Claude Code:**
 ```bash
 claude mcp add xctrace-query-mcp-server -- npx xctrace-query-mcp-server@latest
 ```
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "xctrace-query-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "xctrace-query-mcp-server@latest"]
+    }
+  }
+}
+```
+
+**Xcode's Claude agent** — a separate install from the CLI and Desktop app. Edit (or create) `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/.claude.json`. Xcode's minimal `PATH` won't resolve bare `npx` — use its **full absolute path** instead:
+```bash
+which npx   # or, if npx is itself a version-manager shim: readlink -f "$(which npx)"
+```
+```json
+{
+  "mcpServers": {
+    "xctrace-query-mcp-server": {
+      "command": "/absolute/path/to/npx",
+      "args": ["-y", "xctrace-query-mcp-server@latest"]
+    }
+  }
+}
+```
+After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
 
 ### From source
 
@@ -78,7 +99,7 @@ claude mcp add xctrace-query-mcp-server -- node /absolute/path/to/xctrace-query-
 }
 ```
 
-**Xcode's Claude agent** — a separate install from the CLI and Desktop app. Edit (or create) `~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/.claude.json`. Use the **full absolute path** to the node binary — Xcode's minimal `PATH` won't find it otherwise:
+**Xcode's Claude agent** — same separate config as above, but Xcode's minimal `PATH` won't find bare `node` either — use its **full absolute path**:
 ```json
 {
   "mcpServers": {
@@ -123,7 +144,8 @@ AI:     [calls find on potential-hangs with duration filter]
 ### Recording Foundation Models instrument live then analyzing
 
 ```
-User:   I want to see what inference calls my app is making. It's already running; start a trace using the Foundation Model template.
+User:   I want to see what inference calls my app is making. It's already running; 
+        start a trace using the Foundation Model template.
 
 AI:     [calls start_recording, template "Foundation Models", attach to MyApp process]
         Recording started. Interact with the AI feature in your app, then tell me
@@ -234,6 +256,17 @@ The same pattern works for any category — the AI picks the `template` (and com
 
 Whichever category you pick, if your app already calls `os_signpost` around its own operations, that's not a separate concern; it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
 
+## Trace Data
+
+A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size.
+
+Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
+
+The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
+
+Override it if needed:
+- Set `XCTRACE_QUERY_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
+- Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
 
 ## Instrument your app with signposts
 
