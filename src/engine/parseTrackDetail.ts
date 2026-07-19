@@ -592,32 +592,39 @@ export async function parseTrackDetailStreamMeta(stdout: Readable, syntheticSche
  * ingestion path for track-detail schemas (Allocations, Leaks, VM Tracker)
  * described in howSessionsWork.md's "Large-table hardening" section.
  *
- * Unlike parseTable.ts's schema-table format (which has an upfront <schema>
- * block, so columns are known before any row arrives), track-detail has NO
- * such block — column shape is only knowable from the union of attributes
- * across every row, exactly what {@link parseTrackDetailStreamMeta}'s
- * discovery-only pass already computes. So this function takes `cols` as an
- * ALREADY-KNOWN parameter rather than discovering them itself: the caller
- * (session.ts) runs the cheap discovery pass first (one xctrace export,
- * bounded memory, no row data materialized), then re-exports and calls this
- * for the real ingest pass using those now-final columns. Two xctrace
- * export subprocess calls instead of one — a real, deliberate cost, traded
- * for never having to hold the whole table in memory to learn its own shape
- * (the two-pass buildParsedTable/collectTrackDetailNodes route this
- * replaces would otherwise need the exact same "see everything once" step,
- * just with a full row array retained afterward instead of discarded).
+ * Single-pass: unlike parseTable.ts's schema-table format (which has an
+ * upfront <schema> block, so columns are known before any row arrives),
+ * track-detail has NO such block — column shape is only knowable from the
+ * union of attributes across rows. Rather than a separate discovery-only
+ * export first (the prior design — see git history / FTR:navy-rime for the
+ * measured 148.6s/38%-of-total cost that paid for), this discovers columns
+ * INLINE: `cols` starts empty and grows via {@link SqliteTableWriter.addColumn}
+ * (ALTER TABLE ADD COLUMN) the moment a row introduces a mnemonic not yet
+ * seen. A row inserted before a column existed reads back NULL for it —
+ * correct (that row genuinely lacked the attribute), not a gap to backfill.
  *
- * Reuses parseBacktrace/parseBinary/buildRow unchanged — only the last step
- * (push into an array vs. INSERT) differs, via {@link SqliteTableWriter}.
+ * Trade-off vs the old discovery pass: engineering-type inference (uint-64
+ * vs string) now sees only the FIRST value for a newly-discovered column,
+ * not up to 20 samples. This doesn't affect correctness — every value still
+ * round-trips through coerceTrackDetailRaw's own per-value coercion
+ * regardless of the column's declared type — only role-inference precision
+ * for a column whose very first value happens to be misleading (e.g. "0"
+ * before a later non-numeric value). Accepted: the old discovery pass
+ * wasn't exhaustive either (capped at 20 samples/column), so this is a
+ * narrower version of a trade-off already made, not a new one.
+ *
+ * Reuses parseBacktrace/parseBinary/buildRow unchanged — buildRow already
+ * takes attrOrder/hasBacktrace/cols as plain parameters (not closed-over
+ * state), so recomputing them from the current (possibly just-grown) `cols`
+ * before each row costs nothing structural.
  */
 export function parseTrackDetailStreamToSqlite(
   stdout: Readable,
-  cols: SchemaCol[],
   db: DatabaseSync,
   tableName: string
-): Promise<{ rowCount: number }> {
-  const attrOrder = cols.filter((c) => c.mnemonic !== BACKTRACE_MNEMONIC).map((c) => c.mnemonic);
-  const hasBacktrace = cols.some((c) => c.mnemonic === BACKTRACE_MNEMONIC);
+): Promise<{ rowCount: number; cols: SchemaCol[] }> {
+  const cols: SchemaCol[] = [];
+  const knownMnemonics = new Set<string>();
   const writer = new SqliteTableWriter(db, tableName, cols);
 
   return new Promise((resolve, reject) => {
@@ -627,7 +634,7 @@ export function parseTrackDetailStreamToSqlite(
       settled = true;
       reject(err);
     };
-    const settleResolve = (result: { rowCount: number }) => {
+    const settleResolve = (result: { rowCount: number; cols: SchemaCol[] }) => {
       if (settled) return;
       settled = true;
       resolve(result);
@@ -677,6 +684,29 @@ export function parseTrackDetailStreamToSqlite(
           if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
           const builtNode = activeBuilder.result!;
           rowCount++;
+
+          // Discover any top-level mnemonics this row introduces that no
+          // earlier row carried, adding each via ALTER TABLE before this
+          // row is built/written. Order follows first-seen-attribute order
+          // within the row (Object.entries), same ordering discovery used.
+          for (const [key, val] of Object.entries(builtNode)) {
+            if (!key.startsWith("@_")) continue;
+            const attrName = key.slice(2);
+            if (knownMnemonics.has(attrName)) continue;
+            knownMnemonics.add(attrName);
+            writer.addColumn({
+              mnemonic: attrName,
+              name: attrName.replace(/-/g, " "),
+              engineeringType: inferEngType(attrName, [String(val)]),
+            });
+          }
+          if (builtNode[BACKTRACE_MNEMONIC] !== undefined && !knownMnemonics.has(BACKTRACE_MNEMONIC)) {
+            knownMnemonics.add(BACKTRACE_MNEMONIC);
+            writer.addColumn({ mnemonic: BACKTRACE_MNEMONIC, name: "Backtrace", engineeringType: "backtrace" });
+          }
+
+          const attrOrder = cols.filter((c) => c.mnemonic !== BACKTRACE_MNEMONIC).map((c) => c.mnemonic);
+          const hasBacktrace = knownMnemonics.has(BACKTRACE_MNEMONIC);
           const row = buildRow(builtNode, attrOrder, hasBacktrace, cols, binaryCache, frameCache);
           writer.writeRow(row);
 
@@ -715,7 +745,7 @@ export function parseTrackDetailStreamToSqlite(
         return;
       }
       const finalCount = writer.finish();
-      settleResolve({ rowCount: finalCount });
+      settleResolve({ rowCount: finalCount, cols });
     });
 
     stdout.on("error", (err: Error) => {

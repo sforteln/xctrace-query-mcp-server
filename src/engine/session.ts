@@ -484,31 +484,19 @@ export async function getTable(
         const { trackName, detailName } = modelEntry.trackDetail;
         const xpath = buildTrackDetailXPath(run, trackName, detailName);
         // Track-detail has no upfront <schema> block — column shape is only
-        // knowable from the union of attributes across every row. A cheap
-        // discovery-only pass (bounded memory, no row data) learns cols first;
-        // a second real export+pass ingests using those now-known columns. See
-        // parseTrackDetailStreamToSqlite's own doc comment for why this is two
-        // xctrace exports instead of one.
-        //
-        // The discovery pass never touches `db` (parseTrackDetailStreamMeta
-        // takes no db param) — safe to spawn AND fully consume with zero
-        // serialization (see the layer-(2) serialization note above).
-        const discoverExport = await exportXPathStream(session.tracePath, xpath);
-        const meta = await raceParseAgainstExport(
-          parseTrackDetailStreamMeta(discoverExport.stdout, schema),
-          discoverExport.done
-        );
-        cols = meta.cols;
-        // Spawn immediately (see the export/serialization note above) — the
-        // ingest pass re-runs the identical xpath and doesn't need `cols` to start the subprocess,
-        // only to parse its output. Only consuming its stdout (which writes
-        // rows) waits its turn.
-        const ingestExport = await exportXPathStream(session.tracePath, xpath);
+        // knowable from the union of attributes across rows. Single xctrace
+        // export: parseTrackDetailStreamToSqlite discovers columns INLINE
+        // (ALTER TABLE ADD COLUMN as new mnemonics appear) rather than a
+        // separate discovery-only export first — see its own doc comment,
+        // and FTR:navy-rime for the measured cost the old two-export design
+        // paid (148.6s/38% of a 388.9s total on a real 2.3GB trace).
+        const exportHandle = await exportXPathStream(session.tracePath, xpath);
         await prior.catch(() => {});
         const ingested = await raceParseAgainstExport(
-          parseTrackDetailStreamToSqlite(ingestExport.stdout, cols, db, cacheKey),
-          ingestExport.done
+          parseTrackDetailStreamToSqlite(exportHandle.stdout, db, cacheKey),
+          exportHandle.done
         );
+        cols = ingested.cols;
         rowCount = ingested.rowCount;
       } else {
         const xpath = buildTableXPath(run, schema);

@@ -733,6 +733,41 @@ export class SqliteTableWriter {
   }
 
   /**
+   * Add a brand-new TOP-LEVEL column mid-stream — the track-detail analog of
+   * {@link maybeExtendSchema}'s nested-path extension, for when an entire
+   * mnemonic (not a child of an already-known one) is seen for the first
+   * time. Track-detail rows carry no upfront <schema> block, so column shape
+   * is only knowable by seeing rows as they arrive — this lets ingestion
+   * start immediately from an empty (or partial) `cols` list and grow it in
+   * place via ALTER TABLE, instead of a separate discovery pass over the
+   * whole table first (see parseTrackDetail.ts's parseTrackDetailStreamToSqlite).
+   * Same ALTER-then-rebuild discipline as maybeExtendSchema: commit any open
+   * transaction first (SQLite disallows DDL mid-transaction in some
+   * configurations), ALTER, then rebuild the insert statement. A row already
+   * inserted before this column existed reads back NULL for it — the
+   * correct semantic (that row genuinely didn't carry this attribute), not
+   * something that needs backfilling.
+   */
+  addColumn(col: SchemaCol): void {
+    if (this.inTxn) {
+      this.db.exec("COMMIT");
+      this.inTxn = false;
+    }
+    if (isBacktraceCol(col)) {
+      this.backtraceCols.add(col.mnemonic);
+      this.db.exec(
+        `ALTER TABLE ${quoteIdent(this.tableName)} ADD COLUMN ${quoteIdent(`${col.mnemonic}__backtrace_id`)}`
+      );
+    } else {
+      this.db.exec(`ALTER TABLE ${quoteIdent(this.tableName)} ADD COLUMN ${quoteIdent(col.mnemonic)}`);
+      this.db.exec(`ALTER TABLE ${quoteIdent(this.tableName)} ADD COLUMN ${quoteIdent(`${col.mnemonic}__fmt`)}`);
+      this.db.exec(`ALTER TABLE ${quoteIdent(this.tableName)} ADD COLUMN ${quoteIdent(`${col.mnemonic}__children`)}`);
+    }
+    this.cols.push(col);
+    this.rebuildInsertStmt();
+  }
+
+  /**
    * A later row introducing a child key never seen before for some mnemonic
    * is real but rare (this project's schemas are structurally stable per
    * column in practice) — fall back to ALTER TABLE ADD COLUMN rather than
