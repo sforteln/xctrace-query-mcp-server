@@ -20,9 +20,7 @@
  * Engineering types are inferred from values (all-digit → "uint-64",
  * "timestamp" attr → "start-time", everything else → "string").
  */
-// Default import — see the comment in parseTable.ts for why `import * as sax`
-// resolves to an empty namespace object at runtime under NodeNext/ESM output.
-import sax from "sax";
+import { saxWasmEvents } from "./saxWasmStream.js";
 import { Transform } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import type { Readable } from "node:stream";
@@ -442,28 +440,22 @@ interface CollectResult {
  * @throws {XctraceError} "empty-result" if no <node> was ever seen, "parse-error"
  *         on malformed XML.
  */
-function collectTrackDetailNodes(stdout: Readable, countOnly: boolean, schemaLabel: string): Promise<CollectResult> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settleReject = (err: XctraceError) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    };
-    const settleResolve = (result: CollectResult) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
+async function collectTrackDetailNodes(
+  stdout: Readable,
+  countOnly: boolean,
+  schemaLabel: string
+): Promise<CollectResult> {
+  const sanitizer = new PercentAttributeNameSanitizer();
+  const stdoutErrorPromise = new Promise<never>((_resolve, reject) => {
+    stdout.on("error", (err: Error) =>
+      reject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}))
+    );
+    sanitizer.on("error", (err: Error) =>
+      reject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}))
+    );
+  });
 
-    // See the matching comment in parseTable.ts's parseTableStream — sax's
-    // 64 KB default MAX_BUFFER_LENGTH (a global, not per-instance) rejects
-    // oversized single attribute values; raised here too since it's a
-    // process-wide sax module property and either streaming parser could
-    // run first.
-    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
-    const saxStream = sax.createStream(true, { trim: false, normalize: false });
-
+  const parsePromise = (async (): Promise<CollectResult> => {
     const pathStack: string[] = [];
     let activeBuilder: MiniXmlBuilder | null = null;
     let sawNode = false;
@@ -472,96 +464,80 @@ function collectTrackDetailNodes(stdout: Readable, countOnly: boolean, schemaLab
     const discovery = new ColumnDiscovery();
     let rowCount = 0;
 
-    saxStream.on("opentag", (node) => {
-      const tag = node.name;
-      if (activeBuilder) {
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-        return;
-      }
-      pathStack.push(tag);
-      const path = pathStack.join(">");
-      if (path === "trace-query-result>node") {
-        sawNode = true;
-        currentNodeRows = [];
-        nodes.push({ row: currentNodeRows });
-      } else if (path === "trace-query-result>node>row") {
-        activeBuilder = new MiniXmlBuilder();
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-      }
-    });
-
-    saxStream.on("text", (text) => {
-      if (activeBuilder) activeBuilder.onText(text);
-    });
-
-    saxStream.on("closetag", (tag) => {
-      if (activeBuilder) {
-        const finished = activeBuilder.onCloseTag(tag);
-        if (finished) {
-          // This tag's open also pushed onto pathStack (capture starts on the
-          // SAME opentag event that pushes it) — pop it now that capture is
-          // done, or pathStack stays poisoned and the next <row> never matches.
-          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-          const result = activeBuilder.result!;
-          rowCount++;
-          if (countOnly) {
-            discovery.observeRow(result);
-            // Deliberately not appended anywhere — this is the whole point.
-          } else {
-            currentNodeRows!.push(result);
-            // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE process,
-            // not just this call, so this must fire well before that point.
-            if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
-              try {
-                assertMemoryBudget(rowCount, schemaLabel);
-              } catch (err) {
-                settleReject(err as XctraceError);
-                // sax's stream wrapper predates .destroy() (built on the
-                // legacy Stream base, not Writable/Duplex) — stopping the
-                // SOURCE is enough: no more writes reach saxStream, so it
-                // goes inert and is garbage-collected with nothing else to
-                // release. The sanitizer sits between the two — destroying
-                // stdout stops it from feeding the sanitizer, which stops
-                // feeding saxStream.
-                stdout.destroy();
-                activeBuilder = null;
-                return;
-              }
-            }
+    try {
+      for await (const ev of saxWasmEvents(stdout.pipe(sanitizer))) {
+        if (ev.type === "opentag") {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            activeBuilder.onOpenTag(tag, ev.attributes);
+            continue;
           }
-          activeBuilder = null;
+          pathStack.push(tag);
+          const path = pathStack.join(">");
+          if (path === "trace-query-result>node") {
+            sawNode = true;
+            currentNodeRows = [];
+            nodes.push({ row: currentNodeRows });
+          } else if (path === "trace-query-result>node>row") {
+            activeBuilder = new MiniXmlBuilder();
+            activeBuilder.onOpenTag(tag, ev.attributes);
+          }
+        } else if (ev.type === "text") {
+          if (activeBuilder) activeBuilder.onText(ev.text);
+        } else {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            const finished = activeBuilder.onCloseTag(tag);
+            if (finished) {
+              // This tag's open also pushed onto pathStack (capture starts on
+              // the SAME opentag event that pushes it) — pop it now that
+              // capture is done, or pathStack stays poisoned and the next
+              // <row> never matches.
+              if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+              const result = activeBuilder.result!;
+              rowCount++;
+              if (countOnly) {
+                discovery.observeRow(result);
+                // Deliberately not appended anywhere — this is the whole point.
+              } else {
+                currentNodeRows!.push(result);
+                // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE
+                // process, not just this call, so this must fire well before
+                // that point.
+                if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
+                  assertMemoryBudget(rowCount, schemaLabel);
+                }
+              }
+              activeBuilder = null;
+            }
+            continue;
+          }
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
         }
-        return;
       }
-      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-    });
-
-    saxStream.on("error", (err: Error) => {
-      settleReject(
-        new XctraceError("parse-error", `Failed to parse streamed track-detail XML: ${err.message}`, {})
+    } catch (err) {
+      // Stop the SOURCE regardless of which failure path this was (OOM,
+      // malformed XML, or anything else) — an abandoned promise must not
+      // leave xctrace still writing gigabytes into a pipe nobody reads.
+      // Mirrors the old sax-stream code's explicit stdout.destroy() on OOM;
+      // now applied uniformly since nothing here still consumes stdout
+      // afterward either way.
+      stdout.destroy();
+      if (err instanceof XctraceError) throw err;
+      throw new XctraceError(
+        "parse-error",
+        `Failed to parse streamed track-detail XML: ${err instanceof Error ? err.message : String(err)}`,
+        {}
       );
-    });
+    }
 
-    saxStream.on("end", () => {
-      if (!sawNode) {
-        settleReject(
-          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
-        );
-        return;
-      }
-      settleResolve({ nodes, discovery, rowCount });
-    });
+    if (!sawNode) {
+      throw new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {});
+    }
+    return { nodes, discovery, rowCount };
+  })();
 
-    stdout.on("error", (err: Error) => {
-      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
-    });
-
-    const sanitizer = new PercentAttributeNameSanitizer();
-    sanitizer.on("error", (err: Error) => {
-      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
-    });
-    stdout.pipe(sanitizer).pipe(saxStream);
-  });
+  return Promise.race([parsePromise, stdoutErrorPromise]);
 }
 
 /**
@@ -627,25 +603,17 @@ export function parseTrackDetailStreamToSqlite(
   const knownMnemonics = new Set<string>();
   const writer = new SqliteTableWriter(db, tableName, cols);
 
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settleReject = (err: XctraceError) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    };
-    const settleResolve = (result: { rowCount: number; cols: SchemaCol[] }) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
+  const sanitizer = new PercentAttributeNameSanitizer();
+  const stdoutErrorPromise = new Promise<never>((_resolve, reject) => {
+    stdout.on("error", (err: Error) =>
+      reject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}))
+    );
+    sanitizer.on("error", (err: Error) =>
+      reject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}))
+    );
+  });
 
-    // See the matching comment in collectTrackDetailNodes — sax's 64 KB
-    // default MAX_BUFFER_LENGTH (a global, not per-instance) rejects
-    // oversized single attribute values.
-    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
-    const saxStream = sax.createStream(true, { trim: false, normalize: false });
-
+  const parsePromise = (async (): Promise<{ rowCount: number; cols: SchemaCol[] }> => {
     const pathStack: string[] = [];
     let activeBuilder: MiniXmlBuilder | null = null;
     let sawNode = false;
@@ -653,109 +621,97 @@ export function parseTrackDetailStreamToSqlite(
     let binaryCache: BinaryCache = new Map();
     let frameCache: FrameCache = new Map();
 
-    saxStream.on("opentag", (node) => {
-      const tag = node.name;
-      if (activeBuilder) {
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-        return;
-      }
-      pathStack.push(tag);
-      const path = pathStack.join(">");
-      if (path === "trace-query-result>node") {
-        sawNode = true;
-        // Binary/frame ids are node-local — fresh caches per node, same as
-        // collectTrackDetailNodes/buildParsedTable.
-        binaryCache = new Map();
-        frameCache = new Map();
-      } else if (path === "trace-query-result>node>row") {
-        activeBuilder = new MiniXmlBuilder();
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-      }
-    });
-
-    saxStream.on("text", (text) => {
-      if (activeBuilder) activeBuilder.onText(text);
-    });
-
-    saxStream.on("closetag", (tag) => {
-      if (activeBuilder) {
-        const finished = activeBuilder.onCloseTag(tag);
-        if (finished) {
-          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-          const builtNode = activeBuilder.result!;
-          rowCount++;
-
-          // Discover any top-level mnemonics this row introduces that no
-          // earlier row carried, adding each via ALTER TABLE before this
-          // row is built/written. Order follows first-seen-attribute order
-          // within the row (Object.entries), same ordering discovery used.
-          for (const [key, val] of Object.entries(builtNode)) {
-            if (!key.startsWith("@_")) continue;
-            const attrName = key.slice(2);
-            if (knownMnemonics.has(attrName)) continue;
-            knownMnemonics.add(attrName);
-            writer.addColumn({
-              mnemonic: attrName,
-              name: attrName.replace(/-/g, " "),
-              engineeringType: inferEngType(attrName, [String(val)]),
-            });
+    try {
+      for await (const ev of saxWasmEvents(stdout.pipe(sanitizer))) {
+        if (ev.type === "opentag") {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            activeBuilder.onOpenTag(tag, ev.attributes);
+            continue;
           }
-          if (builtNode[BACKTRACE_MNEMONIC] !== undefined && !knownMnemonics.has(BACKTRACE_MNEMONIC)) {
-            knownMnemonics.add(BACKTRACE_MNEMONIC);
-            writer.addColumn({ mnemonic: BACKTRACE_MNEMONIC, name: "Backtrace", engineeringType: "backtrace" });
+          pathStack.push(tag);
+          const path = pathStack.join(">");
+          if (path === "trace-query-result>node") {
+            sawNode = true;
+            // Binary/frame ids are node-local — fresh caches per node, same
+            // as collectTrackDetailNodes/buildParsedTable.
+            binaryCache = new Map();
+            frameCache = new Map();
+          } else if (path === "trace-query-result>node>row") {
+            activeBuilder = new MiniXmlBuilder();
+            activeBuilder.onOpenTag(tag, ev.attributes);
           }
+        } else if (ev.type === "text") {
+          if (activeBuilder) activeBuilder.onText(ev.text);
+        } else {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            const finished = activeBuilder.onCloseTag(tag);
+            if (finished) {
+              if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+              const builtNode = activeBuilder.result!;
+              rowCount++;
 
-          const attrOrder = cols.filter((c) => c.mnemonic !== BACKTRACE_MNEMONIC).map((c) => c.mnemonic);
-          const hasBacktrace = knownMnemonics.has(BACKTRACE_MNEMONIC);
-          const row = buildRow(builtNode, attrOrder, hasBacktrace, cols, binaryCache, frameCache);
-          writer.writeRow(row);
+              // Discover any top-level mnemonics this row introduces that no
+              // earlier row carried, adding each via ALTER TABLE before this
+              // row is built/written. Order follows first-seen-attribute
+              // order within the row (Object.entries), same ordering
+              // discovery used.
+              for (const [key, val] of Object.entries(builtNode)) {
+                if (!key.startsWith("@_")) continue;
+                const attrName = key.slice(2);
+                if (knownMnemonics.has(attrName)) continue;
+                knownMnemonics.add(attrName);
+                writer.addColumn({
+                  mnemonic: attrName,
+                  name: attrName.replace(/-/g, " "),
+                  engineeringType: inferEngType(attrName, [String(val)]),
+                });
+              }
+              if (builtNode[BACKTRACE_MNEMONIC] !== undefined && !knownMnemonics.has(BACKTRACE_MNEMONIC)) {
+                knownMnemonics.add(BACKTRACE_MNEMONIC);
+                writer.addColumn({ mnemonic: BACKTRACE_MNEMONIC, name: "Backtrace", engineeringType: "backtrace" });
+              }
 
-          // See memoryGuard.ts. RefCache-equivalent retention here is
-          // binaryCache/frameCache, which are per-node and much smaller
-          // than a full RefCache (only backtrace-bearing values), but the
-          // same periodic check is cheap insurance regardless.
-          if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
-            try {
-              assertMemoryBudget(rowCount, tableName);
-            } catch (err) {
-              settleReject(err as XctraceError);
-              stdout.destroy();
+              const attrOrder = cols.filter((c) => c.mnemonic !== BACKTRACE_MNEMONIC).map((c) => c.mnemonic);
+              const hasBacktrace = knownMnemonics.has(BACKTRACE_MNEMONIC);
+              const row = buildRow(builtNode, attrOrder, hasBacktrace, cols, binaryCache, frameCache);
+              writer.writeRow(row);
+
+              // See memoryGuard.ts. RefCache-equivalent retention here is
+              // binaryCache/frameCache, which are per-node and much smaller
+              // than a full RefCache (only backtrace-bearing values), but
+              // the same periodic check is cheap insurance regardless.
+              if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
+                assertMemoryBudget(rowCount, tableName);
+              }
               activeBuilder = null;
-              return;
             }
+            continue;
           }
-          activeBuilder = null;
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
         }
-        return;
       }
-      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-    });
-
-    saxStream.on("error", (err: Error) => {
-      settleReject(
-        new XctraceError("parse-error", `Failed to parse streamed track-detail XML: ${err.message}`, {})
+    } catch (err) {
+      // Stop the source on ANY failure path (OOM, malformed XML, etc.) — an
+      // abandoned promise must not leave xctrace still writing into a pipe
+      // nobody reads. Mirrors the old sax-stream code's explicit
+      // stdout.destroy() on OOM, applied uniformly.
+      stdout.destroy();
+      if (err instanceof XctraceError) throw err;
+      throw new XctraceError(
+        "parse-error",
+        `Failed to parse streamed track-detail XML: ${err instanceof Error ? err.message : String(err)}`,
+        {}
       );
-    });
+    }
 
-    saxStream.on("end", () => {
-      if (!sawNode) {
-        settleReject(
-          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
-        );
-        return;
-      }
-      const finalCount = writer.finish();
-      settleResolve({ rowCount: finalCount, cols });
-    });
+    if (!sawNode) {
+      throw new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {});
+    }
+    const finalCount = writer.finish();
+    return { rowCount: finalCount, cols };
+  })();
 
-    stdout.on("error", (err: Error) => {
-      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
-    });
-
-    const sanitizer = new PercentAttributeNameSanitizer();
-    sanitizer.on("error", (err: Error) => {
-      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
-    });
-    stdout.pipe(sanitizer).pipe(saxStream);
-  });
+  return Promise.race([parsePromise, stdoutErrorPromise]);
 }

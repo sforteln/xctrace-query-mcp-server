@@ -11,12 +11,7 @@
  *   - Column role classification (time/weight/backtrace/thread/…) → src/engine/roleInference.ts
  *   - Cross-call caching keyed by (tracePath, run, schema) → src/engine/session.ts
  */
-// Default import, not `import * as sax` — sax is a CJS module whose exports
-// (createStream etc.) are assigned inside an IIFE that Node's static
-// named-export detection can't see, so a namespace import resolves to an
-// empty object at runtime under NodeNext/ESM output. A default import always
-// gets the whole module.exports object regardless of static analysis.
-import sax from "sax";
+import { saxWasmEvents } from "./saxWasmStream.js";
 import type { Readable } from "node:stream";
 import type { DatabaseSync } from "node:sqlite";
 import { MiniXmlBuilder } from "./saxTreeBuilder.js";
@@ -398,7 +393,7 @@ interface StreamParseResult {
  * @throws {XctraceError} "empty-result" if no <node> was ever seen (xpath
  *         matched nothing), "parse-error" on malformed XML.
  */
-function parseTableStreamInternal(
+async function parseTableStreamInternal(
   stdout: Readable,
   opts: {
     countOnly?: boolean;
@@ -406,31 +401,14 @@ function parseTableStreamInternal(
   } = {}
 ): Promise<StreamParseResult> {
   const { countOnly = false, sqlite } = opts;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settleReject = (err: XctraceError) => {
-      if (settled) return;
-      settled = true;
-      reject(err);
-    };
-    const settleResolve = (result: StreamParseResult) => {
-      if (settled) return;
-      settled = true;
-      resolve(result);
-    };
 
-    // sax's 64 KB default (a global, not per-instance) rejects with "Max
-    // buffer length exceeded: attribValue" on a single oversized attribute
-    // value — real trace data hits this on swiftui-updates/swiftui-layout-
-    // updates, whose view-hierarchy/full-cause-graph-node blobs can exceed
-    // it even on a small (15s/211MB) trace. Raising the ceiling is a
-    // mitigation, not a fix — an even larger blob can still exceed it; the
-    // real fix is projecting these known-unbounded columns out before they
-    // ever reach the parser (tracked as a separate, deferred prompt: column
-    // projection at parse time).
-    (sax as unknown as { MAX_BUFFER_LENGTH: number }).MAX_BUFFER_LENGTH = 32 * 1024 * 1024;
-    const saxStream = sax.createStream(true, { trim: false, normalize: false });
+  const stdoutErrorPromise = new Promise<never>((_resolve, reject) => {
+    stdout.on("error", (err: Error) =>
+      reject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}))
+    );
+  });
 
+  const parsePromise = (async (): Promise<StreamParseResult> => {
     const pathStack: string[] = [];
     let activeBuilder: MiniXmlBuilder | null = null;
     let sawNode = false;
@@ -441,111 +419,98 @@ function parseTableStreamInternal(
     let cache: RefCache = new Map();
     let sqliteWriter: SqliteTableWriter | null = null;
 
-    saxStream.on("opentag", (node) => {
-      const tag = node.name;
-      if (activeBuilder) {
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-        return;
-      }
-      pathStack.push(tag);
-      const path = pathStack.join(">");
-      if (path === "trace-query-result>node") {
-        sawNode = true;
-        cache = new Map();
-      } else if (path === "trace-query-result>node>schema" && cols.length === 0) {
-        activeBuilder = new MiniXmlBuilder();
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-      } else if (path === "trace-query-result>node>row") {
-        activeBuilder = new MiniXmlBuilder();
-        activeBuilder.onOpenTag(tag, node.attributes as Record<string, string>);
-      }
-    });
+    try {
+      for await (const ev of saxWasmEvents(stdout)) {
+        if (ev.type === "opentag") {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            activeBuilder.onOpenTag(tag, ev.attributes);
+            continue;
+          }
+          pathStack.push(tag);
+          const path = pathStack.join(">");
+          if (path === "trace-query-result>node") {
+            sawNode = true;
+            cache = new Map();
+          } else if (path === "trace-query-result>node>schema" && cols.length === 0) {
+            activeBuilder = new MiniXmlBuilder();
+            activeBuilder.onOpenTag(tag, ev.attributes);
+          } else if (path === "trace-query-result>node>row") {
+            activeBuilder = new MiniXmlBuilder();
+            activeBuilder.onOpenTag(tag, ev.attributes);
+          }
+        } else if (ev.type === "text") {
+          if (activeBuilder) activeBuilder.onText(ev.text);
+        } else {
+          const tag = ev.tag;
+          if (activeBuilder) {
+            const finished = activeBuilder.onCloseTag(tag);
+            if (finished) {
+              // This tag's open also pushed onto pathStack (capture starts
+              // on the SAME opentag event that pushes it) — pop it now that
+              // capture is done, or pathStack stays poisoned and the next
+              // <row> never matches.
+              if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
+              const builtNode = activeBuilder.result!;
+              if (tag === "schema") {
+                schemaName = String(builtNode["@_name"] ?? "");
+                cols = parseSchemaCols(builtNode);
+                // Column shape is only known once the <schema> block closes
+                // — this is the earliest point a SqliteTableWriter can be
+                // created, before any <row> arrives.
+                if (sqlite) {
+                  sqliteWriter = new SqliteTableWriter(sqlite.db, sqlite.tableName, cols);
+                }
+              } else if (tag === "row") {
+                rowCount++;
+                if (!countOnly) {
+                  const row = parseRow(builtNode, cols, cache);
+                  // Straight swap, not a parallel path — a sqlite-sink parse
+                  // writes to disk instead of accumulating `rows`, it never
+                  // does both.
+                  if (sqliteWriter) sqliteWriter.writeRow(row);
+                  else rows.push(row);
 
-    saxStream.on("text", (text) => {
-      if (activeBuilder) activeBuilder.onText(text);
-    });
-
-    saxStream.on("closetag", (tag) => {
-      if (activeBuilder) {
-        const finished = activeBuilder.onCloseTag(tag);
-        if (finished) {
-          // This tag's open also pushed onto pathStack (capture starts on the
-          // SAME opentag event that pushes it) — pop it now that capture is
-          // done, or pathStack stays poisoned and the next <row> never matches.
-          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-          const builtNode = activeBuilder.result!;
-          if (tag === "schema") {
-            schemaName = String(builtNode["@_name"] ?? "");
-            cols = parseSchemaCols(builtNode);
-            // Column shape is only known once the <schema> block closes —
-            // this is the earliest point a SqliteTableWriter can be created,
-            // before any <row> arrives.
-            if (sqlite) {
-              sqliteWriter = new SqliteTableWriter(sqlite.db, sqlite.tableName, cols);
-            }
-          } else if (tag === "row") {
-            rowCount++;
-            if (!countOnly) {
-              const row = parseRow(builtNode, cols, cache);
-              // Straight swap, not a parallel path — a
-              // sqlite-sink parse writes to disk instead of accumulating
-              // `rows`, it never does both.
-              if (sqliteWriter) sqliteWriter.writeRow(row);
-              else rows.push(row);
-
-              // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE process,
-              // not just this call, so this must fire well before that point.
-              // Keyed off rowCount (not rows.length) so this still fires at
-              // the same cadence in sqlite-sink mode, where `rows` never
-              // grows — RefCache retention (the thing this really guards
-              // against) scales with rowCount regardless of where parsed
-              // rows end up.
-              if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
-                try {
-                  assertMemoryBudget(rowCount, schemaName);
-                } catch (err) {
-                  settleReject(err as XctraceError);
-                  // sax's stream wrapper predates .destroy() (it's built on
-                  // the legacy Stream base, not Writable/Duplex) — stopping
-                  // the SOURCE is enough: no more writes reach saxStream, so
-                  // it goes inert and is garbage-collected with nothing else
-                  // to release.
-                  stdout.destroy();
-                  return;
+                  // See memoryGuard.ts — a fatal V8 OOM aborts the ENTIRE
+                  // process, not just this call, so this must fire well
+                  // before that point. Keyed off rowCount (not rows.length)
+                  // so this still fires at the same cadence in sqlite-sink
+                  // mode, where `rows` never grows — RefCache retention (the
+                  // thing this really guards against) scales with rowCount
+                  // regardless of where parsed rows end up.
+                  if (rowCount % MEMORY_CHECK_INTERVAL === 0) {
+                    assertMemoryBudget(rowCount, schemaName);
+                  }
                 }
               }
+              activeBuilder = null;
             }
+            continue;
           }
-          activeBuilder = null;
+          if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
         }
-        return;
       }
-      if (pathStack[pathStack.length - 1] === tag) pathStack.pop();
-    });
-
-    saxStream.on("error", (err: Error) => {
-      settleReject(
-        new XctraceError("parse-error", `Failed to parse streamed table XML: ${err.message}`, {})
+    } catch (err) {
+      // Stop the source on ANY failure path (OOM, malformed XML, etc.) — an
+      // abandoned promise must not leave xctrace still writing into a pipe
+      // nobody reads.
+      stdout.destroy();
+      if (err instanceof XctraceError) throw err;
+      throw new XctraceError(
+        "parse-error",
+        `Failed to parse streamed table XML: ${err instanceof Error ? err.message : String(err)}`,
+        {}
       );
-    });
+    }
 
-    saxStream.on("end", () => {
-      if (!sawNode) {
-        settleReject(
-          new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {})
-        );
-        return;
-      }
-      if (sqliteWriter) sqliteWriter.finish();
-      settleResolve({ schema: schemaName, cols, rows, rowCount });
-    });
+    if (!sawNode) {
+      throw new XctraceError("empty-result", "xctrace --xpath matched no nodes.", {});
+    }
+    if (sqliteWriter) (sqliteWriter as SqliteTableWriter).finish();
+    return { schema: schemaName, cols, rows, rowCount };
+  })();
 
-    stdout.on("error", (err: Error) => {
-      settleReject(new XctraceError("export-failed", `stdout error: ${err.message}`, {}));
-    });
-
-    stdout.pipe(saxStream);
-  });
+  return Promise.race([parsePromise, stdoutErrorPromise]);
 }
 
 /**
