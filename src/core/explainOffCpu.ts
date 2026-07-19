@@ -18,6 +18,7 @@
  * about).
  */
 import { getTable, getDb, getSchemaModel, lastRun as sessionLastRun } from "../engine/session.js";
+import type { SqliteTableHandle } from "../engine/session.js";
 import { classifyWithHints } from "../engine/roleHints.js";
 import { makeFrameLookup } from "../engine/sqlHydrate.js";
 import { quoteIdent, isBacktraceCol, ROW_IDX_COLUMN } from "../engine/sqliteStore.js";
@@ -94,6 +95,19 @@ export async function explainOffCpuInterval(
   const schema = opts.schema ?? SYSCALL_SCHEMA;
   const { startNs, endNs, thread } = opts;
 
+  // Kick off thread-state's ingestion NOW, concurrently with the primary
+  // schema's export below, instead of waiting until maybeSchedulingDelay is
+  // called after the primary schema's full SQL query completes (PMT:lark-buck
+  // — a real, measured ~15-17s fixed xctrace startup cost dominates a small
+  // schema like this, and concurrent exports against the same trace don't
+  // contend). The cheap presence check stays synchronous and up-front, same
+  // as before — only forces an actual ingest when thread-state is genuinely
+  // present in this run.
+  const threadStatePresent = getSchemaModel(sessionId).some(
+    (e) => e.run === run && e.toc.schema === THREAD_STATE_SCHEMA
+  );
+  const threadStateHandle = threadStatePresent ? getTable(sessionId, run, THREAD_STATE_SCHEMA) : null;
+
   const handle = await getTable(sessionId, run, schema);
   const db = await getDb(sessionId);
   const classified = classifyWithHints(schema, handle.cols);
@@ -158,7 +172,7 @@ export async function explainOffCpuInterval(
     idx: number; startNs: number; waitNs: number; cpuNs: number | null; thread: string | null; syscall: string | null; btId: number | null;
   }>;
 
-  const scheduling = await maybeSchedulingDelay(sessionId, run, startNs, endNs, thread);
+  const scheduling = await maybeSchedulingDelay(sessionId, startNs, endNs, threadStateHandle, thread);
 
   if (rows.length === 0) {
     // No blocking syscall overlaps the window, but thread-state shows a real
@@ -248,20 +262,24 @@ export async function explainOffCpuInterval(
  * in this run AND shows a runnable interval meaningfully overlapping the
  * window. Returns undefined on any lookup miss (never blocks the primary
  * syscall classification).
+ *
+ * `handleP` is already-in-flight (or null when thread-state isn't present in
+ * this run at all) — started by the caller alongside the primary schema's
+ * own export, not fetched here, so the two independent schemas' xctrace
+ * exports run concurrently instead of this one waiting for the primary
+ * schema's full SQL query to finish first (PMT:lark-buck).
  */
 async function maybeSchedulingDelay(
   sessionId: string,
-  run: number,
   startNs: number,
   endNs: number,
+  handleP: Promise<SqliteTableHandle> | null,
   thread?: string
 ): Promise<ExplainOffCpuResult["schedulingDelay"]> {
-  // Presence check WITHOUT forcing an ingest of an unrelated trace's thread-state.
-  const present = getSchemaModel(sessionId).some((e) => e.run === run && e.toc.schema === THREAD_STATE_SCHEMA);
-  if (!present) return undefined;
+  if (!handleP) return undefined;
 
   try {
-    const handle = await getTable(sessionId, run, THREAD_STATE_SCHEMA);
+    const handle = await handleP;
     const db = await getDb(sessionId);
     const timeCol = colByType(handle.cols, "start-time", "start");
     const durCol = colByType(handle.cols, "duration", "duration");

@@ -236,14 +236,32 @@ export async function eagerSweep(sessionId: string): Promise<EagerSweepResult> {
   // bootstrap from even on a stone-cold trace. A schema present in the TOC
   // but not actually fetchable this time (ambiguous position, a transient
   // export hiccup) must never break the sweep — it just won't end up warm.
+  //
+  // Fired concurrently via Promise.all, not a sequential for-await loop —
+  // measured live (PMT:lark-buck): each xctrace export subprocess pays a
+  // fixed ~15-17s startup cost before a single byte arrives, which dominates
+  // wall time for a set of small/cheap schemas like this allowlist, and
+  // concurrent xctrace subprocesses against the same trace do NOT contend
+  // (see session.ts's getTable, which already exploits this for
+  // relate()/correlate()). getTable's own chain bookkeeping
+  // (sessionIngestChain) is updated synchronously before its first real
+  // await, so calling it here for every schema without awaiting in between
+  // still correctly serializes only the shared-connection WRITE step, not
+  // the export spawn — the exact mechanism relate()/correlate() already rely
+  // on, just applied across more than two schemas at once. A sequential
+  // for-await loop defeats that: it doesn't even START the next schema's
+  // export until the current one's entire pipeline (spawn AND write) has
+  // finished.
   const eagerCandidates = selectEagerSchemas(presentSchemas);
-  for (const schema of eagerCandidates) {
-    try {
-      await getTable(sessionId, run, schema);
-    } catch {
-      // see above — degrade to "not warm", never throw
-    }
-  }
+  await Promise.all(
+    eagerCandidates.map(async (schema) => {
+      try {
+        await getTable(sessionId, run, schema);
+      } catch {
+        // see above — degrade to "not warm", never throw
+      }
+    })
+  );
 
   // Step 2 — ingestedSchemas = the eager set just ingested UNION anything
   // already ingested this session (a re-open of a ruby-peak-cached trace, or
