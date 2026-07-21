@@ -1,6 +1,6 @@
 {
   "name": "xctrace-query-mcp-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Headless stdio MCP server that lets an AI navigate Xcode Instruments .trace files without dumping raw xctrace XML into context.",
   "type": "module",
   "bin": {
