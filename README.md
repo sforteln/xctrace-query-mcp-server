@@ -13,30 +13,7 @@ AI was used extensively in writing this app. There is no chance I would have wri
 ## Version Support
 This tool was built using Xcode 27 beta versions, as I needed it to work with the Foundation Model instrument. Once the final is out, I'll do a run-through of the traces to see if anything changed. I have not tested it with Xcode 26 and so don't know if the trace format for older Instruments has changed.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
 
-## How it works
-
-Every Instruments trace has the same shape underneath: run[] → instrument[] → schema/table[] → row[] with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on any instrument, including ones added in future Xcode versions,f with zero per-instrument code:
-- `query`/`find`/`get_row`: filtered/sorted rows, richer predicates (regex, contains, ranges), and full single-row detail including resolved backtraces
-- `aggregate`: "top N by weight" grouped by any column(s), including percentile ops (p50/p90/p95/p99) for a real distribution instead of just min/max/sum, and a `having` filter to isolate storms/hotspots (many occurrences), not just the single heaviest one
-- `call_tree`: folded/aggregated call stacks for sample-based instruments
-- `relate`/`correlate`: join two schemas on shared time windows or equality keys to answer causality ("does this interval contain that event"), leaks ("was this allocation ever freed"), and idle/GPU-bound-window questions over the FULL table, not a sample
-- `timeline`: merge several schemas into one time-ordered, origin-tagged stream — the exploratory complement to `relate`, for "what actually happened, in order, across subsystems" before you have a specific hypothesis to test
-
-Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call. 
-
-#### More questions
-Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
-
-For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/sforteln/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
-1. `git clone https://github.com/sforteln/xctrace-query-mcp-server`
-1. `cd xctrace-query-mcp-server`
-1. Start a new `claude` (or your chosen AI) session
-1. Ask it to `Read aidocs/*`, then ask your question
-
-### Getting started
-After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
-
-### Example conversation
+## Example conversation
 **User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
 which is running from this Xcode instance.
 
@@ -75,9 +52,9 @@ Good, all tools loaded. Running three queries in parallel now:
 
 **AI:** Big picture emerging. Let me call out what I see so far:
 
-• **250 hitches, all app-caused** — worst is 166ms at 4.6s with "Potentially expensive app update(s) + Potentially expensive render". Several 66ms and 50ms hitches throughout.
-• **870,795 layout/env update events in ~30s** — roughly 29,000 layout passes per second. That's the smoking gun.
-• _LazyLayoutViewCache<LazyVStackLayout> doing **26ms of uncached layout across 172 events is notable** — this is likely the List in your sidebar.
+* **250 hitches, all app-caused** — worst is 166ms at 4.6s with "Potentially expensive app update(s) + Potentially expensive render". Several 66ms and 50ms hitches throughout.
+* **870,795 layout/env update events in ~30s** — roughly 29,000 layout passes per second. That's the smoking gun.
+* _LazyLayoutViewCache<LazyVStackLayout> doing **26ms of uncached layout across 172 events is notable** — this is likely the List in your sidebar.
 
 The note tells me view-body identity lives in description, not view-name. Running two more focused queries to find the hot re-evaluating views and layout frequency breakdown:
 
@@ -200,21 +177,8 @@ The height is used only to decide if a drop lands above/below the row midpoint. 
 
 Finding 1 is a one-liner and probably the biggest bang — want me to apply any or all of these?
 
----
-## Opening an existing trace
-If you have an existing trace or want to make one on your own you can also ask to open and analyze it.
-`Open and analyze the trace /absolute/path/to/trace'
-
-## Using multiple Templates or Instruments
-You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
-
-**Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
-
-If your app already calls `os_signpost` around its own operations, that's not a separate concern; it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
-
-## Instrument your app with signposts
-
-Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
+## Getting started
+After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
 
 ## Requirements
 - **Node.js ≥ 22**
@@ -256,24 +220,54 @@ which npx   # or, if npx is itself a version-manager shim: readlink -f "$(which 
 ```
 After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
 
-## Trace Data
+## How it works
+Every Instruments trace has the same shape underneath: run[] → instrument[] → schema/table[] → row[] with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on any instrument, including ones added in future Xcode versions,f with zero per-instrument code:
+- `query`/`find`/`get_row`: filtered/sorted rows, richer predicates (regex, contains, ranges), and full single-row detail including resolved backtraces
+- `aggregate`: "top N by weight" grouped by any column(s), including percentile ops (p50/p90/p95/p99) for a real distribution instead of just min/max/sum, and a `having` filter to isolate storms/hotspots (many occurrences), not just the single heaviest one
+- `call_tree`: folded/aggregated call stacks for sample-based instruments
+- `relate`/`correlate`: join two schemas on shared time windows or equality keys to answer causality ("does this interval contain that event"), leaks ("was this allocation ever freed"), and idle/GPU-bound-window questions over the FULL table, not a sample
+- `timeline`: merge several schemas into one time-ordered, origin-tagged stream — the exploratory complement to `relate`, for "what actually happened, in order, across subsystems" before you have a specific hypothesis to test
 
+Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call. 
+
+### More questions
+Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
+
+For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/sforteln/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
+1. `git clone https://github.com/sforteln/xctrace-query-mcp-server`
+1. `cd xctrace-query-mcp-server`
+1. Start a new `claude` (or your chosen AI) session
+1. Ask it to `Read aidocs/*`, then ask your question
+
+## Opening an existing trace
+If you have an existing trace or want to create one yourself, you can also ask to open and analyze it.
+
+`Open and analyze the trace /absolute/path/to/trace`
+
+## Using multiple Templates or Instruments
+You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
+
+## Why composing two templates matters more than it sounds like it should
+The value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
+
+If your app already calls `os_signpost` around its own operations, that's not a separate concern; it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation".
+
+## Instrument your app with signposts
+Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
+
+## Trace Data
 A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table.
 
-Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
+Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that is re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested, rather than silently serving stale data.
 
 ## MCP server heap settings
-
 The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
 
 Override it if needed:
 - Set `XCTRACE_QUERY_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
 - Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
 
-
-
 ## Develop
-
 ```bash
 npm install
 npm run build     # tsc → dist/
