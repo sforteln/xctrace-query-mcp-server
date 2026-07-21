@@ -1,17 +1,17 @@
 # xctrace-query-mcp-server
-### What happens if you give your AI access to your source and Instruments?
+### What happens if you give your AI access to your app's source code and Instruments?
 
-This is an [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode Instruments .trace files: Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more- without dumping raw xctrace XML into the model's context.
+This is an [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode Instruments .trace files: Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more without dumping raw xctrace XML into the AI's context.
 
 Raw xctrace output is ~95% noise (XML envelope, ref-id indirection, includes both raw and display values). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down; for any instrument type, not just the ones it was written for.
 
-Most of the processing time will be spent exporting data. Exporting the XML from the trace's internal binary structure and streaming the XML can take up to 20 mins for large traces. To help with this, schemas are loaded only when they are used in a query (except for known small schemas, which are loaded immediately in the hope that they will provide clues on how to proceed). To limit the effects of this, try to keep your traces as short as possible. 
+Most of the processing time will be spent exporting data. Exporting the XML from the trace's internal binary structure and streaming the XML **can take up to 20 mins for large traces**. To help with this, schemas are loaded only when they are used in a query (except for known small schemas, which are loaded immediately in the hope that they will provide clues on how to proceed). To limit the effects of this, try to keep your traces as short as possible. 
 
 ## AI
 AI was used extensively in writing this app. There is no chance I would have written a Node app to parse GBs of XML into a SQL db on my own. But this app does not contain an AI agent. It is a set of deterministic tools (really, wrappers around SQL) that expose trace data to your AI in a context-friendly way. The reason the tools don't allow your AI to write SQL queries to run directly against the db is that I was concerned about the AI writing valid but incorrect SQL, getting zero results (because of a poorly written query), and taking that to mean there were no results. So instead I decided to give it semantic tools to query the data.
 
 ## Version Support
-This tool was built to support Xcode 27 beta versions, as I needed it to work with Foundation Models. Once the final is out, I'll do a run-through of the traces to see if anything changed. I don't know how much the existing templates and instrument recording have changed since the last full release.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
+This tool was built using Xcode 27 beta versions, as I needed it to work with the Foundation Model instrument. Once the final is out, I'll do a run-through of the traces to see if anything changed. I have not tested it with Xcode 26 and so don't know if the trace format for older Instruments has changed.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
 
 ## How it works
 
@@ -22,19 +22,19 @@ Every Instruments trace has the same shape underneath: run[] → instrument[] �
 - `relate`/`correlate`: join two schemas on shared time windows or equality keys to answer causality ("does this interval contain that event"), leaks ("was this allocation ever freed"), and idle/GPU-bound-window questions over the FULL table, not a sample
 - `timeline`: merge several schemas into one time-ordered, origin-tagged stream — the exploratory complement to `relate`, for "what actually happened, in order, across subsystems" before you have a specific hypothesis to test
 
-Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call — including, when a lens recognizes the trace type, one entry flagged `recommended: true`.
+Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call. 
 
 #### More questions
 Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
 
-For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/sforteln/xctrace-query-mcp-server/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
+For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/sforteln/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
 1. `git clone https://github.com/sforteln/xctrace-query-mcp-server`
 1. `cd xctrace-query-mcp-server`
 1. Start a new `claude` (or your chosen AI) session
 1. Ask it to `Read aidocs/*`, then ask your question
 
 ### Getting started
-After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, it seems like the AI gets confused by being asked to use an MCP server straight away. It almost seems like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
+After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
 
 ### Example conversation
 **User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
@@ -206,7 +206,7 @@ If you have an existing trace or want to make one on your own you can also ask t
 `Open and analyze the trace /absolute/path/to/trace'
 
 ## Using multiple Templates or Instruments
-You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual Instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
+You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
 
 **Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
 
