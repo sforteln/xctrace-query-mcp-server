@@ -44,11 +44,11 @@ which is running from this Xcode instance.
 
 >[Tool Call : List Devices]
 
-**Assistant:** Good, targeting the Mac. Let me check what processes are running to confirm PromptManager is live before attaching.
+**AI:** Good, targeting the Mac. Let me check what processes are running to confirm PromptManager is live before attaching.
 
 >[Tool Call : List Processes]
 
-**Assistant:** PromptManager is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus PromptManager's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
+**AI:** PromptManager is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus PromptManager's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
 
 >[Tool Call : Start Recording]
 
