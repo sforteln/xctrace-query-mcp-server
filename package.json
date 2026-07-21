@@ -4,7 +4,7 @@
   "description": "Headless stdio MCP server that lets an AI navigate Xcode Instruments .trace files without dumping raw xctrace XML into context.",
   "type": "module",
   "bin": {
-    "xctrace-query-mcp-server": "dist/index.js"
+    "xctrace-query-mcp-server": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -14,7 +14,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc && chmod +x dist/index.js",
+    "build": "tsc && chmod +x dist/index.js dist/cli.js",
     "watch": "tsc --watch",
     "start": "node dist/index.js",
     "test": "bash -c 'unset npm_config_prefix && source $HOME/.nvm/nvm.sh && nvm exec $(cat .nvmrc) -- node node_modules/.bin/vitest run'",
