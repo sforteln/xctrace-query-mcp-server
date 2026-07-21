@@ -9,6 +9,7 @@
  * registry.
  */
 import { fileURLToPath } from "node:url";
+import { readPackageVersion } from "./core/serverInfo.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -75,7 +76,7 @@ import type { NextAction } from "./core/response.js";
 import { eagerSweep } from "./detectors/surface.js";
 
 const SERVER_NAME = "xctrace-query-mcp-server";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = readPackageVersion();
 
 // ─── Heap guard ─────────────────────────────────────────────────────────────
 //

@@ -42,7 +42,7 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 // This file compiles to dist/core/serverInfo.js — repo root is two levels up.
 const REPO_ROOT = join(MODULE_DIR, "..", "..");
 
-function readPackageVersion(): string {
+export function readPackageVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
     return pkg.version ?? "unknown";
