@@ -218,7 +218,7 @@ which npx   # or, if npx is itself a version-manager shim: readlink -f "$(which 
   }
 }
 ```
-After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
+After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected.
 
 ## How it works
 Every Instruments trace has the same shape underneath: run[] → instrument[] → schema/table[] → row[] with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on any instrument, including ones added in future Xcode versions,f with zero per-instrument code:
@@ -245,7 +245,7 @@ If you have an existing trace or want to create one yourself, you can also ask t
 `Open and analyze the trace /absolute/path/to/trace`
 
 ## Using multiple Templates or Instruments
-You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
+You can also request the recording to use multiple Templates (one of them will be decomposed and added as individual instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
 
 ## Why composing two templates matters more than it sounds like it should
 The value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
