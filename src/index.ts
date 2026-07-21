@@ -277,10 +277,7 @@ export function createServer(): McpServer {
         "commit lands. Compare `distBuildTime` (on-disk mtime of the running code — the ground " +
         "truth for what's actually loaded) and `processStartedAt` against when a known fix was " +
         "built/committed; if the process started before that, it's running stale code and needs " +
-        "to be restarted by whatever spawned it (this server can't restart itself). `gitCommit`/" +
-        "`gitDirty` are best-effort (null outside a git checkout, e.g. a published npm install) " +
-        "and reflect the repo at process startup — useful for cross-referencing a specific " +
-        "commit hash, not authoritative on their own if commits happened without a rebuild. " +
+        "to be restarted by whatever spawned it (this server can't restart itself). " +
         "⚠️ Not for checking trace or session state — that's summary/list_instruments. Not for " +
         "polling an in-flight call's progress — this reports the server's own build, not what a " +
         "currently-running tool call is doing.",

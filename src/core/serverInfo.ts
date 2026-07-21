@@ -7,20 +7,17 @@
  * a query that should have been fast (per a same-day fix) instead ran for
  * 10+ minutes, because the server process handling it had been started
  * minutes before the fix was built. There was no way to check this from
- * outside a shell (`ps` + `stat` + `git log`, done by hand) — this tool
- * bundles that exact diagnostic into one call so an agent (or a human) can
- * ask "are you running the version with fix X?" directly.
+ * outside a shell (`ps` + `stat`, done by hand) — this tool bundles that
+ * exact diagnostic into one call so an agent (or a human) can ask "are you
+ * running the version with fix X?" directly.
  *
- * distBuildTime (this file's own on-disk mtime) is the most load-bearing
- * field — it doesn't depend on git and is what actually determines which
- * code is loaded. gitCommit/gitDirty are best-effort: they reflect the repo
- * state read at process startup, which can drift from what was ACTUALLY
- * compiled into dist/ if someone commits without rebuilding (or vice versa) —
- * useful for cross-referencing against a known commit hash, not authoritative
- * on their own. Both are absent when running from a published npm install
- * with no .git directory present.
+ * distBuildTime (this file's own on-disk mtime) is the ground truth for
+ * "when was the loaded code built" — it's what determines which code is
+ * actually running. An earlier version of this also reported gitCommit/
+ * gitCommitDate/gitDirty, but those are permanently null for every real
+ * npm-installed user (there's no .git directory once published) — dropped
+ * as noise that only ever had value for this repo's own dev checkout.
  */
-import { execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,11 +27,6 @@ export interface ServerInfo {
   processStartedAt: string;
   /** On-disk mtime of this running file — the ground truth for "when was the loaded code built." */
   distBuildTime: string;
-  /** Best-effort — null when not running from a git checkout (e.g. a published npm install). */
-  gitCommit: string | null;
-  gitCommitDate: string | null;
-  /** True if the working tree had uncommitted changes at process startup. Null alongside gitCommit. */
-  gitDirty: boolean | null;
   nodeVersion: string;
 }
 
@@ -51,41 +43,16 @@ export function readPackageVersion(): string {
   }
 }
 
-function gitInfo(): { commit: string | null; commitDate: string | null; dirty: boolean | null } {
-  // stdio must suppress stderr explicitly — execSync's default inherits the
-  // child's stderr to this process even when the thrown error is caught here,
-  // so a published npm install (no .git present) would otherwise print a raw
-  // "fatal: not a git repository" line on every single server startup.
-  const opts: { cwd: string; encoding: "utf8"; stdio: ["ignore", "pipe", "ignore"] } = {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  };
-  try {
-    const commit = execSync("git rev-parse HEAD", opts).trim();
-    const commitDate = execSync("git log -1 --format=%cI", opts).trim();
-    const dirty = execSync("git status --porcelain", opts).trim().length > 0;
-    return { commit, commitDate, dirty };
-  } catch {
-    return { commit: null, commitDate: null, dirty: null };
-  }
-}
-
-// Captured once at module load — process start time and git state don't
-// change during the life of this process, so there's no reason to re-run a
-// subprocess on every call.
+// Captured once at module load — process start time doesn't change during
+// the life of this process, so there's no reason to recompute it per call.
 const PROCESS_STARTED_AT = new Date().toISOString();
 const PACKAGE_VERSION = readPackageVersion();
-const GIT = gitInfo();
 
 export function getServerInfo(): ServerInfo {
   return {
     packageVersion: PACKAGE_VERSION,
     processStartedAt: PROCESS_STARTED_AT,
     distBuildTime: statSync(fileURLToPath(import.meta.url)).mtime.toISOString(),
-    gitCommit: GIT.commit,
-    gitCommitDate: GIT.commitDate,
-    gitDirty: GIT.dirty,
     nodeVersion: process.version,
   };
 }
