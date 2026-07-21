@@ -1,14 +1,14 @@
 # xctrace-query-mcp-server
 ### What happens if you give your AI access to your source and Instruments?
 
-A headless [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode Instruments .trace files: Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more- without dumping raw xctrace XML into the model's context.
+This is an [MCP](https://modelcontextprotocol.io) server that lets an AI navigate Xcode Instruments .trace files: Time Profiler, Allocations, Leaks, Network, Hangs & Hitches, Core Data / SwiftData, Swift Concurrency, Foundation Models, and more- without dumping raw xctrace XML into the model's context.
 
-Raw xctrace output is ~95% noise (XML envelope, ref-id indirection, triplicated columns). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down; for any instrument type, not just the ones it was written for.
+Raw xctrace output is ~95% noise (XML envelope, ref-id indirection, includes both raw and display values). A real profiling trace won't fit in any model's context window. This server turns it into ~200 tokens of navigable summary with drill-down; for any instrument type, not just the ones it was written for.
 
 Most of the processing time will be spent exporting data. Exporting the XML from the trace's internal binary structure and streaming the XML can take up to 20 mins for large traces. To help with this, schemas are loaded only when they are used in a query (except for known small schemas, which are loaded immediately in the hope that they will provide clues on how to proceed). To limit the effects of this, try to keep your traces as short as possible. 
 
 ## AI
-AI was used extensively in writing this app. There is no chance I would have written a Node app to parse GBs of XML into a SQL db on my own. But this app does not contain an AI agent. It is a set of deterministic tools (really, wrappers around SQL) that expose trace data to your AI in a context-friendly way. The reason for the tools and not allowing your AI to write SQL queries to run directly against the db is that I was concerned about the AI writing valid but incorrect SQL, getting zero results (because of a poorly written query), and taking that to mean there were no results. So instead I decided to give it semantic tools to query the data.
+AI was used extensively in writing this app. There is no chance I would have written a Node app to parse GBs of XML into a SQL db on my own. But this app does not contain an AI agent. It is a set of deterministic tools (really, wrappers around SQL) that expose trace data to your AI in a context-friendly way. The reason the tools don't allow your AI to write SQL queries to run directly against the db is that I was concerned about the AI writing valid but incorrect SQL, getting zero results (because of a poorly written query), and taking that to mean there were no results. So instead I decided to give it semantic tools to query the data.
 
 ## Version Support
 This tool was built to support Xcode 27 beta versions, as I needed it to work with Foundation Models. Once the final is out, I'll do a run-through of the traces to see if anything changed. I don't know how much the existing templates and instrument recording have changed since the last full release.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
@@ -27,8 +27,8 @@ Every one of these runs as a real SQL query against an on-disk SQLite database t
 #### More questions
 Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
 
-For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/your-org/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
-1. `git clone https://github.com/your-org/xctrace-query-mcp-server`
+For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/sforteln/xctrace-query-mcp-server/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
+1. `git clone https://github.com/sforteln/xctrace-query-mcp-server`
 1. `cd xctrace-query-mcp-server`
 1. Start a new `claude` (or your chosen AI) session
 1. Ask it to `Read aidocs/*`, then ask your question
