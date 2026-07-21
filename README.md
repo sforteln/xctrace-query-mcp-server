@@ -40,7 +40,7 @@ After you have the server installed and available to your AI, I find it helpful 
 **User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
 which is running from this Xcode instance.
 
-**Assistant:** I'll start by confirming the running PromptManager process, then record with SwiftUI instruments focused on layout.
+**AI:** I'll start by confirming the running PromptManager process, then record with SwiftUI instruments focused on layout.
 
 >[Tool Call : List Devices]
 
@@ -52,7 +52,7 @@ which is running from this Xcode instance.
 
 >[Tool Call : Start Recording]
 
-**Assistant:** Recording is live. Please navigate the sidebar now — scroll, switch projects/features, expand items — for about 25 seconds to capture representative layout activity. I'll stop it when you're ready, or it auto-stops at 30s.
+**AI:** Recording is live. Please navigate the sidebar now — scroll, switch projects/features, expand items — for about 25 seconds to capture representative layout activity. I'll stop it when you're ready, or it auto-stops at 30s.
 
 > [User drives App]
 
@@ -60,7 +60,7 @@ which is running from this Xcode instance.
 
 >[Tool Call : Stop Recording]
 
-**Assistant:** Recording stopped. Strong early signal: 250 hitches captured, 237 of them app-caused and clustering in the 8-16ms near-miss band — the closest hits 16.7ms, right at the 60Hz dropped-frame cutoff. Let me now dig into the SwiftUI-specific data. I'll run the hitch query and check available SwiftUI lens tools in parallel.
+**AI:** Recording stopped. Strong early signal: 250 hitches captured, 237 of them app-caused and clustering in the 8-16ms near-miss band — the closest hits 16.7ms, right at the 60Hz dropped-frame cutoff. Let me now dig into the SwiftUI-specific data. I'll run the hitch query and check available SwiftUI lens tools in parallel.
 
 Good, all tools loaded. Running three queries in parallel now:
 1. The worst hitches (app-caused, near-miss band)
@@ -73,7 +73,7 @@ Good, all tools loaded. Running three queries in parallel now:
 
 >[Tool Call : Aggregate SwiftUI Filtered Updates]
 
-**Assistant:** Big picture emerging. Let me call out what I see so far:
+**AI:** Big picture emerging. Let me call out what I see so far:
 
 • **250 hitches, all app-caused** — worst is 166ms at 4.6s with "Potentially expensive app update(s) + Potentially expensive render". Several 66ms and 50ms hitches throughout.
 • **870,795 layout/env update events in ~30s** — roughly 29,000 layout passes per second. That's the smoking gun.
@@ -87,13 +87,14 @@ The note tells me view-body identity lives in description, not view-name. Runnin
 
 >[Tool Call : Aggregate SwiftUI Layout Env Updates]
 
-**Assistant:** Excellent data. Clear culprits identified. Let me read the source files to confirm the root cause before presenting findings.
+**AI:** Excellent data. Clear culprits identified. Let me read the source files to confirm the root cause before presenting findings.
 
 Let me read the rest of SidebarView.swift to see SidebarRow.
 
 >[Reading File : SidebarView.swift]
 
-I have everything I need. Let me close the trace and deliver the full findings.
+**AI:** I have everything I need. Let me close the trace and deliver the full findings.
+
 >[Tool Call : Close Trace]
 
 #### Trace findings: SidebarView re-layout issues
