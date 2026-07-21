@@ -1840,7 +1840,7 @@ export function createServer(): McpServer {
   return server;
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const server = createServer();
   const transport = new StdioServerTransport();
   // Load config eagerly at startup so the first tool call doesn't pay the I/O cost.

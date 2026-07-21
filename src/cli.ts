@@ -18,4 +18,12 @@ if (major < MIN_NODE_MAJOR) {
   process.exit(1);
 }
 
-await import("./index.js");
+// A dynamic import never changes process.argv, so index.js's own
+// `process.argv[1] === fileURLToPath(import.meta.url)` main-module guard
+// (which starts the actual transport/server) never matches when loaded
+// this way — call main() explicitly instead of relying on that guard.
+const { main } = await import("./index.js");
+main().catch((err) => {
+  console.error("xctrace-query-mcp-server failed to start:", err);
+  process.exit(1);
+});

@@ -52,10 +52,19 @@ function readPackageVersion(): string {
 }
 
 function gitInfo(): { commit: string | null; commitDate: string | null; dirty: boolean | null } {
+  // stdio must suppress stderr explicitly — execSync's default inherits the
+  // child's stderr to this process even when the thrown error is caught here,
+  // so a published npm install (no .git present) would otherwise print a raw
+  // "fatal: not a git repository" line on every single server startup.
+  const opts: { cwd: string; encoding: "utf8"; stdio: ["ignore", "pipe", "ignore"] } = {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  };
   try {
-    const commit = execSync("git rev-parse HEAD", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
-    const commitDate = execSync("git log -1 --format=%cI", { cwd: REPO_ROOT, encoding: "utf8" }).trim();
-    const dirty = execSync("git status --porcelain", { cwd: REPO_ROOT, encoding: "utf8" }).trim().length > 0;
+    const commit = execSync("git rev-parse HEAD", opts).trim();
+    const commitDate = execSync("git log -1 --format=%cI", opts).trim();
+    const dirty = execSync("git status --porcelain", opts).trim().length > 0;
     return { commit, commitDate, dirty };
   } catch {
     return { commit: null, commitDate: null, dirty: null };
