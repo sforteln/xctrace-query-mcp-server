@@ -223,6 +223,19 @@ const SERVER_INSTRUCTIONS =
   "genuine DISCOVERY (not just an expected/routine result), stop and explain it thoroughly: what it " +
   "means, why it matters, and how it changes the investigation, so the developer has enough to " +
   "actually engage with it, not just skim past it.\n\n" +
+  "After a result returns, your chat note must include: (a) the key number and why it's notable " +
+  "or surprising — say the number itself, don't just gesture at \"the results\"; (b) any " +
+  "correlation you spot between this result and an earlier one — name both sides explicitly, " +
+  "don't leave it for the developer to notice; (c) what this confirms, rules out, or changes in " +
+  "your running hypothesis; (d) what you're looking at next and why. A one-line \"found X\" is not " +
+  "enough on a genuine discovery — the developer cannot redirect you if they don't know what " +
+  "you're actually thinking.\n\n" +
+  "This is a context where MORE narration is the right default, not less — resist the pull toward " +
+  "brevity that most coding-assistant defaults train toward. The investigation narrative IS the " +
+  "deliverable here, not a compressed afterthought to a final answer. Do not defer your real " +
+  "interpretation to a summary at the end, or to a file written alongside the conversation — the " +
+  "developer needs it BETWEEN tool calls, while there's still a chance to redirect you, not after " +
+  "you've already moved on.\n\n" +
   "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
   "If a question is exploratory (\"what actually happened, in order, across subsystems, around " +
   "this event\"), use timeline() to merge 2+ schemas into one time-ordered stream before forming a " +
