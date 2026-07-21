@@ -208,12 +208,19 @@ claude mcp add xctrace-query-mcp-server -- npx xctrace-query-mcp-server@latest
 ```bash
 which npx   # or, if npx is itself a version-manager shim: readlink -f "$(which npx)"
 ```
+An absolute path to `npx` isn't enough on its own, though: `npx` is itself a script starting with `#!/usr/bin/env node`, so *running* it still requires `node` to be resolvable via `PATH` for that shebang line — and Xcode's spawned subprocess doesn't inherit a `PATH` containing a version-manager-installed `node`'s directory. Without it, the process dies near-instantly before any MCP handshake starts, and Xcode shows a stuck "still connecting" state rather than a clear error. Fix it with an explicit `env.PATH` override that includes `node`'s own directory:
+```bash
+dirname "$(readlink -f "$(which node)")"   # the directory to prepend to PATH below
+```
 ```json
 {
   "mcpServers": {
     "xctrace-query-mcp-server": {
       "command": "/absolute/path/to/npx",
-      "args": ["-y", "xctrace-query-mcp-server@latest"]
+      "args": ["-y", "xctrace-query-mcp-server@latest"],
+      "env": {
+        "PATH": "/absolute/path/to/node/bin/dir:/usr/bin:/bin:/usr/sbin:/sbin"
+      }
     }
   }
 }
