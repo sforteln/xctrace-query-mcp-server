@@ -24,7 +24,7 @@ Every Instruments trace has the same shape underneath: run[] → instrument[] �
 
 Every one of these runs as a real SQL query against an on-disk SQLite database the trace is streamed into on first touch, not a hand-rolled scan over rows held in memory. Optional per-instrument "lenses" add ergonomic shortcuts on top of the core verbs (e.g. `list_fm_requests` for Foundation Models), and every response's `nextActions` suggests the next call — including, when a lens recognizes the trace type, one entry flagged `recommended: true`.
 
-### More questions
+#### More questions
 Just ask your AI directly — tool descriptions and lens hints are self-documenting by design, so questions like "How does the `correlate` function work?" or "How does the lens for Hangs work?" usually don't need anything beyond the installed server itself.
 
 For implementation-level detail beyond that, the annotated internals live in [`aidocs/`](https://github.com/your-org/xctrace-query-mcp-server/tree/main/aidocs). Clone the repo and point your AI at that directory for a deeper dive:
@@ -32,6 +32,188 @@ For implementation-level detail beyond that, the annotated internals live in [`a
 1. `cd xctrace-query-mcp-server`
 1. Start a new `claude` (or your chosen AI) session
 1. Ask it to `Read aidocs/*`, then ask your question
+
+### Getting started
+After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, it seems like the AI gets confused by being asked to use an MCP server straight away. It almost seems like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
+
+### Example conversation
+**User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
+which is running from this Xcode instance.
+
+**Assistant:** I'll start by confirming the running PromptManager process, then record with SwiftUI instruments focused on layout.
+
+>[Tool Call : List Devices]
+
+**Assistant:** Good, targeting the Mac. Let me check what processes are running to confirm PromptManager is live before attaching.
+
+>[Tool Call : List Processes]
+
+**Assistant:** PromptManager is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus PromptManager's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
+
+>[Tool Call : Start Recording]
+
+**Assistant:** Recording is live. Please navigate the sidebar now — scroll, switch projects/features, expand items — for about 25 seconds to capture representative layout activity. I'll stop it when you're ready, or it auto-stops at 30s.
+
+> [User drives App]
+
+**User:** Stop
+
+>[Tool Call : Stop Recording]
+
+**Assistant:** Recording stopped. Strong early signal: 250 hitches captured, 237 of them app-caused and clustering in the 8-16ms near-miss band — the closest hits 16.7ms, right at the 60Hz dropped-frame cutoff. Let me now dig into the SwiftUI-specific data. I'll run the hitch query and check available SwiftUI lens tools in parallel.
+
+Good, all tools loaded. Running three queries in parallel now:
+1. The worst hitches (app-caused, near-miss band)
+2. Which view bodies are consuming the most main-thread time
+3. Which layout/env passes are most expensive
+
+>[Tool Call : Find]
+
+>[Tool Call : Aggregate SwiftUI Filtered Updates]
+
+>[Tool Call : Aggregate SwiftUI Filtered Updates]
+
+**Assistant:** Big picture emerging. Let me call out what I see so far:
+
+• **250 hitches, all app-caused** — worst is 166ms at 4.6s with "Potentially expensive app update(s) + Potentially expensive render". Several 66ms and 50ms hitches throughout.
+• **870,795 layout/env update events in ~30s** — roughly 29,000 layout passes per second. That's the smoking gun.
+• _LazyLayoutViewCache<LazyVStackLayout> doing **26ms of uncached layout across 172 events is notable** — this is likely the List in your sidebar.
+
+The note tells me view-body identity lives in description, not view-name. Running two more focused queries to find the hot re-evaluating views and layout frequency breakdown:
+
+>[Tool Call : Aggregate SwiftUI Filtered Updates]
+
+>[Tool Call : Aggregate SwiftUI Filtered Updates]
+
+>[Tool Call : Aggregate SwiftUI Layout Env Updates]
+
+**Assistant:** Excellent data. Clear culprits identified. Let me read the source files to confirm the root cause before presenting findings.
+
+Let me read the rest of SidebarView.swift to see SidebarRow.
+
+>[Reading File : SidebarView.swift]
+
+I have everything I need. Let me close the trace and deliver the full findings.
+>[Tool Call : Close Trace]
+
+#### Trace findings: SidebarView re-layout issues
+
+**250 hitches, all app-caused.** Worst: **166ms** at 4.6s. Most cluster in the 8–16ms near-miss band — not dropped frames yet at 60Hz, but trending there. **870,795 layout/env update events in ~30 seconds.** That's the smoking gun.
+
+#### Finding 1 — Two dead @Query declarations (High impact)
+
+SidebarView.swift -> lines 89–90:
+
+```swift
+@Query private var allFeatures: [Feature]   // DEAD
+@Query private var allPrompts: [Prompt]     // DEAD
+```
+Both are shadowed by local let allFeatures / let allPrompts inside visibleItems — the instance properties are never read. But SwiftData doesn't know that. Every time any Feature or Prompt is written (including MCP tool calls) these queries fire and mark SidebarView.body dirty. The trace shows SidebarView.body ran **27 times in 30 seconds** — this is likely the primary trigger. **Delete both lines.**
+
+
+#### Finding 2 — SidebarRow holds a binding to shared selection (High impact)
+
+SidebarView.swift -> lines 124–133, 631–632:
+
+Every SidebarRow instance holds @Binding var selection: SidebarSelection?. SwiftUI tracks that binding and re-evaluates every row's body whenever selection changes — a single tap causes all ~40 rows to re-run. The trace confirms this: **1,103 SidebarRow.body calls** in 30 seconds ≈ 40 rows × 27 SidebarView redraws.
+
+Fix: Replace the binding with a value + closure:
+```swift
+// Before
+@Binding var selection: SidebarSelection?
+// ...
+private var isSelected: Bool { selection == item.selection }
+// call site: selection = item.selection
+
+// After (SidebarRow)
+let isSelected: Bool
+let onSelect: () -> Void
+
+// call site in SidebarView.body
+SidebarRow(
+    item: item,
+    isSelected: selection == item.selection,
+    onSelect: { selection = item.selection },
+    ...
+)
+```
+
+Now SidebarRow holds no shared binding — SwiftUI can skip its body if item and isSelected haven't changed.
+
+
+#### Finding 3 — SidebarRow holds a binding to shared expandedIDs (Medium impact)
+
+SidebarView.swift -> lines 632, 648–652:
+
+Same pattern as selection. All rows hold @Binding var expandedIDs, causing every row to re-evaluate when any expand/collapse happens. But item.isExpanded is already baked into SidebarRowItem — the row only needs to mutate expandedIDs in an action, not read it in body.
+
+Fix:
+```swift
+// Before
+@Binding var expandedIDs: Set<PersistentIdentifier>
+// reads item.isExpanded for display, mutates expandedIDs in button action
+
+// After (SidebarRow)
+let onToggleExpand: () -> Void   // SidebarView computes the right insert/remove
+
+// call site
+SidebarRow(
+    item: item,
+    onToggleExpand: {
+        withAnimation(.easeInOut(duration: 0.15)) {
+            if item.isExpanded {
+                expandedIDs.remove(item.persistentID)
+            } else {
+                expandedIDs.insert(item.persistentID)
+            }
+        }
+    },
+    ...
+)
+```
+
+#### Finding 4 — GeometryReader in DropTargetModifier (Medium impact)
+
+SidebarView.swift -> lines 542–547:
+``` swift
+.background(GeometryReader { geo in
+    Color.clear.preference(key: HeightPreferenceKey.self, value: geo.size.height)
+})
+.onPreferenceChange(HeightPreferenceKey.self) { viewHeight = $0 }
+```
+
+This GeometryReader + PreferenceKey combo forces a **double layout pass** on every row — every row reports its height, SwiftUI runs a second layout to apply it. This pattern ran **35,210 times for _PaddingLayout (cached) alone**, contributing heavily to the 870k layout events.
+
+The height is used only to decide if a drop lands above/below the row midpoint. But rows are fixed at 28pt. Fix: Delete the GeometryReader/PreferenceKey entirely and use:
+``` swift
+@State private var viewHeight: CGFloat = 28  // fixed — all sidebar rows are 28pt
+```
+---
+
+| Fix | Effort | Expected benefit |
+|-----|--------|-----------------|
+| Delete 2 unused `@Query` lines | 1 min | Eliminate most `SidebarView.body` re-runs triggered by MCP writes |
+| `selection` binding → value+closure | 15 min | Collapse 1,100+ `SidebarRow.body` calls per 30s to ~80 |
+| `expandedIDs` binding → closure | 10 min | Same mechanism, removes the expand/collapse churn |
+| `GeometryReader` → fixed 28pt | 5 min | Eliminate double layout passes on every row |
+
+Finding 1 is a one-liner and probably the biggest bang — want me to apply any or all of these?
+
+---
+## Opening an existing trace
+If you have an existing trace or want to make one on your own you can also ask to open and analyze it.
+`Open and analyze the trace /absolute/path/to/trace'
+
+## Using multiple Templates or Instruments
+You can also request the recording to use multiple Templates (one of them will be decomposed and added as an individual Instruments). In some cases, this can allow the AI to draw causal lines. For instance, you could run SwiftUI and CoreData together to see if CoreData activity is caused by SwiftUI relayouts.
+
+**Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
+
+If your app already calls `os_signpost` around its own operations, that's not a separate concern; it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
+
+## Instrument your app with signposts
+
+Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
 
 ## Requirements
 - **Node.js ≥ 22**
@@ -73,194 +255,13 @@ which npx   # or, if npx is itself a version-manager shim: readlink -f "$(which 
 ```
 After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
 
-### From source
-
-```bash
-git clone https://github.com/your-org/xctrace-query-mcp-server
-cd xctrace-query-mcp-server
-npm install
-npm run build
-```
-
-**Claude Code:**
-```bash
-claude mcp add xctrace-query-mcp-server -- node /absolute/path/to/xctrace-query-mcp-server/dist/index.js
-```
-
-**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "xctrace-query-mcp-server": {
-      "command": "node",
-      "args": ["/absolute/path/to/xctrace-query-mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-
-**Xcode's Claude agent** — same separate config as above, but Xcode's minimal `PATH` won't find bare `node` either — use its **full absolute path**:
-```json
-{
-  "mcpServers": {
-    "xctrace-query-mcp-server": {
-      "command": "/opt/homebrew/bin/node",
-      "args": ["/absolute/path/to/xctrace-query-mcp-server/dist/index.js"]
-    }
-  }
-}
-```
-After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected. See [`installing-mcp-server-in-xcode.md`](./installing-mcp-server-in-xcode.md) for troubleshooting.
-
-
-
-## Example conversations
-### Opening an existing Hangs trace
-
-```
-User:   I recorded a Hangs trace for my app — it was freezing on the main thread.
-        The file is at ~/Documents/traces/MyApp-Hangs.trace
-
-AI:     [calls open_trace]
-        Opened. 1 run, recorded 14 seconds ago. nextActions has one entry flagged
-        recommended: aggregate potential-hangs by hang-type — let me see what kind
-        of hang dominates first, then drill into the individual ones.
-
-        [calls the recommended aggregate, then query on potential-hangs sorted by duration desc]
-        Found 3 hangs, all main-thread. Longest: 4.2 s. The other two are
-        800 ms and 310 ms, also main-thread.
-
-        [calls get_row on the 4.2s hang]
-        Backtrace points to MyView's `onAppear` closure → a synchronous
-        URLSession.dataTask call blocking the main thread. That's your freeze.
-
-User:   Can you check if the shorter hangs are in the same place?
-
-AI:     [calls find on potential-hangs with duration filter]
-        Yes — all three have the same URLSession call in the backtrace. Looks like
-        the same root cause at different trigger points.
-```
-
-### Recording Foundation Models instrument live then analyzing
-
-```
-User:   I want to see what inference calls my app is making. It's already running; 
-        start a trace using the Foundation Model template.
-
-AI:     [calls start_recording, template "Foundation Models", attach to MyApp process]
-        Recording started. Interact with the AI feature in your app, then tell me
-        when to stop.
-
-User:   Done. I triggered the search feature a few times.
-
-AI:     [calls stop_recording — auto-opens the trace, sessionId ready]
-        [calls list_instruments]
-        nextActions has one entry flagged recommended: list_fm_requests — let me
-        pull the inference calls.
-
-        [calls list_fm_requests, limit 50]
-        12 requests. Most complete in 200–400 ms. Two stand out: requests 7 and 11
-        each took over 3 seconds. All are Prompt + Resolve pairs from the "search"
-        agent.
-
-User:   Why are 7 and 11 slow?
-
-AI:     [calls find_fm_requests, emptyContext true]
-        Requests 7 and 11 both have emptyContext — no help content was retrieved
-        before the model call. The model is answering from scratch instead of using
-        your indexed content, which explains the extra latency and likely the lower
-        quality too.
-
-        [calls get_fm_request, rowIndex for request 7]
-        Confirmed: referencedSections is empty. The search query that triggered this
-        request was "bluetooth settings" — worth checking whether that term is covered
-        in your indexed content.
-```
-
-### Capturing a hang as it happens
-
-```
-User:   I'm seeing a hang on the Feed screen — it freezes for a second or two,
-        but I can't tell what's causing it.
-
-AI:     I'll use template: "Time Profiler" — it bundles Hangs, Points of Interest,
-        and Thermal State for free, so whether this is a straightforward CPU
-        stall or something more like resource contention, it's covered either way.
-
-        Navigate to right before you'd normally hit the freeze — one screen back
-        from Feed, not already sitting inside it — then let me know and I'll
-        start recording.
-
-User:   Ready.
-
-AI:     [calls start_recording, template: "Time Profiler", attach to MyApp process]
-        Recording started. Now reproduce it: open Feed and scroll the way you
-        normally would until it freezes. Tell me once it's happened.
-
-User:   Just hit it — froze for a couple of seconds while scrolling. You can stop.
-
-AI:     [calls stop_recording — auto-opens the trace, sessionId ready]
-        [calls list_instruments, then the recommended aggregate on potential-hangs]
-        One hang, 2.1 s, main thread — matches what you described.
-
-        [calls get_row on the hang, correlates against time-profile for that window]
-        Backtrace shows FeedRow's `body` synchronously decoding a full-resolution
-        image on the main thread for every row as it scrolls into view. Image
-        decoding needs to move off the main thread — ideally decoded once and
-        cached, not redone every time the row's body re-evaluates.
-```
----
-For the most common instruments, `open_trace`'s `nextActions` includes one entry flagged `recommended: true`; a suggested tool call that will hopefully get you to the key data in one step. `stop_recording` auto-opens the trace too, but its own response doesn't compute this yet; call `list_instruments` right after (its `nextActions` carries the same `recommended: true` entry) rather than a separate `open_trace`. The rest of `nextActions` are plain, unranked alternatives. If you want to explore a different angle, `list_instruments` shows every schema with row counts and lets you navigate from scratch.
-
-## Want to test the relative health of your app?
-
-You don't need a known bug to get value out of this:
-
-```
-User:   We just added an "add attachments" feature, and I want to make sure we're
-        handling images correctly and avoiding memory waste.
-
-AI:     [reads the attachments feature's code — finds where images are picked,
-        decoded, and held onto]
-        Looking at AttachmentPicker.swift and AttachmentStore.swift: images are
-        decoded at full resolution and stay in the view model's array even after
-        being removed from the compose screen — that's the part worth checking
-        for a leak. I'll use template: ["Allocations", "Leaks"] in launch mode
-        (attach can't symbolicate objects already live before it attaches).
-
-        Do this: open the compose screen, attach 5 photos, remove them, and
-        repeat that five times in a row.
-
-        [calls start_recording, template: ["Allocations", "Leaks"], launch: <your app path>]
-        Recording started — go ahead and run through that flow.
-
-User:   Done.
-
-AI:     [stops, analyzes, reports a verdict — either a real leak with a
-        resolved backtrace pointing at the responsible allocation site, or
-        "no app-owned leaks found" if the flow is clean]
-```
-
-The same pattern works for any category — the AI picks the `template` (and composes a second whole template when the question spans two systems, e.g. `template: ["Data Persistence", "SwiftUI"]` to attribute fetches to the UI event that triggered them) and finds a concrete exercise from your actual code, not a canned script:
-
-| You're worried about... | AI reaches for... |
-|---|---|
-| Memory leaks / unbounded growth | `template: ["Allocations", "Leaks"]`, launch mode (attach can't symbolicate objects already live before it attached) |
-| UI hangs / stutters/jank | `template: "Time Profiler"` (bundles Hangs + Points of Interest + Thermal State for free) or `template: "Animation Hitches"` for animation-specific frame drops |
-| Main-actor contention / async task pileup | `template: "Swift Concurrency"` |
-| Excessive Core Data / SwiftData fetches | `template: "Data Persistence"`, composed as `template: ["Data Persistence", "SwiftUI"]` (Data Persistence first) if you want fetches attributed to the UI event that caused them |
-| Network inefficiency (redundant requests, no connection reuse) | `template: "Network"` |
-| CPU/thermal efficiency under sustained load | `template: "Time Profiler"` (Thermal State is bundled in — correlate a hot thermal interval against the CPU samples to see what was driving it) |
-
-**Why composing two templates matters more than it sounds like it should:** the value isn't "twice the data" — it's turning a causal *guess* into a causal *proof*. Two separate recordings can never be correlated after the fact: each has its own clock with no shared reference point, so comparing them means eyeballing rough timestamp alignment and inferring "these probably happened together." Recording both schemas in the *same* session on the *same* clock (for example, `template: ["Data Persistence", "SwiftUI"]`) turns that into a direct, provable join instead — exact interval containment, not coincidence. This is easy to miss even with profiling experience, since doing it by hand means deliberately setting up a combined recording *before* you know you'll need the correlation, which is exactly the kind of thing worth just describing to the AI and letting it decide.
-
-Whichever category you pick, if your app already calls `os_signpost` around its own operations, that's not a separate concern; it's a force multiplier for all of them. A Time Profiler sample says *what code* ran; a signpost says *which of your own operations* was in flight at that moment. Correlating the two turns "the CPU was busy for 400ms" into "the CPU was busy for 400ms during your `loadFeed` operation" — see [Instrument your app with signposts](#instrument-your-app-with-signposts) below.
-
 ## Trace Data
 
-A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table. Memory use during both ingestion and every later read is bounded by result size, not by how big the underlying table is — a 275,000-row table and a 5-row table cost the same to *query*, and ingesting either one holds only a bounded batch in memory at a time, not the whole table. A small backstop still watches heap usage during ingestion as cheap insurance against a handful of in-memory caches (backtrace/frame lookups) that don't scale with table size.
+A `.trace` is a folder (a bundle) holding a mixture of different file types, not a single readable file — most of the actual data sits in binary blobs that can only be reliably read by first exporting them through `xctrace export` into XML, which is what this server does under the hood. A single schema's export can be hundreds of megabytes to gigabytes of XML. Rows are streamed straight from that XML export into an on-disk SQLite database, not accumulated in a JS array — every verb (`query`, `aggregate`, `find`, `get_row`, `call_tree`, `relate`/`correlate`, `timeline`) reads back out via a real SQL statement instead of scanning an in-memory table.
 
 Each trace's ingested data is also **persisted to disk right next to the `.trace` file itself** (same folder, same name, `.db` extension) — not deleted when you close the session. Reopening the same trace later, even in a brand-new server process, reuses the already-ingested tables instead of re-exporting and re-parsing them from scratch. If the trace's own folder isn't writable, the cache falls back to a shared directory instead (configurable via the `set_cache_dir` tool). A `.trace` file that gets re-recorded or replaced at the same path is detected automatically (via its modification time) and re-ingested rather than silently served stale data.
+
+## MCP server heap settings
 
 The server also re-execs itself once at startup with a larger heap (`--max-old-space-size=8192` by default) if the launch command didn't already request one, so no launcher config (Xcode's MCP registration, `claude mcp add`, etc.) needs to know to pass this flag itself. You'll see two `node` processes for one server as a result — a lightweight parent that just waits, and the actual server running as its child with the enlarged heap.
 
@@ -268,52 +269,7 @@ Override it if needed:
 - Set `XCTRACE_QUERY_MCP_MAX_HEAP_MB=<value>` to change the default the server re-execs with.
 - Or pass `--max-old-space-size=<value>` yourself in the launch command — the server detects it's already set and skips the re-exec, respecting your value instead.
 
-## Instrument your app with signposts
 
-Points of Interest (`os_signpost`) is one of the highest-value instruments here, but only if your app actually calls it. Without signposts, a hang or CPU trace shows you *that* something was slow with a system-level backtrace — with signposts around your own operations (a screen load, a sync, a specific business-logic path), it shows you *which named operation* was running, in your own vocabulary, no backtrace-reading required.
-
-## Supported instruments
-
-| Instrument | Xcode 27.0 |
-|------------|:----------:|
-| Foundation Models | ✅ |
-| Hangs | ✅ |
-| Animation Hitches | ✅ |
-| Network | ✅ |
-| Core Data | ✅ |
-| Swift Concurrency | ✅ |
-| Time Profiler | ✅ |
-| Allocations | ✅ |
-| Leaks | ✅ |
-| SwiftUI | ✅ |
-
-✅ Verified — fixtures exist and the instrument has a curated quickstart shortcut.  
-⚠️ Detected — the instrument is recognised but has no verified fixture yet; core navigation verbs still work.
-
-Any instrument not in this table is still navigable via `describe_schema`, `query`, `aggregate`, and `find` — it just won't have a curated shortcut.
-
-## Adding a new instrument
-Two PRs in order. The AI does the mechanical work — your job is to record the trace, give the AI the right prompt, and review what it produces.
-
-### PR 1 — Compatibility
-
-1. **Record a trace** with the new instrument in Xcode Instruments or via the AI integration.
-2. **Start an AI session** in the trace-query repo directory and s ay:
-   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario A to add `<InstrumentName>` support using `<trace-file>`."*
-3. **Review the fixture** the AI produces — check that it contains no sensitive content (real process names, IP addresses, private class names from your app). The AI will flag anything it's unsure about.
-4. **Open the PR**
-
-### PR 2 — Curated lens (optional)
-
-A lens adds a `quickStart` shortcut so `open_trace` immediately suggests a likely useful first call — a best guess, not a guarantee it's the right one for every trace. Merge PR 1 first, then:
-
-1. **Start a Claude session** in the repo directory and say:
-   *"Read `Update_for_your_version_and_submit_a_PR.md` and follow Scenario B PR 2 to add a curated lens for `<InstrumentName>`."*
-2. **Answer the AI's questions** — it will ask what the instrument measures and what a problematic result looks like. You recorded the trace, so you know the domain.
-3. **Review the lens** — confirm the `quickStart` call it chose actually gets to the useful data quickly.
-4. **Open the PR**
-
-See [`Update_for_your_version_and_submit_a_PR.md`](./Update_for_your_version_and_submit_a_PR.md) for the full workflow the AI follows, the PR checklist, and privacy review guidelines.
 
 ## Develop
 
