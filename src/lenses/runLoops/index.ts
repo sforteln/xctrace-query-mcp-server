@@ -37,9 +37,11 @@ function busyVsWaitingFinder(sessionId: string, run: number): NextAction {
       schema: INTERVALS_SCHEMA,
       run,
       where: [
-        // is-main is a boolean column; find()'s val is string|number only
-        // (no boolean), and the raw storage for "Yes" is numeric 1 — verified
-        // live against the real TOC export (<boolean fmt="Yes">1</boolean>).
+        // is-main is a boolean column; raw storage for "Yes" is numeric 1 —
+        // verified live (<boolean fmt="Yes">1</boolean>) AND now backed by
+        // Apple's Engineering Type Reference ("Encoded as 0 and 1. Other
+        // values are illegal"). find() also accepts JSON booleans since the
+        // type-audit fixes; val: 1 kept here as the equally-correct raw form.
         { col: "is-main", op: "eq", val: 1 },
         { col: "interval-type", op: "eq", val: "Busy" },
       ],

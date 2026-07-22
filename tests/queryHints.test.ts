@@ -27,10 +27,13 @@ describe("queryHints — gross form (grain inference)", () => {
     const h = buildQueryHints({ ...base, schema: "x", cols: [col("start", "start-time"), col("duration", "duration")], presentSchemas: ["x"] });
     expect(h.grossForm).toMatch(/INTERVAL/);
   });
-  it("names a START-or-END point event for a kdebug-func + time schema", () => {
+  it("names the kdebug begin/end/point grain for a kdebug-func + time schema", () => {
     const h = buildQueryHints({ ...base, schema: "x", cols: [col("timestamp", "event-time"), col("event-type", "kdebug-func")], primaryTime: "timestamp", presentSchemas: ["x"] });
-    expect(h.grossForm).toMatch(/START-or-END/);
+    // Refined per the Engineering Type Reference audit: Apple's kdebug domain
+    // is begin/end/POINT — point rows are standalone, not half of a pair.
+    expect(h.grossForm).toMatch(/begin\/end rows come in PAIRS/);
     expect(h.grossForm).toMatch(/DOUBLE-COUNTS/);
+    expect(h.grossForm).toMatch(/point events also exist/);
   });
   it("names a point event for a time-only schema and a plain record for neither", () => {
     expect(buildQueryHints({ ...base, schema: "x", cols: [col("time", "event-time")], primaryTime: "time", presentSchemas: ["x"] }).grossForm).toMatch(/point event/);
@@ -148,5 +151,57 @@ describe("queryHints — CURATED_GOTCHAS shape", () => {
     for (const [, list] of Object.entries(CURATED_GOTCHAS)) {
       for (const g of list) expect(g.note.length).toBeGreaterThan(10);
     }
+  });
+});
+
+describe("queryHints — type-derived gotchas (Engineering Type Reference audit)", () => {
+  // These derive from the schema's own declared engineering types at read
+  // time — unfixtured schemas, schemas Apple adds a type to, and schemas
+  // Apple removes one from all get the correct hint with no curation to rot.
+
+  it("flags time-column sentinels (2^50−1 max + the undocumented t=0 convention)", () => {
+    const h = buildQueryHints({ ...base, schema: "x", cols: [col("start", "start-time"), col("duration", "duration")], presentSchemas: ["x"] });
+    const joined = h.gotchas.join(" | ");
+    expect(joined).toMatch(/2\^50−1/);
+    expect(joined).toMatch(/pre-recording\/not\s*recorded/);
+  });
+
+  it("flags non-time max-sentinel columns and aggregate's automatic exclusion", () => {
+    const h = buildQueryHints({ ...base, schema: "x", cols: [col("start", "start-time"), col("errno", "syscall-return")], presentSchemas: ["x"] });
+    const joined = h.gotchas.join(" | ");
+    expect(joined).toMatch(/errno.*MAX/s);
+    expect(joined).toMatch(/aggregate\(\) excludes/);
+  });
+
+  it("flags zero-sentinel columns (duration) as annotation", () => {
+    const h = buildQueryHints({ ...base, schema: "x", cols: [col("start", "start-time"), col("duration", "duration")], presentSchemas: ["x"] });
+    expect(h.gotchas.join(" | ")).toMatch(/literal 0 in duration.*missing/s);
+  });
+
+  it("derives the nested-interval double-counting gotcha from containment-level + duration", () => {
+    const h = buildQueryHints({
+      ...base, schema: "x",
+      cols: [col("start", "start-time"), col("duration", "duration"), col("containment-level", "containment-level")],
+      presentSchemas: ["x"],
+    });
+    expect(h.gotchas.join(" | ")).toMatch(/multiply-counts wall-clock time/);
+  });
+
+  it("does NOT derive the double-counting gotcha without a duration", () => {
+    const h = buildQueryHints({
+      ...base, schema: "x", primaryWeight: null,
+      cols: [col("time", "event-time"), col("containment-level", "containment-level")],
+      presentSchemas: ["x"],
+    });
+    expect(h.gotchas.join(" | ")).not.toMatch(/multiply-counts/);
+  });
+
+  it("surfaces narrative columns as Apple-authored prose worth reading", () => {
+    const h = buildQueryHints({
+      ...base, schema: "x",
+      cols: [col("start", "start-time"), col("suggestion", "narrative")],
+      presentSchemas: ["x"],
+    });
+    expect(h.gotchas.join(" | ")).toMatch(/Apple-authored prose: suggestion/);
   });
 });

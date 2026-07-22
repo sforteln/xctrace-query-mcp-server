@@ -93,9 +93,10 @@ const fileActivityLens: Lens = {
         args: { sessionId, schema: FS_ANTIPATTERN_SCHEMA, run, groupBy: "type", measure: "duration", op: "sum", topN: 10 },
         description:
           "Bucket by antipattern type (Suboptimal Caching / Excessive Writes / Failed System Calls / " +
-          "...) to see which category dominates total time — verified live: `significance` (High/" +
-          "Moderate/Low) does NOT track duration, a single 'Moderate' row can dwarf every 'High' row " +
-          "combined, so group/sort by duration, don't trust significance alone.",
+          "...) to see which category dominates total time — verified live, and consistent with Apple's " +
+          "own typing: `significance` is an event-concept (an ADJECTIVE/severity annotation per the " +
+          "Engineering Type Reference, not a measure) — it does NOT track duration; a single 'Moderate' " +
+          "row can dwarf every 'High' row combined, so group/sort by duration, don't trust significance alone.",
       });
     }
 

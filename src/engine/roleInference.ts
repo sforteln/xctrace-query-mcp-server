@@ -88,6 +88,13 @@ const ENGINEERING_TYPE_ROLES: Record<string, TypeRule> = {
   "time-sample-kind": { role: "label" },
   "thread-state": { role: "label" },
   "event-type": { role: "label" },
+  // cfrunloop-result: Apple documents a 5-value enum ("Finished", "Timed Out",
+  // …) — a groupable end-reason category, not opaque detail (Engineering Type
+  // Reference audit, typeAudit/A mismatch #1).
+  "cfrunloop-result": { role: "label" },
+  // domain-name: a hostname — the canonical groupable identity on network
+  // schemas; heuristics landed it on detail (typeAudit/A, shipping-wrong case).
+  "domain-name": { role: "label" },
   "signpost-name": { role: "label" },
   "subsystem": { role: "label" },
   "category": { role: "label" },
@@ -233,8 +240,12 @@ export function allWithRole(
  * column (confirmed on swiftui-update-groups).
  */
 export function preferredThreadColumn(cols: ClassifiedColumn[]): ClassifiedColumn | undefined {
+  // Exclude by ENGINEERING TYPE as well as mnemonic: the real core column in
+  // live schemas is mnemonic "core-index" (engineering-type "core"), which the
+  // mnemonic-only exclusion silently missed — the safety valve never fired
+  // (Engineering Type Reference audit, typeAudit/A cross-cutting bug #1).
   const candidates = allWithRole(cols, "thread").filter(
-    (c) => c.mnemonic !== "core" && c.mnemonic !== "cpu"
+    (c) => c.mnemonic !== "core" && c.mnemonic !== "cpu" && c.engineeringType !== "core"
   );
   if (candidates.length === 0) return undefined;
   for (const preferred of ["thread", "tid"]) {

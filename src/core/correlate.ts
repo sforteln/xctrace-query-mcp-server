@@ -36,9 +36,9 @@ export interface CorrelateOptions {
   /** Require the matched event to be on the same thread as the interval (default true). */
   matchThread?: boolean;
   /** Optional equality pre-filter on the intervals schema, applied before joining. */
-  intervalsFilter?: Record<string, string | number>;
+  intervalsFilter?: Record<string, string | number | boolean>;
   /** Optional equality pre-filter on the events schema, applied before joining. */
-  eventsFilter?: Record<string, string | number>;
+  eventsFilter?: Record<string, string | number | boolean>;
   /** Max groups to return, heaviest-by-matched-events-first (default 10). */
   topN?: number;
   /** Restrict both schemas to a time window on each's own primary time column. */

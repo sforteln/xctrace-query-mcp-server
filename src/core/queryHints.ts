@@ -26,6 +26,8 @@
  * to preserve the no-forced-ingest contract (see schema.ts / getSchemaMeta).
  */
 import type { SchemaCol } from "../engine/parseTable.js";
+import { typeFacts } from "../engine/engineeringTypeFacts.js";
+import { TIME_ENGINEERING_TYPES } from "../engine/sqlHydrate.js";
 import { classifyWithHints, hintFor } from "../engine/roleHints.js";
 import { preferredThreadColumn, type ClassifiedColumn } from "../engine/roleInference.js";
 import {
@@ -96,7 +98,7 @@ export const CURATED_GOTCHAS: Readonly<Record<string, readonly CuratedGotcha[]>>
   "core-data-fetch": [
     {
       column: "spid",
-      note: "spid is a SENTINEL, not a real id — every row reads 18,446,744,073,709,551,615 (max uint64, 0xFFFFFFFFFFFFFFFF). Verified live against a real trace: it is NOT a join key, don't filter or group on it.",
+      note: "spid is a SENTINEL, not a real id — every row reads 18,446,744,073,709,551,615 (max uint64, 0xFFFFFFFFFFFFFFFF). Verified live against a real trace, and backed by Apple's Engineering Type Reference: os-signpost-identifier documents UINT64_MAX as illegal (OS_SIGNPOST_ID_INVALID) and 0 as OS_SIGNPOST_ID_NULL. It is NOT a join key; don't filter or group on it.",
     },
     {
       column: "fetch-entity",
@@ -151,7 +153,9 @@ function inferGrain(cols: SchemaCol[], classified: ClassifiedColumn[]): string {
     return "a stack SAMPLE — each row is one sampled backtrace; call_tree aggregates them, and a bare row count is a SAMPLE count, not an event count.";
   }
   if (hasEngType("kdebug-func") && hasRole("time")) {
-    return "a START-or-END point event — rows come in begin/end PAIRS; counting rows DOUBLE-COUNTS intervals. Use the interval-form sibling schema (if present) for spans.";
+    // Apple's kdebug domain is begin/end/POINT — point rows are standalone,
+    // not half of a pair (Engineering Type Reference audit refinement).
+    return "a kdebug event — begin/end rows come in PAIRS (counting rows DOUBLE-COUNTS those intervals), but standalone point events also exist and are one row each. Use the interval-form sibling schema (if present) for spans.";
   }
   if (hasRole("time") && hasNsDuration) {
     return "an INTERVAL / span — a row covers [start, start+duration]; overlapping rows can be on-screen/active at once, so don't assume they partition time.";
@@ -321,6 +325,72 @@ export function buildQueryHints(input: QueryHintsInput): QueryHints {
   if (timeCols.length > 1) {
     gotchas.push(
       `${timeCols.length} time-role columns (${timeCols.join(", ")}) — timeRange and correlate use primaryTime ("${primaryTime}"). If you need a window on a different one, say so explicitly.`
+    );
+  }
+  // Auto-derived from Apple's Engineering Type Reference (generated
+  // engineeringTypeFacts module — evidence: aidocs/engineeringTypeReferenceAudit.md).
+  // These derive from the schema's own declared types at read time, so
+  // unfixtured schemas, schemas Apple adds a type to, and schemas Apple
+  // removes one from all get the correct hint with no curation to rot.
+  const TIME_TYPES = TIME_ENGINEERING_TYPES; // one encoding — see sqlHydrate.ts
+  const timeTyped = cols.filter((c) => TIME_TYPES.has(c.engineeringType)).map((c) => c.mnemonic);
+  if (timeTyped.length > 0) {
+    gotchas.push(
+      `Time columns (${timeTyped.join(", ")}): a value at/near 2^50−1 is the type's "missing" max-sentinel ` +
+        `(it renders as a real-looking ~13-day timestamp), and a literal 0 usually means "pre-recording/not ` +
+        `recorded" (an undocumented xctrace convention, verified across real traces). Neither is a real event time.`
+    );
+  }
+  const maxSentinelCols = cols
+    .filter((c) => !TIME_TYPES.has(c.engineeringType) && typeFacts(c.engineeringType)?.sentinel === "max")
+    .map((c) => c.mnemonic);
+  if (maxSentinelCols.length > 0) {
+    gotchas.push(
+      `Sentinel values: ${maxSentinelCols.join(", ")} ${maxSentinelCols.length === 1 ? "stores" : "store"} ` +
+        `"missing/not-applicable" as the type's MAX (per Apple's Engineering Type Reference). aggregate() ` +
+        `excludes these from measure math automatically (and says so in its note); query/find comparisons ` +
+        `and raw reads still see them — a value near the numeric maximum is a missing-marker, not data.`
+    );
+  }
+  const zeroSentinelCols = cols
+    .filter((c) => typeFacts(c.engineeringType)?.sentinel === "zero")
+    .map((c) => c.mnemonic);
+  if (zeroSentinelCols.length > 0) {
+    gotchas.push(
+      `A literal 0 in ${zeroSentinelCols.join("/")} is the type's documented "missing" sentinel, not a real ` +
+        `zero measurement (rare in practice — real durations bottom out around the hardware timebase, ~42ns).`
+    );
+  }
+  // Narrative surfacing: narrative-typed columns carry Apple's own authored
+  // prose — on real schemas that's literal remediation advice
+  // (detected-fs-antipattern's `suggestion`: "A high rate of write activity
+  // often stems from involuntarily flushing to disk, usually in a loop"),
+  // failure explanations, and per-state stories. query/get_row return them
+  // but nothing steered toward them before this (Engineering Type Reference
+  // audit: "authoritative curated content sitting unused"). Hedged "often"
+  // because a minority of narrative columns are low-value label echoes.
+  const narrativeCols = cols.filter((c) => c.engineeringType === "narrative").map((c) => c.mnemonic);
+  if (narrativeCols.length > 0) {
+    gotchas.push(
+      `Apple-authored prose: ${narrativeCols.join(", ")} ${narrativeCols.length === 1 ? "is a narrative column" : "are narrative columns"} — ` +
+        `Instruments' own written explanation/remediation text for each row, often the most directly ` +
+        `actionable content in the schema. Read via query/get_row; don't group by ${narrativeCols.length === 1 ? "it" : "them"} (near-unique strings).`
+    );
+  }
+  // Nested-interval double-counting: containment-level's documented meaning is
+  // "depth of enclosing parents" — rows at different levels describe the SAME
+  // wall-clock time, so summing a duration across levels multiply-counts it
+  // (verified on runloop-intervals: levels 3/4/5 = Run ⊃ Iteration ⊃
+  // Busy/Waiting, a ~3x over-count). Previously warned only inside the
+  // runLoops lens; derived here from the type so ANY nested-interval schema
+  // gets it.
+  const containmentCol = cols.find((c) => c.engineeringType === "containment-level");
+  const durationCol = cols.find((c) => typeFacts(c.engineeringType)?.sentinel === "zero" || c.engineeringType === "duration");
+  if (containmentCol && durationCol) {
+    gotchas.push(
+      `Nested intervals: rows at different ${containmentCol.mnemonic} depths overlap in time (each level ` +
+        `re-describes its parents' span), so summing ${durationCol.mnemonic} across the whole table ` +
+        `multiply-counts wall-clock time. Aggregate within ONE level or one interval-type.`
     );
   }
   for (const g of CURATED_GOTCHAS[schema] ?? []) gotchas.push(g.note);

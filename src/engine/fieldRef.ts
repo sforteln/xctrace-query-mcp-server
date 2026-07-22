@@ -101,6 +101,17 @@ export class FieldResolver {
     return { ref, base: this.canonical(base), isBacktrace: false, isNested: true };
   }
 
+  /**
+   * The declared engineering-type of a TOP-LEVEL mnemonic, or undefined for
+   * nested dot-paths (promoted children carry no declared type) and unknown
+   * refs. Used by sentinel-aware consumers (find's is-sentinel/not-sentinel);
+   * an undefined here means "no type claim", never "no sentinel".
+   */
+  engineeringTypeOf(ref: string): string | undefined {
+    if (ref.includes(".")) return undefined;
+    return this.colByMnemonic.get(ref)?.engineeringType;
+  }
+
   /** Resolve, or null if the ref is unknown — for display-column filtering, which drops unknowns silently (matching the old columns.filter behavior). */
   tryResolve(ref: string): ResolvedField | null {
     try {

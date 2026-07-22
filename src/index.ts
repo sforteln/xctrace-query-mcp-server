@@ -899,8 +899,8 @@ export function createServer(): McpServer {
         measure: z.string().optional().describe(
           "A measure column to sum: on schemaB summed over matched pairs (exists), or on schemaA summed over the unmatched rows (not-exists, e.g. total leaked bytes)."
         ),
-        aFilter: z.record(z.union([z.string(), z.number()])).optional().describe("Pre-filter schemaA before joining: { mnemonic: value }."),
-        bFilter: z.record(z.union([z.string(), z.number()])).optional().describe("Pre-filter schemaB before joining: { mnemonic: value }."),
+        aFilter: z.record(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Pre-filter schemaA before joining: { mnemonic: value }."),
+        bFilter: z.record(z.union([z.string(), z.number(), z.boolean()])).optional().describe("Pre-filter schemaB before joining: { mnemonic: value }."),
         timeRange: z.object({
           startNs: z.number().optional().describe("Earliest timestamp (nanoseconds, inclusive)."),
           endNs: z.number().optional().describe("Latest timestamp (nanoseconds, inclusive)."),
@@ -1139,12 +1139,21 @@ export function createServer(): McpServer {
   const findConditionSchema = z.object({
     col: z.string().describe("Field to test — a column mnemonic or a nested dot-path (e.g. \"thread.process.pid\"; see describe_schema.nestedFields)."),
     op: z
-      .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null"])
-      .describe("Comparison operator."),
+      .enum(["eq", "ne", "gt", "gte", "lt", "lte", "contains", "not-contains", "regex", "is-null", "not-null", "is-sentinel", "not-sentinel"])
+      .describe(
+        "Comparison operator. is-sentinel/not-sentinel (no val, like is-null/not-null) match rows where the " +
+        "column holds its type's \"missing/not-applicable\" SENTINEL value (per Apple's Engineering Type " +
+        "Reference — e.g. fd's sentinel marks failed opens; a time column's 0 marks pre-recording events). " +
+        "Sentinel rows are NOT null, so is-null misses them; the server compiles the right magnitude per type."
+      ),
     val: z
-      .union([z.string(), z.number()])
+      .union([z.string(), z.number(), z.boolean()])
       .optional()
-      .describe("Value to compare against. Not needed for is-null / not-null. Mutually exclusive with compareCol."),
+      .describe(
+        "Value to compare against. Not needed for is-null / not-null. Mutually exclusive with compareCol. " +
+        "JSON booleans work with eq/ne on boolean columns regardless of export format (schema-table " +
+        "displays Yes/No and stores 0/1; track-detail stores literal \"true\"/\"false\" strings)."
+      ),
     compareCol: z
       .string()
       .optional()

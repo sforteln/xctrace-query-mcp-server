@@ -49,7 +49,7 @@ export interface QueryOptions {
    */
   position?: number;
   /** Simple equality filter: mnemonic → expected fmt or raw value. */
-  filter?: Record<string, string | number>;
+  filter?: Record<string, string | number | boolean>;
   /** Column mnemonics to include in output. Omit to include all columns. */
   columns?: string[];
   /** Restrict to rows whose primary time column falls within [startNs, endNs]. */
@@ -175,7 +175,7 @@ export async function queryTable(
       : meta.cols.map((c) => c.mnemonic);
 
   // --- Build WHERE (filter keys resolved to physical base columns) ---
-  const resolvedFilter: Record<string, string | number> = {};
+  const resolvedFilter: Record<string, string | number | boolean> = {};
   for (const [ref, val] of Object.entries(filter ?? {})) {
     resolvedFilter[resolver.resolveComparable(ref, "filter on").base] = val;
   }

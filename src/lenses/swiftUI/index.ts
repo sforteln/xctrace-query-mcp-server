@@ -674,7 +674,7 @@ const swiftUILens: Lens = {
           op: "sum",
           topN: 20,
         },
-        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=false rows are uncached/most costly; depth shows nesting level; compare duration vs self-duration for subtree vs self cost).",
+        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=\"No\" rows are uncached/most costly — boolean columns display Yes/No, a JSON false matches 0 rows; depth shows nesting level; compare duration vs self-duration for subtree vs self cost).",
       };
     }
 
@@ -691,7 +691,7 @@ const swiftUILens: Lens = {
           op: "sum",
           topN: 20,
         },
-        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=false rows are uncached/most costly; compare duration vs self-duration for how much cost is child layout vs this view alone).",
+        hint: "SwiftUI layout trace — total duration by view-name shows which view's layout passes cost the most cumulative time; query with sort:{by:\"duration\",dir:\"desc\"} for the single most expensive individual pass (cached=\"No\" rows are uncached/most costly — boolean columns display Yes/No, a JSON false matches 0 rows; compare duration vs self-duration for how much cost is child layout vs this view alone).",
       };
     }
 

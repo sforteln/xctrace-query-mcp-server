@@ -20,6 +20,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { SchemaCol, NormalizedRow, Cell, ResolvedFrame } from "./parseTable.js";
 import { createHash } from "node:crypto";
 import { isBacktraceCol, quoteIdent, ROW_IDX_COLUMN, isInternSentinel, internSentinelId, INTERN_SENTINEL } from "./sqliteStore.js";
+import { typeFacts } from "./engineeringTypeFacts.js";
 import { isNodeEncoded, decodeNodeSequence } from "./hierarchyEncode.js";
 
 // ─── Regex UDF ────────────────────────────────────────────────────────────────
@@ -580,7 +581,7 @@ export function internResolved(colSql: string): string {
  * stays a plain indexed `col = ?` that matches interned rows too.
  */
 export function buildEqualityFilter(
-  filter: Record<string, string | number>,
+  filter: Record<string, string | number | boolean>,
   internTarget?: (v: string) => string
 ): SqlCondition {
   const clauses: string[] = [];
@@ -588,6 +589,15 @@ export function buildEqualityFilter(
   for (const [mnemonic, expected] of Object.entries(filter)) {
     const raw = quoteIdent(rawCol(mnemonic));
     const fmt = quoteIdent(fmtCol(mnemonic));
+    if (typeof expected === "boolean") {
+      // Same both-vocabularies union as buildCondition's boolean branch (see
+      // the comment there): schema-table raw 0/1 + fmt Yes/No, track-detail
+      // literal "true"/"false" strings.
+      const truthy = `(${raw} = 1 OR ${fmt} IN ('Yes', 'true') OR CAST(${raw} AS TEXT) = 'true')`;
+      const falsy = `(${raw} = 0 OR ${fmt} IN ('No', 'false') OR CAST(${raw} AS TEXT) = 'false')`;
+      clauses.push(expected ? truthy : falsy);
+      continue;
+    }
     if (typeof expected === "number") {
       // Matches matchesFilter's "raw === expected || Number(raw) === expected" —
       // a text-affinity match on the numeric string form covers the coercion case.
@@ -626,7 +636,56 @@ export type ConditionOp =
   | "gt" | "gte" | "lt" | "lte"
   | "contains" | "not-contains"
   | "regex"
-  | "is-null" | "not-null";
+  | "is-null" | "not-null"
+  | "is-sentinel" | "not-sentinel";
+
+/** The three time engineering-types sharing both the documented 2^50−1 max-sentinel and the undocumented t=0 "pre-recording/not recorded" convention. */
+export const TIME_ENGINEERING_TYPES = new Set(["start-time", "event-time", "sample-time"]);
+
+/**
+ * SQL fragment matching a column's SENTINEL ("missing/not-applicable") values,
+ * per Apple's Engineering Type Reference (via the generated
+ * engineeringTypeFacts module) — or null when the type documents no sentinel.
+ *
+ * One encoding for every consumer (aggregate's stat exclusion, find's
+ * is-sentinel/not-sentinel): exact equality when the documented bit width
+ * makes the max-sentinel a representable JS number; otherwise narrow near-max
+ * windows at the 2^32/2^64 boundaries, because sentinel magnitude empirically
+ * varies by producer (2^32−2 and 2^64−2 both observed meaning "missing" in
+ * one schema) while real large values (pointers ~4.7e9) sit outside both
+ * windows.
+ *
+ * `missingConventions: true` additionally matches the UNDOCUMENTED
+ * conventions verified in real traces — t=0 on time columns ("pre-recording/
+ * not recorded", the prevalent zero-case in practice) — for callers asking
+ * the semantic question "which rows are missing this value" (find's
+ * is-sentinel). aggregate's stat exclusion passes false: it strips only the
+ * documented max-sentinels, per the audit's demote-zero decision.
+ */
+export function sentinelMatchSql(
+  rawExpr: string,
+  facts: { sentinel: "zero" | "max" | null; sentinelMax: number | null },
+  engineeringType: string,
+  opts: { missingConventions: boolean }
+): string | null {
+  const parts: string[] = [];
+  if (facts.sentinel === "zero") {
+    parts.push(`${rawExpr} = 0`);
+  } else if (facts.sentinel === "max") {
+    if (facts.sentinelMax !== null) {
+      parts.push(`${rawExpr} = ${facts.sentinelMax}`);
+    } else {
+      parts.push(
+        `(${rawExpr} >= 4294967040.0 AND ${rawExpr} <= 4294967295.0)`,
+        `${rawExpr} >= 1.8446744073709e19`
+      );
+    }
+  }
+  if (opts.missingConventions && TIME_ENGINEERING_TYPES.has(engineeringType)) {
+    parts.push(`${rawExpr} = 0`);
+  }
+  return parts.length > 0 ? `(${parts.join(" OR ")})` : null;
+}
 
 /**
  * find.ts's richer predicate DSL — mirrors testCondition's raw+fmt dual-check
@@ -645,9 +704,10 @@ export type ConditionOp =
 export function buildCondition(
   mnemonic: string,
   op: ConditionOp,
-  val: string | number | undefined,
+  val: string | number | boolean | undefined,
   internTarget?: (v: string) => string,
-  compareMnemonic?: string
+  compareMnemonic?: string,
+  engineeringType?: string
 ): SqlCondition {
   if (compareMnemonic !== undefined) {
     return buildCrossColumnCondition(mnemonic, op, compareMnemonic);
@@ -659,8 +719,56 @@ export function buildCondition(
   if (op === "is-null") return { clause: `${fmt} IS NULL`, params: [] };
   if (op === "not-null") return { clause: `${fmt} IS NOT NULL`, params: [] };
 
+  // is-sentinel / not-sentinel — the sentinel population as a first-class,
+  // filterable-FOR subset (missingness is informative: fd's sentinel marks
+  // failed opens, t=0 network connections are the pre-attach set, errno's
+  // sentinel partitions 13K rows structurally unlike the rest). Sentinel rows
+  // are NOT null — without this op an agent would need the magic value AND
+  // its producer-varying magnitude, exactly the knowledge burden the
+  // Engineering Type Reference audit showed is unreasonable.
+  if (op === "is-sentinel" || op === "not-sentinel") {
+    const facts = engineeringType ? typeFacts(engineeringType) : undefined;
+    const isTime = engineeringType !== undefined && TIME_ENGINEERING_TYPES.has(engineeringType);
+    if (engineeringType === undefined || (!facts?.sentinel && !isTime)) {
+      throw new Error(
+        `"${mnemonic}"${engineeringType ? ` (engineering type "${engineeringType}")` : ""} has no documented ` +
+          `sentinel in Apple's Engineering Type Reference, so ${op} doesn't apply to it. ` +
+          `(Nested dot-path fields carry no declared type and never support sentinel ops.) ` +
+          `Use is-null/not-null for actual NULL cells, or an explicit value comparison.`
+      );
+    }
+    const match = sentinelMatchSql(`CAST(${raw} AS REAL)`, facts ?? { sentinel: null, sentinelMax: null }, engineeringType, {
+      missingConventions: true,
+    })!;
+    return op === "is-sentinel"
+      ? { clause: `${fmt} IS NOT NULL AND ${match}`, params: [] }
+      : { clause: `${fmt} IS NOT NULL AND NOT ${match}`, params: [] };
+  }
+
   // Every other op requires a non-null cell (testCondition returns false outright otherwise).
   const notNullGuard = `${fmt} IS NOT NULL`;
+
+  // JSON boolean coercion — spec-backed by Apple's Engineering Type Reference
+  // ("Encoded as 0 and 1. Other values are illegal", displayed Yes/No) and a
+  // live field report (val:false against is-system silently matched 0 rows).
+  // Matches BOTH export vocabularies at once: schema-table booleans store
+  // raw 0/1 with fmt "Yes"/"No"; track-detail booleans (Allocations' `live`)
+  // store the literal strings "true"/"false" — the two formats use opposite
+  // vocabularies, so the clause is a union rather than a per-format lookup.
+  if (typeof val === "boolean") {
+    if (op !== "eq" && op !== "ne") {
+      throw new Error(
+        `A JSON boolean value only works with op "eq" or "ne" (got op "${op}" on "${mnemonic}"). ` +
+          `For other comparisons use the numeric form (booleans store 0/1).`
+      );
+    }
+    const truthy = `(${raw} = 1 OR ${fmt} IN ('Yes', 'true') OR CAST(${raw} AS TEXT) = 'true')`;
+    const falsy = `(${raw} = 0 OR ${fmt} IN ('No', 'false') OR CAST(${raw} AS TEXT) = 'false')`;
+    const match = val ? truthy : falsy;
+    return op === "eq"
+      ? { clause: `${notNullGuard} AND ${match}`, params: [] }
+      : { clause: `${notNullGuard} AND NOT ${match}`, params: [] };
+  }
 
   switch (op) {
     case "eq": {

@@ -81,13 +81,21 @@ describe("PMT:steel-spruce runloop-intervals roleHints", () => {
     expect(Object.values(byMnemonic)).not.toContain("backtrace");
   });
 
-  it("classifies nesting-level/containment-level/mode/run-result as detail — not group/sort keys by default", () => {
+  it("classifies nesting-level/containment-level/mode as detail — not group/sort keys by default", () => {
     const classified = classifyWithHints("runloop-intervals", REAL_RUNLOOP_INTERVALS_COLUMNS);
     const byMnemonic = Object.fromEntries(classified.map((c) => [c.mnemonic, c.roleInfo.role]));
     expect(byMnemonic["nesting-level"]).toBe("detail");
     expect(byMnemonic["containment-level"]).toBe("detail");
     expect(byMnemonic.mode).toBe("detail");
-    expect(byMnemonic["run-result"]).toBe("detail");
+  });
+
+  it("classifies run-result as label — Apple documents cfrunloop-result as a 5-value end-reason enum (Engineering Type Reference audit correction)", () => {
+    const classified = classifyWithHints("runloop-intervals", REAL_RUNLOOP_INTERVALS_COLUMNS);
+    const byMnemonic = Object.fromEntries(classified.map((c) => [c.mnemonic, c.roleInfo.role]));
+    // Both the pin and the type-level heuristic now agree: "group runs by why
+    // they ended" is a legitimate aggregation the old detail classification
+    // blocked.
+    expect(byMnemonic["run-result"]).toBe("label");
   });
 });
 

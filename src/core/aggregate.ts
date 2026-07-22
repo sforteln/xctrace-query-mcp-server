@@ -29,11 +29,13 @@ import {
   fmtCol,
   rawCol,
   percentileFnFor,
+  sentinelMatchSql,
   makeInternResolver,
   makeInternTargetResolver,
 } from "../engine/sqlHydrate.js";
 import { buildFieldResolver } from "../engine/fieldRef.js";
-import { quoteIdent } from "../engine/sqliteStore.js";
+import { quoteIdent, isBacktraceCol } from "../engine/sqliteStore.js";
+import { typeFacts } from "../engine/engineeringTypeFacts.js";
 import type { WeightUnit } from "../engine/roleInference.js";
 import { emptyResultNote } from "./emptyResultNote.js";
 
@@ -82,7 +84,7 @@ export interface AggregateOptions {
   /** Max groups to return (default 10). */
   topN?: number;
   /** Optional equality pre-filter applied before grouping. */
-  filter?: Record<string, string | number>;
+  filter?: Record<string, string | number | boolean>;
   /** Optional time window applied before grouping. */
   timeRange?: { startNs?: number; endNs?: number };
   /** Optional post-aggregation filter on each group's computed value / row count. */
@@ -260,10 +262,35 @@ export async function aggregateTable(
   const groupByBases = groupByCols.map((gb) => resolver.resolveComparable(gb, "group by").base);
   const measureBase = measure ? resolver.resolveComparable(measure, "aggregate (measure)").base : undefined;
 
+  // ── Summability enforcement (Apple's Engineering Type Reference) ──────────
+  // Apple marks most non-weight types "categorical: Value cannot be summed or
+  // averaged" — but until this check, the only measure rejection anywhere was
+  // isBacktraceCol, so SUM(pid)/AVG(core)/SUM over a kperf-bt callstack all
+  // "succeeded" with plausible-looking, semantically void numbers (executed
+  // proof + full findings: aidocs/engineeringTypeReferenceAudit.md). Reject
+  // every measure-taking op over a documented-categorical column with an
+  // error naming the schema's actually-valid measures. Only top-level
+  // mnemonics are checked — nested dot-paths carry no declared engineering
+  // type, and an absent typeFacts lookup is "no claim", never "unsafe".
+  const measureCol =
+    measure && !measure.includes(".") ? meta.cols.find((c) => c.mnemonic === measure) : undefined;
+  const measureFacts = measureCol ? typeFacts(measureCol.engineeringType) : undefined;
+  if (op !== "count" && measureFacts?.categorical) {
+    const validMeasures = meta.cols
+      .filter((c) => !isBacktraceCol(c) && !(typeFacts(c.engineeringType)?.categorical ?? false))
+      .map((c) => c.mnemonic);
+    throw new Error(
+      `"${measure}" (engineering type "${measureCol!.engineeringType}") is categorical — Apple's ` +
+        `Engineering Type Reference marks it "cannot be summed or averaged", so ${op} over it would ` +
+        `return a plausible-looking but meaningless number. Use op "count" to count rows per group, ` +
+        `or aggregate a real measure. Measure columns in this schema: ${validMeasures.join(", ") || "(none)"}.`
+    );
+  }
+
   // --- Pre-filter (matches "rows that passed the pre-filter", including
   // rows with a null groupBy key — those are excluded from GROUPING below,
   // but still count toward totalRows/the blank-top-group percentage). ---
-  const resolvedFilter: Record<string, string | number> = {};
+  const resolvedFilter: Record<string, string | number | boolean> = {};
   for (const [ref, val] of Object.entries(filter ?? {})) {
     resolvedFilter[resolver.resolveComparable(ref, "filter on").base] = val;
   }
@@ -308,7 +335,46 @@ export async function aggregateTable(
   if (!isCount) {
     groupConditions.push({ clause: `${quoteIdent(fmtCol(measureBase!))} IS NOT NULL`, params: [] });
   }
+
+  // ── Max-sentinel exclusion for the measure ────────────────────────────────
+  // Types with a documented "max" sentinel store missing/NA as the top of the
+  // value range — real-data verification measured syscall.errno as sentinel in
+  // 4-9% of ALL rows, dragging AVG from an honest 0.065 to 1.675e18 (see
+  // aidocs/engineeringTypeReferenceAudit.md's verification sections). Excluded
+  // here with an explicit note, never silently. Exact match when the
+  // documented bit width makes the sentinel a representable JS number;
+  // otherwise narrow near-max windows at the 2^32 and 2^64 boundaries —
+  // sentinel magnitude empirically varies by producer (2^32−2 and 2^64−2 both
+  // observed for "missing" in the same schema), and real large values
+  // (pointers ~4.7e9) sit safely outside both windows. Zero-sentinels
+  // (duration) are deliberately NOT runtime-excluded: verification found zero
+  // real occurrences, so they get describe_schema annotation only.
+  let sentinelMatch: { clause: string; params: (string | number)[] } | null = null;
+  if (!isCount && measureFacts?.sentinel === "max") {
+    const rawExpr = `CAST(${quoteIdent(rawCol(measureBase!))} AS REAL)`;
+    // missingConventions: false — stat exclusion strips only the DOCUMENTED
+    // max-sentinels; find's is-sentinel op is where the broader "which rows
+    // are missing this" semantic lives (same helper, one encoding).
+    const clause = sentinelMatchSql(rawExpr, measureFacts, measureCol!.engineeringType, { missingConventions: false })!;
+    sentinelMatch = { clause, params: [] };
+    groupConditions.push({ clause: `NOT ${clause}`, params: [] });
+  }
   const groupWhere = combineConditions(groupConditions);
+
+  // Count what the sentinel exclusion actually removed (for the note) — only
+  // when the exclusion is active, and scoped to rows that would otherwise
+  // have entered the aggregate (measure present, pre-filter passed).
+  let sentinelExcludedCount = 0;
+  if (sentinelMatch) {
+    const countConds = combineConditions([
+      ...preFilterConditions,
+      { clause: `${quoteIdent(fmtCol(measureBase!))} IS NOT NULL`, params: [] },
+      sentinelMatch,
+    ]);
+    sentinelExcludedCount = (
+      db.prepare(`SELECT COUNT(*) as n FROM ${table} WHERE ${countConds.clause}`).get(...countConds.params) as { n: number }
+    ).n;
+  }
 
   // Select each groupBy column's fmt as key0, key1, … so a composite key's
   // parts stay distinct (no delimiter-collision from pre-joining in SQL).
@@ -363,6 +429,14 @@ export async function aggregateTable(
   }));
 
   const notes: string[] = [];
+  if (sentinelExcludedCount > 0) {
+    notes.push(
+      `${sentinelExcludedCount.toLocaleString("en-US")} row${sentinelExcludedCount === 1 ? "" : "s"} where ` +
+        `"${measure}" holds its sentinel ("missing/not-applicable" per Apple's Engineering Type Reference, ` +
+        `stored as the type's max value) were excluded from the ${op} — including them would have ` +
+        `poisoned the statistic with values near the numeric maximum.`
+    );
+  }
 
   // An empty `groups` array is ambiguous on its own — did
   // the filter/timeRange exclude everything, or did every row that DID match

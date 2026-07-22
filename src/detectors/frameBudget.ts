@@ -262,7 +262,16 @@ function tryRenderBufferDepth(ctx: DetectorContext, display: string | null): num
     return null; // schema present but not the shape we expect — degrade gracefully
   }
 
-  const depths = rawRows.map((r) => r.depth).filter((d): d is number => typeof d === "number" && d > 0);
+  // Guard against Apple's documented SPECIAL codes 1000-1003 on
+  // render-buffer-depth (Engineering Type Reference) — these are state
+  // markers, not buffer counts, and they're LIVE in real traces: a real
+  // animation-hitches recording carried codes 1000-1002 on 42% of rows, with
+  // the unguarded median sitting just below the poisoning threshold. Any
+  // value that large can never be a real swap-chain depth (real depths are
+  // 1-3), so cap well below the special-code range.
+  const depths = rawRows
+    .map((r) => r.depth)
+    .filter((d): d is number => typeof d === "number" && d > 0 && d < 100);
   return median(depths);
 }
 

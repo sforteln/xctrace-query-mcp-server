@@ -55,9 +55,9 @@ export interface RelateOptions {
    */
   measure?: string;
   /** Equality pre-filter on A, applied before joining. */
-  aFilter?: Record<string, string | number>;
+  aFilter?: Record<string, string | number | boolean>;
   /** Equality pre-filter on B, applied before joining. */
-  bFilter?: Record<string, string | number>;
+  bFilter?: Record<string, string | number | boolean>;
   /** Restrict both schemas to a time window on each's own primary time column. */
   timeRange?: { startNs?: number; endNs?: number };
   /** Max groups to return (default 10). */
@@ -404,7 +404,7 @@ export async function relate(
  */
 function aliasedEqualityFilter(
   alias: string,
-  filter: Record<string, string | number>,
+  filter: Record<string, string | number | boolean>,
   internTarget?: (v: string) => string
 ): SqlCondition {
   const clauses: string[] = [];
@@ -412,7 +412,13 @@ function aliasedEqualityFilter(
   for (const [mnemonic, expected] of Object.entries(filter)) {
     const raw = `${alias}.${quoteIdent(rawCol(mnemonic))}`;
     const fmt = `${alias}.${quoteIdent(fmtCol(mnemonic))}`;
-    if (typeof expected === "number") {
+    if (typeof expected === "boolean") {
+      // Same both-vocabularies union as sqlHydrate's boolean branches:
+      // schema-table raw 0/1 + fmt Yes/No, track-detail literal "true"/"false".
+      const truthy = `(${raw} = 1 OR ${fmt} IN ('Yes', 'true') OR CAST(${raw} AS TEXT) = 'true')`;
+      const falsy = `(${raw} = 0 OR ${fmt} IN ('No', 'false') OR CAST(${raw} AS TEXT) = 'false')`;
+      clauses.push(expected ? truthy : falsy);
+    } else if (typeof expected === "number") {
       clauses.push(`(${raw} = ? OR CAST(${raw} AS TEXT) = ?)`);
       params.push(expected, String(expected));
     } else {

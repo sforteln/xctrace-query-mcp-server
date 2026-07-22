@@ -48,8 +48,8 @@ export interface Condition {
   /** Column mnemonic to test. */
   col: string;
   op: ConditionOp;
-  /** Value to compare against. Not needed for is-null/not-null. Mutually exclusive with compareCol. */
-  val?: string | number;
+  /** Value to compare against. Not needed for is-null/not-null. Mutually exclusive with compareCol. JSON booleans are coerced to each export format's real boolean vocabulary (see sqlHydrate's buildCondition). */
+  val?: string | number | boolean;
   /**
    * Compare `col` against another column on the same row instead of the
    * literal `val` (e.g. find rows where downstream-cost exceeds direct-cost:
@@ -93,7 +93,9 @@ function compileConditionGroup(
     const base = resolver.resolveComparable(group.col, "filter on").base;
     const compareBase =
       group.compareCol !== undefined ? resolver.resolveComparable(group.compareCol, "compare against").base : undefined;
-    return buildCondition(base, group.op, group.val, internTarget, compareBase);
+    // The ORIGINAL ref's declared type (not the canonicalized base) — only
+    // top-level mnemonics carry one; sentinel ops need it to compile.
+    return buildCondition(base, group.op, group.val, internTarget, compareBase, resolver.engineeringTypeOf(group.col));
   }
   if ("allOf" in group) {
     return combineWithOp(group.allOf.map((g) => compileConditionGroup(g, resolver, internTarget)), "AND");

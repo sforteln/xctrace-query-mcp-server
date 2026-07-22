@@ -40,7 +40,7 @@ const coreDataLens: Lens = {
         {
           tool: "aggregate",
           args: { sessionId, schema: FAULT_SCHEMA, run, groupBy: "fault-object", measure: FAULT_WEIGHT, op: "sum", topN: 10 },
-          description: `Total ${FAULT_WEIGHT} by fault-object — total time cost per entity, complementing the count-based view.`,
+          description: `Total ${FAULT_WEIGHT} by fault-object — per-OBJECT time cost (each fault-object embeds a unique object URI, so groups are per object, not per entity; see this schema's gotcha for extracting the entity name to group per-entity).`,
         },
       ];
       if (allSchemas.includes(REL_FAULT_SCHEMA)) {
@@ -82,7 +82,7 @@ const coreDataLens: Lens = {
         actions.push({
           tool: "aggregate",
           args: { sessionId, schema: FAULT_SCHEMA, run, groupBy: "fault-object", op: "count", topN: 10 },
-          description: "Object faults are a related but distinct perf issue — check which entity types fault most often.",
+          description: "Object faults are a related but distinct perf issue — counts here are per OBJECT (fault-object embeds a unique object URI); extract the entity name per this schema's gotcha to see which entity TYPES fault most.",
         });
       }
       return actions;
@@ -96,7 +96,7 @@ const coreDataLens: Lens = {
         schema: FAULT_SCHEMA,
         tool: "aggregate",
         args: { sessionId, schema: FAULT_SCHEMA, run, groupBy: "fault-object", op: "count", topN: 10 },
-        hint: `${TRACE_LABEL} — aggregate faults by fault-object shows which entity types fault most often; high counts on a single entity suggest a missing relationship prefetch`,
+        hint: `${TRACE_LABEL} — aggregate faults by fault-object counts per-OBJECT faults (each value embeds a unique x-coredata object URI — NOT an entity-type grouping; extract the EntityName segment per this schema's gotcha to group per entity); many single-object faults on one entity suggest a missing relationship prefetch`,
       };
     }
 

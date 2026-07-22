@@ -388,7 +388,10 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       start: t,
       duration: ns,
       // hang-type classifies the unresponsiveness: "Brief Unresponsiveness" vs
-      // "Potential Interaction Delay" — heuristics would mark it detail.
+      // "Potential Interaction Delay". NOTE: the heuristics ALSO land on label
+      // (the `-type$` mnemonic rule) — verified by running the real classifier
+      // over the fixture (Engineering Type Reference audit); this pin is
+      // documentation/stability, not a rescue.
       "hang-type": label,
       thread: thread,
       process: thread,
@@ -501,9 +504,15 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "display-name": label,
       // color: despite the name, engineering-type is render-buffer-depth on THIS
       // schema (verified live, fmt="2") — the swap-chain/back-buffer count
-      // frameBudget.ts's resolveRenderBaselineMs() reads. A small count, not a
-      // UI tag, unlike the same-named `color` column elsewhere.
-      color: count,
+      // frameBudget.ts's resolveRenderBaselineMs() reads directly by mnemonic
+      // (role-independent). Pinned detail, NOT count/weight: it's a GAUGE
+      // (current buffer depth), so summing it is semantically void per Apple's
+      // Engineering Type Reference — the audit found this same type treated
+      // three different ways across three schemas; detail everywhere is the
+      // consistent, honest treatment. Real data also carries special codes
+      // 1000-1002 on this column (verified live), another reason it must
+      // never be offered as a weight.
+      color: detail,
       "event-label": detail,
       // event: engineering-type vsync-event (e.g. "VSYNC") — a plain label.
       event: label,
@@ -526,7 +535,13 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "connection-UUID": detail,
       "surface-id": detail,
       "pixel-format": detail,
-      // color: same UI visualization tag as display-vsyncs-interval.color — not a buffer-depth signal.
+      // color: engineering-type render-buffer-depth — the committed fixture
+      // declares it, and real data shows the same value distribution
+      // (including the 1000-1002 special codes) as display-surface-swap's
+      // color. The earlier comment here claimed "not a buffer-depth signal";
+      // that was contradicted by the fixture's own declared type (Engineering
+      // Type Reference audit, typeAudit/A mismatch #2). detail stays correct
+      // — it's a gauge, never a weight.
       color: detail,
       "event-priority": detail,
       "event-label": detail,
@@ -563,8 +578,9 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       "framebuffer-index": detail,
       "swap-id": detail,
       // color: render-buffer-depth (the back-buffer count), same as
-      // display-vsyncs-interval.color — a small count, not a UI tag.
-      color: count,
+      // display-vsyncs-interval.color. detail, not count/weight — a gauge
+      // whose sum is semantically void (see the display-vsyncs-interval note).
+      color: detail,
       "pixel-format": detail,
       "hid-time": detail,
       "generation-time": detail,
@@ -942,7 +958,11 @@ export const SCHEMA_HINTS: Record<string, SchemaHint> = {
       process: thread,
       "runloop-pointer": detail,
       timeout: detail,
-      "run-result": detail,
+      // run-result: engineering-type cfrunloop-result — Apple documents a
+      // 5-value enum ("Finished", "Timed Out", …), i.e. a groupable end-reason
+      // category ("group runs by why they ended"), not opaque detail
+      // (Engineering Type Reference audit correction).
+      "run-result": label,
       "return-after-source-handled": detail,
       "waiting-on-ports": detail,
       "received-port": detail,

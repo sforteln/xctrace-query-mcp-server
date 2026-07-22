@@ -157,7 +157,7 @@ const hangsLens: Lens = {
           op: "sum",
           topN: 10,
         },
-        hint: `Hangs & Hitches trace — total ${HANGS_WEIGHT} by hang-type (main-thread vs. background) shows which kind of hang dominates; query with sort:{by:"${HANGS_WEIGHT}",dir:"desc"} for the single worst hang`,
+        hint: `Hangs & Hitches trace — total ${HANGS_WEIGHT} by hang-type shows which SEVERITY class dominates (an ordinal ladder: unresponsive → Microhang → Hang → Severe Hang per Apple's docs; live traces also show variants like "Brief Unresponsiveness"); query with sort:{by:"${HANGS_WEIGHT}",dir:"desc"} for the single worst hang`,
       };
     }
 
@@ -173,7 +173,7 @@ const hangsLens: Lens = {
           op: "count",
           topN: 10,
         },
-        hint: "Hitches trace — aggregate by is-system splits hitches into app-owned vs. system-owned; focus on is-system=false rows to find app regressions",
+        hint: 'Hitches trace — aggregate by is-system splits hitches into app-owned vs. system-owned; focus on is-system="No" rows to find app regressions (boolean columns display Yes/No — a JSON false or the string "false" matches 0 rows)',
       };
     }
 
