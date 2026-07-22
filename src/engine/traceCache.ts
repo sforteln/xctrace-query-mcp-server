@@ -63,11 +63,13 @@ export interface ResolvedTraceDb {
   reused: boolean;
 }
 
-const META_MTIME_KEY = "source_mtime_ms";
+export const META_MTIME_KEY = "source_mtime_ms";
 const META_PATH_KEY = "source_path";
 const META_SCHEMA_VERSION_KEY = "ingest_schema_version";
 
-function colocatedDbPath(tracePath: string): string {
+/** Exported for read-only callers (e.g. the trace manifest) that need to find
+ * a trace's db without opening/creating/wiping it via resolveAndOpenTraceDb. */
+export function colocatedDbPath(tracePath: string): string {
   const ext = extname(tracePath);
   const base = basename(tracePath, ext);
   return join(dirname(tracePath), `${base}.db`);
@@ -81,7 +83,8 @@ function colocatedDbPath(tracePath: string): string {
  * the filename (truncated/sanitized) purely so a human browsing the fallback
  * directory can recognize which trace a .db belongs to at a glance.
  */
-function fallbackDbPath(tracePath: string, fallbackDir: string): string {
+/** Exported for read-only callers (e.g. the trace manifest) — see colocatedDbPath. */
+export function fallbackDbPath(tracePath: string, fallbackDir: string): string {
   const hash = createHash("sha256").update(tracePath).digest("hex").slice(0, 16);
   const safeBase = basename(tracePath, extname(tracePath)).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 60);
   return join(fallbackDir, `${safeBase}.${hash}.db`);

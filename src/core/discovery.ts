@@ -153,7 +153,8 @@ async function scanRoot(
 
 // ─── All-roots scan ──────────────────────────────────────────────────────────
 
-async function allTraces(): Promise<{ traces: TraceInfo[]; roots: RootStatus[] }> {
+/** Exported for callers that need the raw newest-first scan directly (e.g. the trace manifest). */
+export async function allTraces(): Promise<{ traces: TraceInfo[]; roots: RootStatus[] }> {
   const config = await getConfig();
   const builtIns = builtInRootPaths(config.recordingsDir ?? defaultRecordingsDir());
 

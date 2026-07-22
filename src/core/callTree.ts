@@ -382,7 +382,7 @@ function formatCycles(cycles: number): string {
  * (Allocations) call tree — weighted by allocated bytes (the `size`
  * attribute), a third physical quantity distinct from both time and cycles.
  */
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(2)} GB`;
   if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(2)} MB`;
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(2)} KB`;

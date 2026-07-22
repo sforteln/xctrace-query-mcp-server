@@ -29,6 +29,7 @@ import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
 import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { parsePsOutput } from "./core/listProcesses.js";
+import { buildTraceManifest, deleteTraces } from "./core/traceManifest.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
@@ -47,7 +48,7 @@ import animationHitchesLens from "./lenses/animationHitches/index.js";
 import offCpuLens from "./lenses/offCpu/index.js";
 import {
   summarizeQuery, summarizeFind, summarizeAggregate, summarizeCorrelate,
-  summarizeRelate, summarizeCallTree, summarizeTimeline,
+  summarizeRelate, summarizeCallTree, summarizeTimeline, summarizeCloseTrace,
 } from "./core/callSummary.js";
 import { getConfig, updateConfig, configPath, defaultFallbackCacheDir, defaultRecordingsDir } from "./config.js";
 import { getServerInfo } from "./core/serverInfo.js";
@@ -251,7 +252,15 @@ const SERVER_INSTRUCTIONS =
   "to. Sessions are cached for the life of the server process and are never evicted " +
   "automatically — an agent that opens a trace, answers the question, and stops without " +
   "closing leaves it (and any large tables it loaded) resident in memory indefinitely. See " +
-  "close_trace's own description for when it's safe to call.";
+  "close_trace's own description for when it's safe to call.\n\n" +
+  "close_trace's response includes a manifest of on-disk traces plus free disk space — mention " +
+  "this to the user IMMEDIATELY and UNPROMPTED, in the same message where you report the close, " +
+  "not only if they happen to ask. This is easy to silently skip since it isn't the answer to " +
+  "whatever they actually asked about, but skipping it defeats the entire point of computing it — a " +
+  "manifest nobody sees is the same as no manifest at all. A single sentence is enough, close to: " +
+  "\"Closed trace. I noticed there are several old traces taking up disk space — want to review and " +
+  "delete any?\" Use the response's `summary` line for the real numbers (trace count, total size, " +
+  "free space) rather than inventing your own.";
 
 export function createServer(): McpServer {
   const server = new McpServer(
@@ -362,7 +371,13 @@ export function createServer(): McpServer {
         "matters on a long-running server that opens many traces (large tables like " +
         "swiftui-updates can hold gigabytes). Safe to call even if you're not sure whether " +
         "you still need the session — open_trace on the same path again returns a fresh one. " +
-        "⚠️ Not for pausing — there is no way to reopen a closed sessionId; call open_trace again instead.",
+        "⚠️ Not for pausing — there is no way to reopen a closed sessionId; call open_trace again instead. " +
+        "The response also includes free disk space and a manifest of on-disk traces (oldest first, each " +
+        "with a real description of what it recorded) — SHOW this to the user rather than skipping past " +
+        "it; if they ask to remove any, expand their selection (numbers, ranges like \"1-30\", or both) " +
+        "against the manifest just shown into the real paths, then call delete_traces with those paths. " +
+        "This call takes a few seconds (not milliseconds) — it reads each shown trace's own recording " +
+        "description from disk; that's expected, not a hang.",
       inputSchema: {
         sessionId: z.string().describe("The sessionId returned by open_trace, to close."),
       },
@@ -371,7 +386,39 @@ export function createServer(): McpServer {
       safeToolWithLog("close_trace", { sessionId }, async () => {
         getSession(sessionId); // throws a structured error if sessionId is invalid/already closed
         closeSession(sessionId);
-        return text(JSON.stringify({ closed: true, sessionId }));
+        const manifest = await buildTraceManifest();
+        return text(
+          toMcpText(
+            envelope({ closed: true, sessionId, manifest }, [], { summary: summarizeCloseTrace(manifest) })
+          )
+        );
+      })
+  );
+
+  // ── delete_traces ─────────────────────────────────────────────────────────
+  server.registerTool(
+    "delete_traces",
+    {
+      title: "Delete Traces",
+      description:
+        "Permanently delete specific .trace files (and their cached .db, if any) from disk. " +
+        "Not for guessing what to delete — only call this with paths the user explicitly selected " +
+        "from a manifest you already showed them (e.g. close_trace's response), after expanding any " +
+        "numbers/ranges they gave against that same manifest. Every path is re-validated against the " +
+        "current on-disk trace list before deleting anything; a path that's already gone, moved, or " +
+        "mistyped is reported back per-entry, not silently skipped. This is irreversible — there is " +
+        "no undo and no recycle bin. ⚠️ Not for freeing a session's in-memory cache — use close_trace instead.",
+      inputSchema: {
+        paths: z
+          .array(z.string())
+          .min(1)
+          .describe("Exact .trace paths to delete, taken from a manifest already shown to the user."),
+      },
+    },
+    async ({ paths }) =>
+      safeToolWithLog("delete_traces", { paths }, async () => {
+        const results = await deleteTraces(paths);
+        return text(toMcpText(envelope({ results }, [])));
       })
   );
 

@@ -110,3 +110,16 @@ export function summarizeTimeline(
 ): string {
   return `timeline ${r.schemas.join("+")}${windowClause(r.timeRange)} → ${num(r.returnedRows)} of ${num(r.totalInWindow)} events`;
 }
+
+/**
+ * Grounds close_trace's narration in real numbers (trace count, total disk
+ * used, free space) so the AI has something concrete to build its own
+ * cleanup nudge on — see SERVER_INSTRUCTIONS' explicit reminder to actually
+ * surface this unprompted, which this summary line alone doesn't guarantee.
+ */
+export function summarizeCloseTrace(
+  r: { totalTraces: number; totalBytesFmt: string; freeSpaceFmt: string | null },
+): string {
+  const free = r.freeSpaceFmt ? `, ${r.freeSpaceFmt} free` : "";
+  return `close_trace → ${num(r.totalTraces)} trace${r.totalTraces === 1 ? "" : "s"} on disk (${r.totalBytesFmt}${free})`;
+}
