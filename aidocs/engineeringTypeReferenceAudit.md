@@ -1,7 +1,16 @@
-# Engineering Type Reference audit — findings (in progress)
+# Engineering Type Reference audit — findings (COMPLETE)
 
-Tracks findings from PMT:mossy-bluff's discovery pass. Not a complete audit yet —
-see "Still open" at the bottom for what's blocked/pending.
+Tracks findings from PMT:mossy-bluff's discovery pass. The audit is complete as of
+2026-07-22: six parallel audit slices (per touchpoint category, not per family)
+cross-checked all 74 fixture-used engineering types against Apple's reference and
+this project's actual code. **The per-type detail lives in `aidocs/typeAudit/`**
+(A: role classification, B: summability/sentinels/bit-width, C: Special Value
+Treatments + detector bands, D: specific-type deep dives, E: encoding notes +
+family grouping, F: prose claims in gotchas/tool descriptions; plus
+`fixture-mnemonics.json`, the bounded scope every slice keyed off). This file is
+the synthesis + running history; the per-slice files are the "every checked item's
+outcome" record. Implementation actions distilled from all of this live in
+PMT:haze-eagle.
 
 ## Scope actually in play
 
@@ -36,12 +45,21 @@ a 24MHz/41.67ns hardware timebase) — nothing in that gap, so a literal `0` can
 genuine measurement on this hardware. Worth re-checking on Intel Macs if that ever
 matters (different timebase constant).
 
-## `categorical` flag
+## `categorical` flag — CROSS-CHECKED (see typeAudit/B); the predicted real bug exists, at full breadth
 
-48 of the 67 matched types are marked categorical ("cannot be summed or averaged").
-Not yet cross-checked against `aggregate.ts`'s actual allowed ops — this is the
-PMT:mossy-bluff item most likely to turn up a real bug (a type we currently let get
-summed that shouldn't be) and hasn't been done yet.
+52 of the 67 matched types are marked categorical (the earlier "48" here was
+counted against the pre-scraper-fix JSON; 52 is verified against the corrected
+data). The cross-check against `aggregate.ts` predicted "most likely to turn up a
+real bug" — confirmed, and it's structural, not per-type: **the codebase has no
+summability concept at all.** The only measure rejection anywhere is
+`isBacktraceCol` (sqliteStore.ts); everything else becomes
+`SUM(CAST(raw AS REAL))`. So 50 of the 52 categorical types are summable today —
+16 with INTEGER raws produce plausible-looking wrong sums (pid, fd, address,
+boolean, core, …), 34 string-raw types CAST to 0/garbage but "succeed". Bonus:
+`kperf-bt` (time-sample's `cp-user-callstack`) slips through even the backtrace
+guard, whose set only covers {backtrace, text-backtrace, tagged-backtrace}.
+Reinforced on the other side: all 15 non-categorical numeric types are correctly
+allowed, with correct units for the weight types.
 
 ## Special Value Treatments — reframed from the original assumption
 
@@ -169,15 +187,221 @@ hang-specific corruption mechanism. Recovery recipe (now documented in the harne
 file too): kill the DTService PID, remove the leftover `instruments*.ktrace` temp
 file; DTService restarts automatically.
 
+## Audit completion synthesis (2026-07-22) — six slices, all former open items resolved
+
+Every previously-open item is now covered; per-type detail in `aidocs/typeAudit/`.
+Headline findings by slice:
+
+**A — Role classification** (method note: the agent ran the *actual compiled
+classifier* over every fixture column and joined against Apple's reference —
+executed-code-grounded, not hand-traced). 31 REINFORCED / 2 MISMATCH /
+34 NOT-COVERED / 7 UNDOCUMENTED. The two mismatches: `cfrunloop-result` (documented
+5-value enum; both heuristic and the runloop-intervals pin classify it `detail`,
+losing group-by-end-reason) and `render-buffer-depth` (three different treatments
+across three schemas — summed as weight on two, and pinned `detail` on
+displayed-surfaces-interval with a pin comment claiming "not a buffer-depth signal"
+while the committed fixture declares exactly that type). Shipping-wrong-with-no-
+rescue: `domain-name` → detail (CFNetwork hostname ungroupable, no pin exists).
+Cross-cutting bugs: `preferredThreadColumn`'s core/cpu exclusion never fires (real
+column is `core-index`); a roleHints comment whose claim the harness disproved;
+the mnemonic time-rule can promote generic strings to `time`; unpinned twin schemas
+(SwiftUIFilteredUpdates, RequestTable/SessionTable/ToolTable/FMEventTable,
+com-apple-cfnetwork-task-intervals) silently lack their pinned twins' corrections.
+
+**B — Summability + sentinels** (see the rewritten `categorical` section above for
+the summability half). The complete sentinel list is **19 types** (we'd previously
+found 2 the hard way; 17 have no handling). Highest leverage: `duration` → sentinel
+ZERO, stored as a plain 0, silently deflating avg/min/percentiles on the pinned
+primaryWeight of ~25 schemas. Fixture-confirmed live: runloop-intervals contains
+`<boolean fmt="Yes">3</boolean>` — xctrace itself mis-formats boolean's sentinel
+(3) as "Yes". All three time types share sentinel 2^50−1 (a real-looking 13-day
+timestamp). Caveat: sentinel magnitude varies by producer — one fixture column
+shows both 2^64−1 and 2^32−1 for "no timeout". Precision: `coerceRaw` keeps >2^53
+digit-strings exact (tested), but `CAST(raw AS REAL)` at query time re-introduces
+the loss for uint64-class ids (fixture-real example: timeout 4768471730841330159).
+
+**C — Special Value Treatments** (full-238 sweep): 27 of 238 have one; **all are
+Value→Color→Icon enums, zero are numeric-range→label tables** — confirming and
+extending this doc's earlier reframe. For 24/27 the cell's fmt already IS the
+label, so the original "fake column showing 5/Low" idea collapses; honest residual
+value = Apple's severity *color* as an orderable signal + closed enums for filter
+validation + genuinely numeric translation for exactly `render-buffer-depth` (in
+fixtures) and abstract-power/sched-priority (not). No SVT contradicts any existing
+detector band; hitch bands REINFORCED (Apple documents the Low→Green/
+Moderate→Orange/High→Red ladder bands.ts uses; the 1×/2× multiples are ours and
+uncontradicted), plus an undocumented-in-our-bands tier above High (Critical/
+Fault). Proven enum drift: live potential-hangs values ("Brief Unresponsiveness",
+"Potential Interaction Delay") aren't in Apple's hang-type SVT — version-fragile,
+so nothing should hard-fail on enum membership. Hazard: render-buffer-depth's
+documented special codes 1000–1003 would poison `tryRenderBufferDepth`'s median.
+Mechanism recon: no JOIN needed — a compiled CASE WHEN in the SELECT list plugs in
+at query.ts's existing `__window` fragment slot; obstacles recorded in typeAudit/C.
+
+**D — Specific types**: Configuration ID = pre-modeler EAV plumbing, zero fixture
+presence, clean no-op. Containment Level = hierarchy-depth integer (fixture values
+3/4/5 map exactly to Run ⊃ Iteration ⊃ Busy/Waiting), correctly orthogonal to
+relate()'s time-window containment — but it's a machine-readable "levels overlap;
+summing across them double-counts" signal currently voiced only in one runLoops
+nextAction string, never as a general gotcha. Event Concept = Apple's 20-value
+severity/color enumeration we've re-learned piecemeal per-schema (frame-color
+demotion, significance-doesn't-track-duration) without ever consuming the ordering;
+real values escape the enum (Medium, Brown). Narrative = the big one: all 10
+fixture narrative columns carry Apple-authored prose (detected-fs-antipattern's
+`suggestion` is literal remediation advice; fs-syscall failure explanations;
+SwiftTaskStateTable per-state stories with actor/thread/resume-site) that
+query/get_row can return but no lens, gotcha, or detector ever steers toward —
+authoritative curated content sitting unused; any fix should be per-column since
+type alone doesn't guarantee quality (two of the 10 are low-value label echoes).
+Internal family = de facto suppressed (neither type appears in any export);
+active suppression would be dead weight.
+
+**E — Encoding notes + family grouping**: parseTable special-cases only the
+backtrace family; everything else is XML-shape-driven. Newly-knowable from Apple's
+Encoding Notes for current fall-through types: `sockaddr` is fully decodable
+(agent verified by hand-decoding a fixture value to AF_INET 192.168.0.47:62260,
+exactly matching the display string) — family/port/IP could become queryable
+fields; `size-in-pixels` stores "2532x1170" text so dimensions aren't numerically
+comparable; `packed-identifier` has a documented 22-bit sentinel (4194303 — the
+spid gotcha class, derivable from the reference); `connection-uuid64` is
+documented as a cross-table row-connection ID (schemaEdges equi-join candidate);
+`kperf-bt` multi-fragment (cross-process) stacks would have fragments 2+ dropped
+by the take-first repeated-child rule (latent; fixtures only show 1 fragment).
+Family-as-gross-form verdict: **NO as-is** — General is 62% of fixture types
+overall and 100% of columns on several schemas (RequestTable 13/13,
+OSSignpostIntervals 18/18); the existing rolesSummary discriminates strictly
+better. Salvageable only as a sparse non-General accent.
+
+**F — Prose claims** (gotchas + tool descriptions): 5 MISMATCHES / 13 REINFORCED /
+~15 unverifiable-but-uncontradicted / 10 GAPs. The mismatches: hangs lens
+quickStart glosses hang-type as "(main-thread vs. background)" (it's a severity
+enum); hangs lens says filter `is-system=false` and swiftUI lens says
+`cached=false` — both silently match 0 rows (boolean columns encode 0/1 and
+display Yes/No; the same error class as the PMT:navy-glen field report, now found
+in our own shipped hint text); the kdebug-func grain hint over-generalizes
+begin/end pairing (Apple's domain includes unpaired point events; errs safe); and
+an internal contradiction — coreData lens promises groupBy fault-object yields
+"entity types" while CURATED_GOTCHAS (verified live) says exactly the opposite;
+both ship simultaneously. Boolean coercion (true→1/false→0 in find/filter) is
+fully supported by Apple's "Encoded as 0 and 1. Other values are illegal" — with
+the sharp caveat that track-detail's Allocations `live` column uses literal
+"true"/"false" strings, i.e. **the two export formats use opposite boolean
+vocabularies**. Several previously "verified live" gotchas can now cite Apple's
+reference as authority (spid ⇐ os-signpost-identifier's documented
+OS_SIGNPOST_ID_INVALID; runLoops' boolean comment; significance-as-adjective ⇐
+event-concept).
+
+**Scope-level finding**: 7 of the 74 fixture mnemonics have no entry in Apple's
+reference at all (`analysis-core-swift-task`, `cause-set`, `description-set`,
+`mach-port`, `swiftui-update`, `typed-array`, `view-hierarchy`) — verified
+genuinely absent, not name-mismatched. Apple's reference is authoritative where it
+speaks, but it does not speak for everything already in live use.
+
+## Real-data verification pass (2026-07-22, same day) — sentinel shape measured across 23 real ingested dbs
+
+The audit's sentinel/summability claims were fixture- and code-read-grounded; this
+pass measured the REAL shape by scanning every sentinel-bearing column (identified
+precisely via each db's own `_ingested_schema` engineering-type records) across all
+23 ingested `.db` caches on disk (194 column instances, tables up to 870K rows),
+then EXECUTING the claimed failure modes as the exact SQL aggregate() generates.
+Results reprioritize slice B's findings:
+
+1. **`duration` → 0 sentinel: ZERO occurrences in real data.** Across every
+   duration column in all 23 dbs (100+ instances, up to 870K rows), not one zero.
+   Consistent with the earlier 24MHz-timebase note (real durations bottom out
+   ~42ns). Slice B's "highest leverage" concern is real per Apple's docs but does
+   NOT manifest in practice on this machine's traces — demote from runtime
+   exclusion to a describe_schema annotation.
+2. **The zero-sentinel that IS prevalent sits on TIME columns, and it's the
+   UNdocumented one:** `display-surface-swap.hid-time` 1630/1630 zeros,
+   `syscall-name-map.time` 3325/3325, `life-cycle-period.start`,
+   `stackshot-info.time`, `device-display-info.timestamp` — the t=0 "not
+   recorded/pre-attach" convention currently special-cased only in the
+   network/leaks lenses. Generalizing THAT beats handling duration-zero.
+3. **Max-magnitude sentinels are real and at scale exactly where documented:**
+   `syscall.errno` is sentinel in 4-9% of ALL rows (13,641 of 150,215 in one db).
+   Executed proof of poisoning: `AVG(errno)` = 1.675e18 vs 0.065 with sentinels
+   excluded — 19 orders of magnitude wrong, silently.
+4. **"Magnitude varies by producer" CONFIRMED, in three independent ways:**
+   (a) same schema, different columns: `syscall.return` sentinel-class values are
+   2^32−2 (4294967294) while `errno`'s are 2^64-class; (b) same column, different
+   recordings: errno's sentinel is exact-TEXT `18446744073709551614` (2^64−2) in
+   the system-trace dbs but REAL-float ~1.8446744073709552e19 in the
+   animation-hitches db; (c) that storage divergence occurs at the SAME
+   ingest_schema_version (4) — meaning a precision-affecting parse-behavior change
+   landed without a version bump, so stale lossy caches still pass the freshness
+   check. Mini-finding for haze-eagle: precision-affecting coerceRaw changes must
+   bump INGEST_SCHEMA_VERSION.
+5. **NULL, not sentinel, is the dominant missing-value representation in real
+   exports:** `thread-state.core` up to 24K NULLs (no 65535 sentinels anywhere);
+   `thermal-throttled` and cfnetwork's `successful` 100% NULL;
+   `downstream-cost` NULL for ~57% of 770K rows. SQL aggregates already skip
+   NULLs correctly, so this common case is safe TODAY — the sentinel work should
+   not disturb that.
+6. **boolean:** real histograms are strictly {0, 1, NULL} across all dbs — no
+   live value-3 sentinel found (the fixture's `fmt="Yes">3` row stands as
+   evidence it exists, but no runloop-intervals table is ingested anywhere to
+   re-verify against; noted honestly).
+7. **Executed categorical-sum demos** (the SQL aggregate() would emit):
+   `SUM(core)`=26,207 / `AVG`=4.79 over time-profile — plausible-looking,
+   semantically void; kperf-bt's promoted children sum freely
+   (`__text-address` → 39.8e12, `__register-content` → 1.1e20) — the
+   backtrace-guard hole, live.
+
+## Verification round 2 (2026-07-22) — remaining slices verified against real data + the fixture-scope long tail
+
+The first verification round covered slice B; this round executed the remaining
+slices' fixture-only/code-read claims against real dbs, and extended the audit's
+deliberately fixture-bounded scope to what's actually in live use:
+
+1. **Enum-drift breadth measured** (slice C's fixture-only finding, now
+   quantified): `thread-state` and `vsync-event` real values are 100% inside
+   Apple's SVT enums; `event-concept` mostly contained (3 drifts, all plain
+   colors: Brown/Teal/Yellow); `hang-type`'s 2 fixture drifts confirmed in real
+   data; **`syscall`'s SVT enum is uselessly incomplete** — 100+ real distinct
+   values (open/read/mmap/mach_msg2_trap/IOMDESC_*/DYLD_*…) vs Apple's handful of
+   BSC_* rows. Closed-enum filter validation is dead for syscall specifically and
+   per-type viability must be checked before relying on any SVT enum. (Caveat:
+   raw sqlite reads bypass the app's interning hydration — \x01-prefixed refs in
+   the scan were interned-value markers, not drift; the plain-name drifts are
+   genuine.)
+2. **render-buffer-depth ≥1000 special codes: LIVE, not theoretical** — 697 of
+   1,629 rows (42%) in the real animation-hitches trace carry values 1000–1002.
+   The median tryRenderBufferDepth computes sits just below the poisoning
+   threshold (932 rows < 1000) — near-firing today, upgrade the guard's priority.
+3. **Narrative quality confirmed on real data**: a real trace's
+   detected-fs-antipattern rows carry genuine Apple-authored remediation prose
+   ("A high rate of write activity often stems from involuntarily flushing to
+   disk, usually in a loop"), not just the curated fixture samples.
+4. **cached='false' zero-row proof executed**: 0 rows vs 237,909 for the correct
+   predicate, on a real 359K-row SwiftUILayoutUpdates2 table — slice F's
+   boolean-vocabulary mismatch, live.
+5. **Fixture-scope long tail: 17 engineering types in live ingested use are NOT
+   in the fixture-bounded 74** — including `weight` itself (the core profiling
+   measure type — non-categorical, sentinel=MAX per Apple), `duration-on-core`/
+   `duration-waiting` (sentinel=ZERO, on syscall — feeds the off-CPU work),
+   `http-status` (sentinel=max), `sched-priority` (sentinel=max, live on
+   thread-state), and four SVT-bearing types slice C had classed "theoretical"
+   (sched-priority, thermal-state, gpu-state, app-period) that are in live use.
+   Also `tagged-backtrace` is an EIGHTH type absent from Apple's reference
+   (handled today — it's in the backtrace guard set — but undocumented).
+   Implication: haze-eagle's generated-module scope should be the ~91 live types
+   (74 fixture + 17), not the fixture 74.
+6. **Not verifiable from dbs**: kperf-bt multi-fragment loss (fragments are
+   dropped at ingest; needs a raw-XML export check) — still open.
+
 ## Still open / blocked
 
-- Why `hang-risks` never populates regardless of hang severity (see above) — the
-  main open question for anything depending on real `hang-risks` narrative content,
-  including PMT:navy-river's landmark work for that schema specifically.
-- `categorical` flag not yet cross-checked against `aggregate.ts`'s real code.
-- Sentinel list not yet cross-checked against `correlate()`/`describe_schema` (planned
-  action lives in PMT:haze-eagle).
-- The 7 unmatched fixture mnemonics not yet investigated.
-- Items 4 (Encoding Notes opaque-column audit beyond URLSession/process/swift-task),
-  5's remaining exploration, and items 6's other named types (Configuration ID,
-  Containment Level, Event Concept) not yet started.
+- Why `hang-risks` never populates regardless of hang severity (see the RESOLVED
+  section above for the PromptManager-specific dead end) — validating its
+  severity-enum/narrative handling needs a trace from an app that actually
+  exercises CFNetwork/Contacts/CoreML on the main thread.
+- The 7 unmatched fixture mnemonics: confirmed absent from the reference, but not
+  themselves investigated beyond that (what IS analysis-core-swift-task's
+  structure? private/newer-than-docs?). Low urgency — current handling of all 7 is
+  empirically fine per slices A/E.
+- boolean's value-3 sentinel unverifiable against real data until a
+  runloop-intervals table is ingested from a real trace.
+- Why the animation-hitches db's errno raws became REAL while system-trace's
+  stayed TEXT at the same ingest version (exact root cause of the unbumped
+  behavior change) — matters for haze-eagle's version-bump fix, not for the
+  audit itself.

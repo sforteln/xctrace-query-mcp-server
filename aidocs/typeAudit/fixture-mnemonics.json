@@ -1,0 +1,762 @@
+{
+ "fixtureMnemonics": [
+  {
+   "mnemonic": "address",
+   "family": "Memory",
+   "schemas": [
+    "runloop-events",
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "analysis-core-swift-task",
+   "family": null,
+   "schemas": [
+    "SwiftTaskLifetime",
+    "SwiftTaskStateTable"
+   ]
+  },
+  {
+   "mnemonic": "backtrace",
+   "family": "General",
+   "schemas": [
+    "core-data-fault",
+    "core-data-fetch",
+    "core-data-relationship-fault",
+    "core-data-save",
+    "detected-fs-antipattern",
+    "fs-syscall",
+    "swiftui-changes",
+    "swiftui-update-groups"
+   ]
+  },
+  {
+   "mnemonic": "boolean",
+   "family": "General",
+   "schemas": [
+    "SwiftUILayoutUpdates2",
+    "com-apple-cfnetwork-task-intervals",
+    "device-display-info",
+    "displayed-surfaces-interval",
+    "fs-syscall",
+    "hitches",
+    "runloop-events",
+    "runloop-intervals",
+    "swiftui-layout-updates"
+   ]
+  },
+  {
+   "mnemonic": "category",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals"
+   ]
+  },
+  {
+   "mnemonic": "cause-set",
+   "family": null,
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "cfrunloop-result",
+   "family": "General",
+   "schemas": [
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "connection-uuid64",
+   "family": "General",
+   "schemas": [
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "containment-level",
+   "family": "General",
+   "schemas": [
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "core",
+   "family": "CPU",
+   "schemas": [
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "description-set",
+   "family": null,
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "display-event-name",
+   "family": "Graphics",
+   "schemas": [
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "display-name",
+   "family": "Graphics",
+   "schemas": [
+    "display-surface-swap",
+    "display-vsyncs-interval",
+    "displayed-surfaces-interval",
+    "hitches",
+    "hitches-renders"
+   ]
+  },
+  {
+   "mnemonic": "displayed-surface-swap",
+   "family": "Graphics",
+   "schemas": [
+    "display-surface-swap"
+   ]
+  },
+  {
+   "mnemonic": "domain-name",
+   "family": "General",
+   "schemas": [
+    "com-apple-cfnetwork-task-intervals"
+   ]
+  },
+  {
+   "mnemonic": "duration",
+   "family": "General",
+   "schemas": [
+    "InstructionsTable",
+    "ModelInferenceTable",
+    "ModelLoadingTable",
+    "NetworkConnectionStats",
+    "OSSignpostIntervals",
+    "RequestTable",
+    "SessionTable",
+    "SwiftTaskLifetime",
+    "SwiftTaskStateTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "ToolTable",
+    "com-apple-cfnetwork-task-intervals",
+    "core-data-fault",
+    "core-data-fetch",
+    "core-data-relationship-fault",
+    "core-data-save",
+    "detected-fs-antipattern",
+    "display-vsyncs-interval",
+    "displayed-surfaces-interval",
+    "fs-syscall",
+    "hitches",
+    "hitches-renders",
+    "network-connection-update",
+    "potential-hangs",
+    "runloop-intervals",
+    "swiftui-layout-updates",
+    "swiftui-update-groups",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "event-concept",
+   "family": "General",
+   "schemas": [
+    "ModelInferenceTable",
+    "ModelLoadingTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "detected-fs-antipattern",
+    "hitches-renders",
+    "runloop-intervals",
+    "swiftui-layout-updates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "event-count",
+   "family": "General",
+   "schemas": [
+    "NetworkConnectionStats",
+    "SwiftUIFilteredUpdates",
+    "network-connection-update",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "event-time",
+   "family": "General",
+   "schemas": [
+    "PointsOfInterestEvents",
+    "SwiftTasksInfoTable",
+    "detected-fs-antipattern",
+    "device-display-info",
+    "fs-syscall",
+    "hang-risks",
+    "network-connection-detected",
+    "network-connection-update",
+    "runloop-events",
+    "swiftui-causes",
+    "swiftui-changes",
+    "swiftui-full-causes"
+   ]
+  },
+  {
+   "mnemonic": "event-type",
+   "family": "General",
+   "schemas": [
+    "hang-risks"
+   ]
+  },
+  {
+   "mnemonic": "fd",
+   "family": "I/O",
+   "schemas": [
+    "detected-fs-antipattern",
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "file-path",
+   "family": "I/O",
+   "schemas": [
+    "detected-fs-antipattern",
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "formatted-label",
+   "family": "General",
+   "schemas": [
+    "NetworkConnectionStats",
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "hang-type",
+   "family": "General",
+   "schemas": [
+    "potential-hangs"
+   ]
+  },
+  {
+   "mnemonic": "kdebug-func",
+   "family": "General",
+   "schemas": [
+    "runloop-events"
+   ]
+  },
+  {
+   "mnemonic": "kperf-bt",
+   "family": "General",
+   "schemas": [
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "layout-id",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals"
+   ]
+  },
+  {
+   "mnemonic": "mach-port",
+   "family": null,
+   "schemas": [
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "medium-length-string",
+   "family": "General",
+   "schemas": [
+    "com-apple-cfnetwork-task-intervals",
+    "runloop-events",
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "metal-nesting-level",
+   "family": "Graphics",
+   "schemas": [
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "metal-object-label",
+   "family": "Graphics",
+   "schemas": [
+    "device-display-info"
+   ]
+  },
+  {
+   "mnemonic": "metal-workload-priority",
+   "family": "Graphics",
+   "schemas": [
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "narrative",
+   "family": "General",
+   "schemas": [
+    "SwiftTaskStateTable",
+    "core-data-fault",
+    "core-data-relationship-fault",
+    "detected-fs-antipattern",
+    "display-vsyncs-interval",
+    "displayed-surfaces-interval",
+    "fs-syscall",
+    "hang-risks"
+   ]
+  },
+  {
+   "mnemonic": "network-interface",
+   "family": "I/O",
+   "schemas": [
+    "NetworkConnectionStats"
+   ]
+  },
+  {
+   "mnemonic": "network-protocol",
+   "family": "I/O",
+   "schemas": [
+    "NetworkConnectionStats",
+    "network-connection-detected"
+   ]
+  },
+  {
+   "mnemonic": "network-size-in-bytes",
+   "family": "I/O",
+   "schemas": [
+    "NetworkConnectionStats",
+    "network-connection-update"
+   ]
+  },
+  {
+   "mnemonic": "os-log-metadata",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents"
+   ]
+  },
+  {
+   "mnemonic": "os-signpost-identifier",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals"
+   ]
+  },
+  {
+   "mnemonic": "packed-identifier",
+   "family": "General",
+   "schemas": [
+    "NetworkConnectionStats",
+    "network-connection-update"
+   ]
+  },
+  {
+   "mnemonic": "pid",
+   "family": "General",
+   "schemas": [
+    "SwiftTasksInfoTable",
+    "network-connection-detected"
+   ]
+  },
+  {
+   "mnemonic": "process",
+   "family": "General",
+   "schemas": [
+    "NetworkConnectionStats",
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents",
+    "SwiftTaskLifetime",
+    "SwiftTaskStateTable",
+    "SwiftTasksInfoTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "com-apple-cfnetwork-task-intervals",
+    "detected-fs-antipattern",
+    "fs-syscall",
+    "hang-risks",
+    "hitches",
+    "potential-hangs",
+    "runloop-intervals",
+    "swiftui-causes",
+    "swiftui-changes",
+    "swiftui-full-causes",
+    "swiftui-layout-updates",
+    "swiftui-update-groups",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "render-buffer-depth",
+   "family": "Graphics",
+   "schemas": [
+    "display-surface-swap",
+    "display-vsyncs-interval",
+    "displayed-surfaces-interval"
+   ]
+  },
+  {
+   "mnemonic": "return-location",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents"
+   ]
+  },
+  {
+   "mnemonic": "sample-time",
+   "family": "General",
+   "schemas": [
+    "FMEventTable",
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "short-string",
+   "family": "General",
+   "schemas": [
+    "com-apple-cfnetwork-task-intervals",
+    "hang-risks",
+    "runloop-events",
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "signpost-name",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents"
+   ]
+  },
+  {
+   "mnemonic": "size-in-bytes",
+   "family": "Memory",
+   "schemas": [
+    "fs-syscall",
+    "network-connection-detected"
+   ]
+  },
+  {
+   "mnemonic": "size-in-pixels",
+   "family": "Graphics",
+   "schemas": [
+    "device-display-info"
+   ]
+  },
+  {
+   "mnemonic": "sockaddr",
+   "family": "I/O",
+   "schemas": [
+    "NetworkConnectionStats",
+    "network-connection-detected"
+   ]
+  },
+  {
+   "mnemonic": "start-time",
+   "family": "General",
+   "schemas": [
+    "InstructionsTable",
+    "ModelInferenceTable",
+    "ModelLoadingTable",
+    "NetworkConnectionStats",
+    "OSSignpostIntervals",
+    "RequestTable",
+    "SessionTable",
+    "SwiftTaskLifetime",
+    "SwiftTaskStateTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "ToolTable",
+    "com-apple-cfnetwork-task-intervals",
+    "core-data-fault",
+    "core-data-fetch",
+    "core-data-relationship-fault",
+    "core-data-save",
+    "detected-fs-antipattern",
+    "display-surface-swap",
+    "display-vsyncs-interval",
+    "displayed-surfaces-interval",
+    "fs-syscall",
+    "hitches",
+    "hitches-renders",
+    "potential-hangs",
+    "runloop-intervals",
+    "swiftui-layout-updates",
+    "swiftui-update-groups",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "string",
+   "family": "General",
+   "schemas": [
+    "FMEventTable",
+    "InstructionsTable",
+    "ModelInferenceTable",
+    "ModelLoadingTable",
+    "RequestTable",
+    "SessionTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "ToolTable",
+    "com-apple-cfnetwork-task-intervals",
+    "core-data-fault",
+    "core-data-fetch",
+    "core-data-relationship-fault",
+    "detected-fs-antipattern",
+    "display-surface-swap",
+    "displayed-surfaces-interval",
+    "fs-syscall",
+    "hitches",
+    "hitches-renders",
+    "runloop-events",
+    "runloop-intervals",
+    "swiftui-causes",
+    "swiftui-changes",
+    "swiftui-full-causes",
+    "swiftui-layout-updates",
+    "swiftui-update-groups",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "subsystem",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents"
+   ]
+  },
+  {
+   "mnemonic": "swift-actor",
+   "family": "General",
+   "schemas": [
+    "SwiftTaskStateTable"
+   ]
+  },
+  {
+   "mnemonic": "swift-task",
+   "family": "General",
+   "schemas": [
+    "SwiftTasksInfoTable"
+   ]
+  },
+  {
+   "mnemonic": "swift-task-id",
+   "family": "General",
+   "schemas": [
+    "SwiftTasksInfoTable"
+   ]
+  },
+  {
+   "mnemonic": "swift-task-priority",
+   "family": "General",
+   "schemas": [
+    "SwiftTaskStateTable"
+   ]
+  },
+  {
+   "mnemonic": "swift-task-state",
+   "family": "General",
+   "schemas": [
+    "SwiftTaskStateTable"
+   ]
+  },
+  {
+   "mnemonic": "swiftui-update",
+   "family": null,
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "syscall",
+   "family": "I/O",
+   "schemas": [
+    "detected-fs-antipattern",
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "syscall-arg",
+   "family": "General",
+   "schemas": [
+    "detected-fs-antipattern",
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "syscall-return",
+   "family": "General",
+   "schemas": [
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "text-backtrace",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents",
+    "SwiftTaskStateTable",
+    "hang-risks"
+   ]
+  },
+  {
+   "mnemonic": "text-symbol",
+   "family": "CPU",
+   "schemas": [
+    "SwiftTaskStateTable"
+   ]
+  },
+  {
+   "mnemonic": "thread",
+   "family": "General",
+   "schemas": [
+    "OSSignpostIntervals",
+    "PointsOfInterestEvents",
+    "SwiftTaskStateTable",
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "core-data-fault",
+    "core-data-fetch",
+    "core-data-relationship-fault",
+    "core-data-save",
+    "detected-fs-antipattern",
+    "fs-syscall",
+    "hang-risks",
+    "potential-hangs",
+    "runloop-events",
+    "runloop-intervals",
+    "swiftui-changes",
+    "swiftui-layout-updates",
+    "swiftui-update-groups",
+    "swiftui-updates",
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "thread-state",
+   "family": "General",
+   "schemas": [
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "time-sample-kind",
+   "family": "General",
+   "schemas": [
+    "time-sample"
+   ]
+  },
+  {
+   "mnemonic": "typed-array",
+   "family": null,
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "swiftui-causes",
+    "swiftui-full-causes",
+    "swiftui-layout-updates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "uint32",
+   "family": "General",
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "com-apple-cfnetwork-task-intervals",
+    "device-display-info",
+    "display-surface-swap",
+    "hitches",
+    "hitches-renders",
+    "network-connection-detected",
+    "swiftui-causes",
+    "swiftui-changes",
+    "swiftui-full-causes",
+    "swiftui-layout-updates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "uint64",
+   "family": "General",
+   "schemas": [
+    "InstructionsTable",
+    "ModelInferenceTable",
+    "RequestTable",
+    "SessionTable",
+    "ToolTable",
+    "com-apple-cfnetwork-task-intervals",
+    "core-data-fetch",
+    "device-display-info",
+    "displayed-surfaces-interval",
+    "runloop-events",
+    "runloop-intervals"
+   ]
+  },
+  {
+   "mnemonic": "uuid",
+   "family": "General",
+   "schemas": [
+    "com-apple-cfnetwork-task-intervals"
+   ]
+  },
+  {
+   "mnemonic": "view-hierarchy",
+   "family": null,
+   "schemas": [
+    "SwiftUIFilteredUpdates",
+    "SwiftUILayoutUpdates2",
+    "swiftui-layout-updates",
+    "swiftui-updates"
+   ]
+  },
+  {
+   "mnemonic": "vnode",
+   "family": "I/O",
+   "schemas": [
+    "fs-syscall"
+   ]
+  },
+  {
+   "mnemonic": "vsync-event",
+   "family": "Graphics",
+   "schemas": [
+    "display-vsyncs-interval"
+   ]
+  },
+  {
+   "mnemonic": "word-string",
+   "family": "General",
+   "schemas": [
+    "com-apple-cfnetwork-task-intervals"
+   ]
+  }
+ ],
+ "notInReference": [
+  "analysis-core-swift-task",
+  "cause-set",
+  "description-set",
+  "mach-port",
+  "swiftui-update",
+  "typed-array",
+  "view-hierarchy"
+ ],
+ "totalDistinct": 74
+}
