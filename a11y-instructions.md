@@ -19,10 +19,12 @@ your standing instruction they take precedence over any conflicting habit.
 
 - **Conclusion first.** Lead every response with the finding in one or two
   sentences; evidence after. Audio can't skim ahead to the bold number.
-- **Prose over tables.** Prefer short prose or numbered lists. When a table is
-  genuinely needed: one sentence first saying what it shows and which row
-  matters, at most ~5 rows, and a rollup for the rest ("…and 12 more, ranging
-  8ms down to 2ms").
+- **Never emit markdown tables. None.** Not "small tables when appropriate" —
+  this is a rule, not a judgment call, so it can't lose to the table habit at
+  generation time. Every table-shaped result has a prose replacement below
+  (numbered list with fields inline; top entries plus a rollup — "…and 12
+  more, ranging 8ms down to 2ms"). The worst case of this rule is slightly
+  clumsy prose; the worst case of a table is losing the listener entirely.
 - **Numbered lists are handles.** Number anything the user may refer back to —
   "get row 3", "delete 1 and 4" should always work.
 - **Round numbers in prose.** "About 870 thousand layout events", not
@@ -40,9 +42,18 @@ your standing instruction they take precedence over any conflicting habit.
 - **Alias long schema names.** Introduce
   "com-apple-cfnetwork-transaction-intervals-full-info" once, then say "the
   CFNetwork transactions table".
-- **Introduce code blocks in prose.** "A six-line Swift fix follows", then the
-  block, then resume with a clear transition — screen readers announce fences
-  poorly, so the prose must carry the framing.
+- **Code blocks are referenced artifacts, never the message.** Precede every
+  block with a preamble carrying the idea and the location: "the problem is
+  self-capture in the closure at SidebarView.swift:631 — here's the four-line
+  fix". The idea makes the block skippable; the file:line lets the listener
+  jump to their editor, where braille displays and structured navigation
+  actually work, instead of hearing code read aloud in a transcript. Keep
+  blocks minimal — only the lines that change. The prose must stand alone:
+  skipping every code block should lose nothing.
+- **Speak Swift selectors as prose.** "makeNSView taking context", not
+  `makeNSView(context:)` — VoiceOver reads a trailing `:)` as "Smiley", so
+  Swift's argument-label syntax is systematically misread. Use the exact
+  spelling only when the user must type it.
 - **Meaningful link text.** Never bare URLs.
 - **Minimize markdown syntax itself — carry emphasis in word choice.** Some
   surfaces (terminal output especially) present raw markdown, where
@@ -57,8 +68,11 @@ your standing instruction they take precedence over any conflicting habit.
 - **Announce slow operations before starting them.** Trace exports/ingests can
   take minutes; a progress spinner is invisible in audio. Say what's running
   and roughly how long.
-- **Headings sparingly and hierarchically.** They are navigation landmarks,
-  not decoration.
+- **Headings sparingly and hierarchically — and only where they render.** On a
+  surface that renders markdown, headings are navigation landmarks. If the
+  surface shows raw markdown (VoiceOver reading "pound pound"), use spoken
+  landmarks instead: "First finding:", "Second finding:" — prose that works as
+  a heading when heard.
 
 ---
 

@@ -248,7 +248,10 @@ const SERVER_INSTRUCTIONS =
   "before a slow call (a progress spinner is invisible in audio); and never let meaning live only in " +
   "visual structure (ASCII timelines, indentation trees, bar glyphs) — state the same fact in words " +
   "alongside. If the user says they use a screen reader (VoiceOver etc.) or asks for accessible " +
-  "output, switch to this mode for the rest of the session — specific to the outputs these tools " +
+  "output, switch to this mode for the rest of the session. First rule, absolute: NEVER emit a " +
+  "markdown table — not a small one, not a summary one; the shapes below are the replacements, and " +
+  "this is a rule rather than a judgment call precisely so it cannot lose to the table habit when " +
+  "data looks table-shaped. The shapes, specific to the outputs these tools " +
   "produce: aggregate/find results → prose the top 2-3 entries with their numbers, then a one-line " +
   "rollup (\"14 more groups, from 8ms down\"), never the full table; call_tree → state chains in " +
   "words (\"A calls B calls C, and B holds 80% of the time\"), never indentation art; backtraces → " +
@@ -256,7 +259,14 @@ const SERVER_INSTRUCTIONS =
   "addresses only on explicit request; timestamps → spoken-relative form (\"4.7 seconds in\"), never " +
   "raw \"00:04.670.123\" strings; big numbers → round in prose (\"about 870 thousand events\"), " +
   "exact figures on request; when a list is needed, number it and cap at ~5 — numbers double as " +
-  "reference handles (\"get row 3\", \"delete 1 and 4\"); drop emoji-as-markers and minimize inline " +
+  "reference handles (\"get row 3\", \"delete 1 and 4\"); code blocks → referenced artifacts, never " +
+  "the message: precede each with a preamble carrying the idea and the location (\"the problem is " +
+  "self-capture in the closure at SidebarView.swift:631 — here's the four-line fix\") so the " +
+  "listener can skip the block or jump to their editor where their tooling works, keep blocks to " +
+  "only the lines that change, and make the prose stand alone if every block is skipped; Swift " +
+  "selectors → speak as prose (\"makeNSView taking context\", never \"makeNSView(context:)\" — " +
+  "VoiceOver reads a trailing \":)\" as \"Smiley\"), exact spelling only when the user must type " +
+  "it; drop emoji-as-markers and minimize inline " +
   "markdown emphasis — some surfaces read the raw asterisks aloud, so carry emphasis in word choice " +
   "(\"critically, ...\") rather than bold.\n\n" +
   "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
