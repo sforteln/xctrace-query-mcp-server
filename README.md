@@ -162,16 +162,6 @@ SidebarRow(
 
 Finding 1 is a one-liner and probably the biggest bang — want me to apply any or all of these?
 
-## Getting started
-After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
-
-### Getting more out of your AI — CLAUDE.md lines
-
-The server's built-in instructions steer the AI's behavior, but an AI weighs *your* standing instructions (your project's `CLAUDE.md`) more heavily than any tool's suggestions — that hierarchy is a deliberate prompt-injection defense, and you can use it. Lines worth adding to your project's `CLAUDE.md` if you want these behaviors reliably:
-
-- `During trace investigations, narrate every tool call — what you're checking, why, and what the result told you — before moving on. Verbose is correct here.` (Technical debugging needs the A→G reasoning chain visible; default AI training leans terse.)
-- `When a trace is closed, always show me the disk-usage manifest and offer cleanup.`
-
 ### Accessibility
 
 The server's instructions already push universal-design habits (conclusions before evidence, a takeaway sentence before every table, no hex-address recitation, duration announcements before slow operations). Two ways to go further if you use a screen reader:
@@ -230,6 +220,9 @@ dirname "$(readlink -f "$(which node)")"   # the directory to prepend to PATH be
 ```
 After editing, start a **new Claude conversation** in the Xcode panel — the config is read once at session start. Run `/mcp` to confirm the server is connected.
 
+## Getting started
+After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
+
 ## How it works
 Every Instruments trace has the same shape underneath: run[] → instrument[] → schema/table[] → row[] with typed columns that almost always fall into a small set of roles (time, duration/weight, backtrace, thread/process, label). The server introspects each schema at runtime, classifies its columns into these roles, and exposes a handful of schema-agnostic verbs that work on any instrument, including ones added in future Xcode versions,f with zero per-instrument code:
 - `query`/`find`/`get_row`: filtered/sorted rows, richer predicates (regex, contains, ranges), and full single-row detail including resolved backtraces
@@ -248,6 +241,12 @@ For implementation-level detail beyond that, the annotated internals live in [`a
 1. `cd xctrace-query-mcp-server`
 1. Start a new `claude` (or your chosen AI) session
 1. Ask it to `Read aidocs/*`, then ask your question
+
+### Getting more out of your AI — CLAUDE.md lines
+The server's built-in instructions steer the AI's behavior, but an AI weighs *your* standing instructions (your project's `CLAUDE.md`) more heavily than any tool's suggestions — that hierarchy is a deliberate prompt-injection defense, and you can use it. Lines worth adding to your project's `CLAUDE.md` if you want these behaviors reliably:
+
+- `During trace investigations, narrate every tool call — what you're checking, why, and what the result told you — before moving on. Verbose is correct here.` (Technical debugging needs the A→G reasoning chain visible; default AI training leans terse.)
+- `When a trace is closed, always show me the disk-usage manifest and offer cleanup.`
 
 ### Doing your own exploring
 The MCP server responds to tool calls wherever they come from, so you could call it yourself or have the AI call a specific tool and return the results to you without analysis. Ask it to 'call list_instruments on the open trace,' which maps to 'list all the schemas in the current trace'. You can, if you want, ask it either via direct API calls or by explaining what you want and see the raw results without analysis. The AI is infinitely patient and will help as much or as little as you want. Ask it to explain anything you don't understand, from a column's meaning to an individual row's data. 
