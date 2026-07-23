@@ -209,6 +209,42 @@ export async function buildTraceManifest(cap: number = DEFAULT_CAP): Promise<Tra
   };
 }
 
+/**
+ * One-line disk status for ORIENTATION-time responses (open_trace /
+ * stop_recording) — count, total size, free space only; none of the
+ * expensive per-entry work (no plutil description reads, no db peeks).
+ * Field evidence behind the placement (PMT:mossy-aspen): the close-time
+ * nudge was dropped by a goal-locked analyst mid-writeup in a live cold
+ * test, while orientation-phase in-band content (sweepNote/recommended) has
+ * a perfect two-run compliance record — seed the cleanup offer where the
+ * attention actually is, let close_trace's full manifest be the data it
+ * draws on. Returns null on any failure — this is enrichment, never worth
+ * failing a recording/open over.
+ */
+export async function diskStatusNote(): Promise<string | null> {
+  try {
+    const { traces } = await allTraces();
+    if (traces.length === 0) return null;
+    const sizes = await Promise.all(traces.map((t) => dirSize(t.path)));
+    const totalBytes = sizes.reduce((a, b) => a + b, 0);
+    let free = "";
+    try {
+      const config = await getConfig();
+      const fsStat = await statfs(config.recordingsDir ?? defaultRecordingsDir());
+      free = `, ${formatBytes(fsStat.bavail * fsStat.bsize)} free`;
+    } catch {
+      // omit free space rather than fail
+    }
+    return (
+      `Disk: ${traces.length} trace${traces.length === 1 ? "" : "s"} on disk (${formatBytes(totalBytes)}${free}). ` +
+      `When the investigation wraps up, offer the user a cleanup pass — close_trace returns the full ` +
+      `oldest-first manifest to choose deletions from.`
+    );
+  } catch {
+    return null;
+  }
+}
+
 export interface DeleteTraceResult {
   path: string;
   deleted: boolean;

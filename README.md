@@ -14,24 +14,24 @@ AI was used extensively in writing this app. There is no chance I would have wri
 This tool was built using Xcode 27 beta versions, as I needed it to work with the Foundation Model instrument. Once the final is out, I'll do a run-through of the traces to see if anything changed. I have not tested it with Xcode 26 and so don't know if the trace format for older Instruments has changed.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
 
 ## Example conversation
-**User:** I want to look for SwiftUI re-layout issues in the sidebar of MyApp,
+**User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
 which is running from this Xcode instance.
 
-**AI:** I'll start by confirming the running MyApp process, then record with SwiftUI instruments focused on layout.
+**AI:** I'll start by confirming the running PromptManager process, then record with SwiftUI instruments focused on layout.
 
 >[Tool Call : List Devices]
 
-**AI:** Good, targeting the Mac. Let me check what processes are running to confirm MyApp is live before attaching.
+**AI:** Good, targeting the Mac. Let me check what processes are running to confirm PromptManager is live before attaching.
 
 >[Tool Call : List Processes]
 
-**AI:** MyApp is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus MyApp's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
+**AI:** PromptManager is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus PromptManager's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
 
 >[Tool Call : Start Recording]
 
 **AI:** Recording is live. Please navigate the sidebar now — scroll, switch projects/features, expand items — for about 25 seconds to capture representative layout activity. I'll stop it when you're ready, or it auto-stops at 30s.
 
-> [User drives App]
+> [User drives app reproducing the issue]
 
 **User:** Stop
 
@@ -149,23 +149,6 @@ SidebarRow(
     ...
 )
 ```
-
-#### Finding 4 — GeometryReader in DropTargetModifier (Medium impact)
-
-SidebarView.swift -> lines 542–547:
-``` swift
-.background(GeometryReader { geo in
-    Color.clear.preference(key: HeightPreferenceKey.self, value: geo.size.height)
-})
-.onPreferenceChange(HeightPreferenceKey.self) { viewHeight = $0 }
-```
-
-This GeometryReader + PreferenceKey combo forces a **double layout pass** on every row — every row reports its height, SwiftUI runs a second layout to apply it. This pattern ran **35,210 times for _PaddingLayout (cached) alone**, contributing heavily to the 870k layout events.
-
-The height is used only to decide if a drop lands above/below the row midpoint. But rows are fixed at 28pt. Fix: Delete the GeometryReader/PreferenceKey entirely and use:
-``` swift
-@State private var viewHeight: CGFloat = 28  // fixed — all sidebar rows are 28pt
-```
 ---
 
 | Fix | Effort | Expected benefit |
@@ -173,12 +156,29 @@ The height is used only to decide if a drop lands above/below the row midpoint. 
 | Delete 2 unused `@Query` lines | 1 min | Eliminate most `SidebarView.body` re-runs triggered by MCP writes |
 | `selection` binding → value+closure | 15 min | Collapse 1,100+ `SidebarRow.body` calls per 30s to ~80 |
 | `expandedIDs` binding → closure | 10 min | Same mechanism, removes the expand/collapse churn |
-| `GeometryReader` → fixed 28pt | 5 min | Eliminate double layout passes on every row |
 
 Finding 1 is a one-liner and probably the biggest bang — want me to apply any or all of these?
 
 ## Getting started
 After you have the server installed and available to your AI, I find it helpful to ask your AI `can you see the xctrace-query server`. If I don't do this in a new conversation, the AI seems to get confused when asked to use an MCP server straight away. Almost like even though the MCP server's instructions and tool descriptions are in its context, you still need to prompt it to read them. 
+
+### Getting more out of your AI — CLAUDE.md lines
+
+The server's built-in instructions steer the AI's behavior, but an AI weighs *your* standing instructions (your project's `CLAUDE.md`) more heavily than any tool's suggestions — that hierarchy is a deliberate prompt-injection defense, and you can use it. Lines worth adding to your project's `CLAUDE.md` if you want these behaviors reliably:
+
+- `During trace investigations, narrate every tool call — what you're checking, why, and what the result told you — before moving on. Verbose is correct here.` (Technical debugging needs the A→G reasoning chain visible; default AI training leans terse.)
+- `When a trace is closed, always show me the disk-usage manifest and offer cleanup.`
+
+### Accessibility
+
+The server's instructions already push universal-design habits (conclusions before evidence, a takeaway sentence before every table, no hex-address recitation, duration announcements before slow operations). Two ways to go further if you use a screen reader:
+
+- Just say so — "I use VoiceOver" in any conversation switches the AI to a defined accessible-output mode (prose summaries instead of tables, verbal call-tree chains, spoken-relative timestamps).
+- Make it permanent — save [`a11y-instructions.md`](https://github.com/sforteln/xctrace-query-mcp-server/blob/main/a11y-instructions.md) next to your project's `CLAUDE.md` and add the line `@a11y-instructions.md` to it. Importing the file is the declaration; every session inherits the rules with your own standing authority behind them.
+
+```bash
+curl -O https://raw.githubusercontent.com/sforteln/xctrace-query-mcp-server/main/a11y-instructions.md
+```
 
 ## Requirements
 - **Node.js ≥ 22**

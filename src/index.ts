@@ -29,7 +29,7 @@ import { registry } from "./lenses/index.js";
 import type { Lens } from "./lenses/index.js";
 import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { parsePsOutput } from "./core/listProcesses.js";
-import { buildTraceManifest, deleteTraces } from "./core/traceManifest.js";
+import { buildTraceManifest, deleteTraces, diskStatusNote } from "./core/traceManifest.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
@@ -238,6 +238,27 @@ const SERVER_INSTRUCTIONS =
   "interpretation to a summary at the end, or to a file written alongside the conversation — the " +
   "developer needs it BETWEEN tool calls, while there's still a chance to redirect you, not after " +
   "you've already moved on.\n\n" +
+  "FORMAT FOR EARS AS WELL AS EYES. Responses may be consumed through a screen reader, where text " +
+  "is heard linearly, once, and cannot be skimmed. Habits that cost sighted readers nothing and make " +
+  "audio usable: lead every table with one sentence saying what it shows and which row matters, so " +
+  "the table itself is skippable; put each message's conclusion before its evidence; never recite " +
+  "hex addresses, UUIDs, or other long identifiers unless the user must act on one — say \"the " +
+  "address ending 8000\" or omit it (a single pointer is ~14 spoken words read digit-by-digit); " +
+  "introduce a long schema name once, then use a short natural alias; state the expected duration " +
+  "before a slow call (a progress spinner is invisible in audio); and never let meaning live only in " +
+  "visual structure (ASCII timelines, indentation trees, bar glyphs) — state the same fact in words " +
+  "alongside. If the user says they use a screen reader (VoiceOver etc.) or asks for accessible " +
+  "output, switch to this mode for the rest of the session — specific to the outputs these tools " +
+  "produce: aggregate/find results → prose the top 2-3 entries with their numbers, then a one-line " +
+  "rollup (\"14 more groups, from 8ms down\"), never the full table; call_tree → state chains in " +
+  "words (\"A calls B calls C, and B holds 80% of the time\"), never indentation art; backtraces → " +
+  "\"FunctionName in BinaryName\" lines, top ~5 app frames with \"N system frames omitted\", " +
+  "addresses only on explicit request; timestamps → spoken-relative form (\"4.7 seconds in\"), never " +
+  "raw \"00:04.670.123\" strings; big numbers → round in prose (\"about 870 thousand events\"), " +
+  "exact figures on request; when a list is needed, number it and cap at ~5 — numbers double as " +
+  "reference handles (\"get row 3\", \"delete 1 and 4\"); drop emoji-as-markers and minimize inline " +
+  "markdown emphasis — some surfaces read the raw asterisks aloud, so carry emphasis in word choice " +
+  "(\"critically, ...\") rather than bold.\n\n" +
   "Don't stop at one schema in isolation — many real findings only show up by JOINING schemas. " +
   "If a question is exploratory (\"what actually happened, in order, across subsystems, around " +
   "this event\"), use timeline() to merge 2+ schemas into one time-ordered stream before forming a " +
@@ -348,11 +369,13 @@ export function createServer(): McpServer {
         const alternatives: NextAction[] = sweep.recommended
           ? [...sweep.alternatives, ...(quickStartAction ? [quickStartAction] : []), ...actionsAfterOpen(result.sessionId)]
           : actionsAfterOpen(result.sessionId);
+        const diskNote = await diskStatusNote();
         const payload = {
           ...result,
           ...(versionWarning && { versionWarning }),
           schemaInventory: sweep.inventory,
           ...(sweep.sweepNote ? { sweepNote: sweep.sweepNote } : {}),
+          ...(diskNote ? { diskNote } : {}),
         };
         const response = envelope(payload, withRecommended(recommended, alternatives));
         return text(toMcpText(response));
@@ -1832,6 +1855,7 @@ export function createServer(): McpServer {
             sweep = null;
           }
         }
+        const diskNote = await diskStatusNote();
         return text(
           JSON.stringify(
             {
@@ -1844,6 +1868,7 @@ export function createServer(): McpServer {
                     ...(sweep.recommended ? { recommended: sweep.recommended } : {}),
                   }
                 : {}),
+              ...(diskNote ? { diskNote } : {}),
               nextAction: sessionId ? "list_instruments" : "open_trace",
               nextArgs: sessionId ? { sessionId } : { path: result.tracePath },
             },
