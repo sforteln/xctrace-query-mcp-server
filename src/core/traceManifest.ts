@@ -62,7 +62,7 @@ export interface TraceManifest {
  * return-and-reduce form was verified consistent and correct (matching `du`
  * exactly) across repeated runs against the same bundle.
  */
-async function dirSize(path: string): Promise<number> {
+export async function dirSize(path: string): Promise<number> {
   let names: string[];
   try {
     names = await readdir(path);

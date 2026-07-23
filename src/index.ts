@@ -30,6 +30,8 @@ import type { Lens } from "./lenses/index.js";
 import { safeTool, safeToolWithLog, text } from "./core/toolUtils.js";
 import { parsePsOutput } from "./core/listProcesses.js";
 import { buildTraceManifest, deleteTraces, diskStatusNote } from "./core/traceManifest.js";
+import { diagnoseMalformedTrace } from "./core/malformedTraceDiagnosis.js";
+import { XctraceError } from "./engine/xctrace.js";
 import { buildVersionWarning } from "./engine/versionRules.js";
 import fmLens from "./lenses/foundationModels/index.js";
 import leaksLens from "./lenses/leaks/index.js";
@@ -365,6 +367,10 @@ export function createServer(): McpServer {
         "when nothing fired — a clean sweep is direction, not silence). " +
         "Always call this first. Call close_trace on this sessionId once you're done analyzing — " +
         "sessions are never evicted automatically, so nothing else will free it. " +
+        "If the trace is malformed/unopenable, the error response includes `malformedTraceDiagnosis` — read " +
+        "it before saying anything. Several genuinely different causes can produce this (a crashed/suspended " +
+        "target, low disk, OS memory pressure, a known instrument-combo bug); do NOT guess which one, and do " +
+        "NOT silently start a fresh recording — tell the user what's actually known and ASK how to proceed. " +
         "⚠️ Not for traces already open — reuse the returned sessionId across all subsequent calls.",
       inputSchema: {
         path: z.string().describe("Absolute or ~ path to the .trace bundle."),
@@ -372,7 +378,22 @@ export function createServer(): McpServer {
     },
     async ({ path }) =>
       safeToolWithLog("open_trace", { path }, async () => {
-        const result = await openTrace(path);
+        let result;
+        try {
+          result = await openTrace(path);
+        } catch (err) {
+          // A malformed/unopenable trace has several genuinely different
+          // possible causes not distinguishable from the error message
+          // alone (see malformedTraceDiagnosis.ts) — no attach-target
+          // liveness check here (a bare open_trace call has no associated
+          // in-memory recording to draw one from), but the disk-space
+          // check and the "don't guess, ask the user" framing still apply.
+          if (err instanceof XctraceError) {
+            const malformedTraceDiagnosis = await diagnoseMalformedTrace(undefined);
+            return text(JSON.stringify({ ...err.toStructured(), malformedTraceDiagnosis }, null, 2));
+          }
+          throw err;
+        }
         const versionWarning = buildVersionWarning(result.xcodeVersion);
         const lastRunNum = Math.max(...result.runs.map((r) => r.number));
         const lastRunSchemas = result.runs.find((r) => r.number === lastRunNum)?.schemas ?? [];
@@ -1787,6 +1808,13 @@ export function createServer(): McpServer {
         "which template or instruments you choose. See `signpostSubsystems`'s own description.\n\n" +
         'Use list_instruments after opening to see which schemas are available, ' +
         "then describe_schema on any schema to learn its columns before querying. " +
+        "If `otherActiveRecordings` is present in the response, one or more OTHER recordings are still " +
+        "active/finalizing — this is a single-user tool with no legitimate workflow for concurrent " +
+        "recordings, so this is essentially always a forgotten cleanup (a previous session that moved on " +
+        "without calling stop_recording), not intentional. Tell the user plainly what's still running " +
+        "(recordingId, template, how long) and let them decide whether to stop it first — this NEVER " +
+        "auto-stops anything and never blocks this new recording from starting; an advanced user may have " +
+        "a real reason and can ignore the warning. " +
         "⚠️ Not for opening an existing .trace file — use open_trace instead.",
       inputSchema: INTERACTIVE_RECORD_INPUTS,
     },
@@ -1855,6 +1883,21 @@ export function createServer(): McpServer {
         "exitCode, and finalizeOutput — the tail of xctrace's console output — when it printed any, " +
         "so you can diagnose the exit rather than reasoning from the warning string alone); check it " +
         "before trusting an empty schema as \"ran and found nothing\" rather than \"write interrupted\". " +
+        "If the target process crashed mid-recording, xctrace can get stuck past SIGINT with nothing left " +
+        "to gracefully finalize toward — this call never hangs indefinitely waiting for that: if xctrace " +
+        "hasn't exited within its wait window, it returns { stillFinalizing: true, traceBundleGrowing, " +
+        "waitedMs } instead of blocking further (NEVER kills the process itself — only reports). Tell the " +
+        "user what traceBundleGrowing means: true = real progress, probably just keep waiting; false/null = " +
+        "no growth observed, consistent with (not proof of) a stuck process — their call whether to keep " +
+        "polling (call stop_recording again — it resumes waiting, no duplicate SIGINT sent) or investigate/ " +
+        "kill it themselves. " +
+        "If the trace it produced turns out malformed/unopenable, the response includes " +
+        "`malformedTraceDiagnosis` — read it before saying anything. A malformed trace has several genuinely " +
+        "different causes (crashed or suspended target, low disk, OS memory pressure, a known instrument-" +
+        "combo bug) that the error message alone can't distinguish; this field surfaces whatever's cheaply " +
+        "checkable (attach-target liveness, free disk space) and explicitly means: do NOT guess a specific " +
+        "cause, do NOT silently start a fresh recording — tell the user what's actually known and ASK how " +
+        "they want to proceed. " +
         "Also eager-ingests a small set of bounded schemas and sweeps every detector over them, so the " +
         "response can include `recommended` (a fired finding, if any), `schemaInventory` (one line per " +
         "present schema), and `sweepNote` (what was checked, even when the sweep came back clean) right " +
@@ -1869,8 +1912,23 @@ export function createServer(): McpServer {
     async ({ recordingId }) =>
       safeToolWithLog("stop_recording", { recordingId }, async () => {
         const result = await stopSession(recordingId);
+        if ("stillFinalizing" in result) {
+          // No valid trace yet — don't attempt to open/sweep one. Report
+          // exactly what's known and let the caller decide the next move.
+          return text(JSON.stringify(result, null, 2));
+        }
         const opened = await tryOpenTrace(result.tracePath);
         const sessionId = "session" in opened ? opened.session.sessionId : undefined;
+        // A malformed/unopenable trace has several genuinely different
+        // possible causes (target crashed/suspended, low disk, OS memory
+        // pressure, a known instrument-combo bug) that aren't distinguishable
+        // from the error message alone. Field evidence: without this, the AI
+        // fabricated a plausible-but-wrong cause and silently started a
+        // fresh recording rather than checking what was actually knowable
+        // and asking the user. Never fires on a successful open.
+        const malformedTraceDiagnosis = !sessionId
+          ? await diagnoseMalformedTrace(result.attachTarget)
+          : undefined;
         // Run the eager bounded-schema sweep right here — this
         // is the exact moment (nothing ingested yet) the old detector sweep
         // always returned empty for. Best-effort: the sweep itself must never
@@ -1897,6 +1955,7 @@ export function createServer(): McpServer {
                   }
                 : {}),
               ...(diskNote ? { diskNote } : {}),
+              ...(malformedTraceDiagnosis ? { malformedTraceDiagnosis } : {}),
               sourceNote: SOURCE_NOTE,
               nextAction: sessionId ? "list_instruments" : "open_trace",
               nextArgs: sessionId ? { sessionId } : { path: result.tracePath },

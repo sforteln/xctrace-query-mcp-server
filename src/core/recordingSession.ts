@@ -6,11 +6,15 @@
  * process and lets the caller control when to finalize:
  *
  *   startSession() → spawn xctrace, return recordingId immediately
- *   stopSession(id) → send SIGINT, wait for graceful exit, return .trace path
+ *   stopSession(id) → send SIGINT, wait (bounded) for graceful exit, return
+ *                      .trace path — or, if xctrace hasn't exited within the
+ *                      wait window, a StillFinalizingResult report instead
+ *                      (see waitForGracefulExit's own doc comment for why
+ *                      this reports rather than escalating to a signal)
  *
  * SIGINT (not SIGKILL) triggers xctrace's graceful finalization: it flushes
  * buffered data and writes a valid .trace bundle before exiting. SIGKILL would
- * leave the bundle incomplete.
+ * leave the bundle incomplete — this module never sends it itself.
  *
  * Active recordings are stored in an in-memory map for the process lifetime.
  * The map is intentionally not persisted — a server restart loses in-progress
@@ -18,6 +22,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { dirSize } from "./traceManifest.js";
+import { POLL_INTERVAL_MS, WAIT_REPORT_TIMEOUT_MS } from "./stopStallConfig.js";
+import { logFinalizeWaitSample } from "./finalizeWaitLog.js";
 import { spawnRecord } from "../engine/record.js";
 import { detectXcodeVersion } from "../engine/xcodeVersion.js";
 import { resolveAttachTarget } from "./resolveAttachTarget.js";
@@ -55,6 +62,12 @@ interface ActiveRecording {
   instrumentsUsed: string;
   status: RecordingStatus;
   startedAt: number;
+  /** The resolved `attach` value (PID or, on host Mac only, a name) this
+   *  recording was started with — undefined for a launch-mode recording.
+   *  Carried through to StopSessionResult so a malformed-trace failure can
+   *  check whether the target is still alive (targetLiveness.ts) instead of
+   *  leaving that as a blind spot for the caller to guess at. */
+  attach?: string;
   process: ChildProcess | null;
   /** Resolves once the process exits (normally, via SIGINT, or on error). */
   done: Promise<void>;
@@ -86,6 +99,131 @@ interface ActiveRecording {
 }
 
 const activeRecordings = new Map<string, ActiveRecording>();
+
+export interface ActiveRecordingSummary {
+  recordingId: string;
+  template: string;
+  status: RecordingStatus;
+  elapsedMs: number;
+}
+
+/**
+ * Every OTHER currently active/finalizing recording — used to warn (never
+ * block, never auto-stop) before starting a new one. This is a single-user
+ * tool: unlike a multi-tenant service, there's no legitimate workflow where
+ * concurrent recordings are the norm, so more than one active at a time is
+ * essentially always a forgotten cleanup rather than intentional parallel
+ * use (field evidence: two real File Activity recordings found still
+ * running, un-reparented children of this same server process, hours after
+ * whatever session started them had moved on). Still only ever informs —
+ * an advanced user may have a real reason to run more than one, and this
+ * must never auto-stop anything or block start_recording on their behalf.
+ */
+export function listActiveRecordings(): ActiveRecordingSummary[] {
+  const now = Date.now();
+  const summaries: ActiveRecordingSummary[] = [];
+  for (const rec of activeRecordings.values()) {
+    if (rec.status === "recording" || rec.status === "finalizing") {
+      summaries.push({
+        recordingId: rec.recordingId,
+        template: rec.template,
+        status: rec.status,
+        elapsedMs: now - rec.startedAt,
+      });
+    }
+  }
+  return summaries;
+}
+
+/**
+ * Whether stopSession should ever send SIGKILL on a slow/stuck finalize was
+ * considered and deliberately rejected (PMT-review, 2026-07-23): we have
+ * zero live data on how long a legitimately slow finalize takes for a large
+ * or kernel-heavy trace (this server's own README documents the SEPARATE,
+ * later xctrace EXPORT step taking up to 20 minutes on a large trace — no
+ * comparable number exists for finalize itself), so any threshold here
+ * would be a guess, and the action it would gate — killing a real process —
+ * is destructive and hard to reverse. Simon's call: report, don't act.
+ *
+ * So this wait NEVER signals the process. It just stops BLOCKING the tool
+ * call after WAIT_REPORT_TIMEOUT_MS and hands back a status — including
+ * whether the trace bundle has grown at all during the wait, sampled via
+ * dirSize (traceManifest.ts) purely as an informational signal — so the
+ * caller (human or AI) can decide whether to keep waiting or intervene
+ * manually. Calling stop_recording again afterward just resumes waiting
+ * (rec.status is already "finalizing", so no second SIGINT is sent); the
+ * underlying process is completely untouched by a report-only return.
+ *
+ * Each poll is also appended to a diagnostic log (finalizeWaitLog.ts) —
+ * this is deliberately being exercised right now against real recordings
+ * (including a deliberate target-process-kill repro) specifically so the
+ * eventual policy question (should there be an auto-kill, and at what
+ * threshold) gets decided from real curves instead of another guess.
+ */
+
+/** Promise that resolves `true` after `ms`, for racing against rec.done
+ *  without pulling in a timers/promises dependency for one call site. */
+function delay(ms: number): Promise<false> {
+  return new Promise((resolve) => setTimeout(() => resolve(false), ms));
+}
+
+/** What waitForGracefulExit reports when xctrace hasn't exited within the
+ *  wait window — never an instruction to act, purely descriptive. */
+export interface StillFinalizingReport {
+  exited: false;
+  waitedMs: number;
+  /** Trace bundle size in bytes at the start/end of this wait, or null if
+   *  dirSize couldn't read it (e.g. bundle not created yet). */
+  startSize: number | null;
+  endSize: number | null;
+  /** true = grew, false = did not grow, null = couldn't be determined
+   *  (either size read failed). Never a stuck/not-stuck verdict — the
+   *  caller decides what growth-or-not means for what to do next. */
+  grew: boolean | null;
+}
+
+/**
+ * Wait for `rec.done` to resolve, up to WAIT_REPORT_TIMEOUT_MS. Returns
+ * `{ exited: true }` if xctrace exited on its own in that window, or a
+ * StillFinalizingReport otherwise — see this module's doc comment above for
+ * why this never escalates to a signal on its own.
+ */
+async function waitForGracefulExit(
+  rec: ActiveRecording,
+  recordingId: string
+): Promise<{ exited: true } | StillFinalizingReport> {
+  const startSize = await dirSize(rec.tracePath).catch(() => null);
+  const waitStartedAt = Date.now();
+  let lastPollAt = waitStartedAt;
+  let lastSize = startSize;
+
+  while (Date.now() - waitStartedAt < WAIT_REPORT_TIMEOUT_MS) {
+    const remaining = WAIT_REPORT_TIMEOUT_MS - (Date.now() - waitStartedAt);
+    const exited = await Promise.race([
+      rec.done.then(() => true as const),
+      delay(Math.min(POLL_INTERVAL_MS, remaining)),
+    ]);
+    if (exited) return { exited: true };
+
+    const size = await dirSize(rec.tracePath).catch(() => lastSize);
+    lastPollAt = Date.now();
+    logFinalizeWaitSample({
+      recordingId,
+      tracePath: rec.tracePath,
+      elapsedMs: lastPollAt - waitStartedAt,
+      size,
+    });
+    lastSize = size;
+  }
+
+  return {
+    exited: false,
+    waitedMs: Date.now() - waitStartedAt,
+    startSize,
+    endSize: lastSize,
+    grew: startSize !== null && lastSize !== null ? lastSize > startSize : null,
+  };
+}
 
 // ─── Start ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +285,16 @@ export interface StartSessionResult {
   tracePath: string;
   template: string;
   instrumentsUsed: string;
+  /**
+   * Every OTHER recording still active/finalizing at the moment this one
+   * started — present only when non-empty. This is a single-user tool: more
+   * than one recording running at once is essentially always a forgotten
+   * cleanup, not intentional parallel use, so this is worth surfacing loudly
+   * — but it only ever informs. Never auto-stops anything and never blocks
+   * this new recording from starting; an advanced user may have a real
+   * reason and can act on the warning or ignore it.
+   */
+  otherActiveRecordings?: ActiveRecordingSummary[];
   privacyNotice?: string;
   /**
    * Every piece of curated guidance about this recording, joined together:
@@ -467,6 +615,7 @@ export async function startSession(
     instrumentsUsed: resolvedLabel,
     status: "recording",
     startedAt: Date.now(),
+    attach: resolvedAttach,
     process: handle.process,
     done: null!,
     exitCode: null,
@@ -527,6 +676,9 @@ export async function startSession(
     resolveExit();
   });
 
+  // Snapshot BEFORE adding the new recording, so it never lists itself.
+  const otherActiveRecordings = listActiveRecordings();
+
   activeRecordings.set(recordingId, rec);
 
   return {
@@ -541,6 +693,7 @@ export async function startSession(
     ...(deviceOnlyWarning ? { deviceOnlyWarning } : {}),
     ...(hostArchWarning ? { hostArchWarning } : {}),
     ...(knownBrokenWarning ? { knownBrokenWarning } : {}),
+    ...(otherActiveRecordings.length > 0 ? { otherActiveRecordings } : {}),
   };
 }
 
@@ -552,6 +705,11 @@ export interface StopSessionResult {
   tracePath: string;
   template: string;
   instrumentsUsed: string;
+  /** The attach target this recording was started with (PID or name),
+   *  carried through so a subsequent malformed-trace failure can check
+   *  whether it's still alive (targetLiveness.ts) — undefined for
+   *  launch-mode recordings. */
+  attachTarget?: string;
   finalizeWarning?: string;
   /**
    * Present only when finalize exited non-zero (the finalizeWarning case) —
@@ -571,15 +729,37 @@ export interface StopSessionResult {
   finalizeOutput?: string;
 }
 
+/** stopSession's return when xctrace hasn't exited within the wait window —
+ *  see waitForGracefulExit's doc comment for why this reports rather than
+ *  acts. The recording is untouched: rec.status stays "finalizing", and
+ *  calling stopSession again with the same recordingId just resumes
+ *  waiting (no second SIGINT is sent, since status is no longer
+ *  "recording"). */
+export interface StillFinalizingResult {
+  recordingId: string;
+  status: "finalizing";
+  stillFinalizing: true;
+  tracePath: string;
+  waitedMs: number;
+  /** true = the trace bundle grew during this wait (real progress, likely
+   *  worth just waiting longer); false = no growth observed (consistent
+   *  with, but not proof of, a stuck process); null = couldn't tell. */
+  traceBundleGrowing: boolean | null;
+}
+
 /**
  * Finalize a recording by sending SIGINT, then wait for xctrace to exit.
  * If the recording already finished (time-limit expired), returns immediately.
+ * If xctrace hasn't exited within the wait window, returns a
+ * StillFinalizingResult instead of continuing to block — see
+ * waitForGracefulExit's doc comment. Never sends anything beyond the
+ * initial SIGINT; never kills the process itself.
  *
  * @throws {XctraceError} if the recordingId is unknown or the recording failed.
  */
 export async function stopSession(
   recordingId: string
-): Promise<StopSessionResult> {
+): Promise<StopSessionResult | StillFinalizingResult> {
   const rec = activeRecordings.get(recordingId);
   if (!rec) {
     throw new XctraceError(
@@ -598,8 +778,21 @@ export async function stopSession(
   }
 
   // Wait for process exit — covers the case where it was already finalizing,
-  // already done (time-limited auto-stop), or we just sent SIGINT.
-  await rec.done;
+  // already done (time-limited auto-stop), or we just sent SIGINT. Bounded,
+  // but the bound only stops US from blocking — see waitForGracefulExit's
+  // doc comment for why this never escalates to a signal on its own.
+  const wait = await waitForGracefulExit(rec, recordingId);
+
+  if (!wait.exited) {
+    return {
+      recordingId,
+      status: "finalizing",
+      stillFinalizing: true,
+      tracePath: rec.tracePath,
+      waitedMs: wait.waitedMs,
+      traceBundleGrowing: wait.grew,
+    };
+  }
 
   if (rec.status === "failed") {
     // stderr is usually where xctrace explains itself, but a launch-mode
