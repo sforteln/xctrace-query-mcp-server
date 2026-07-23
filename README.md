@@ -249,6 +249,9 @@ For implementation-level detail beyond that, the annotated internals live in [`a
 1. Start a new `claude` (or your chosen AI) session
 1. Ask it to `Read aidocs/*`, then ask your question
 
+### Doing your own exploring
+The MCP server responds to tool calls wherever they come from, so you could call it yourself or have the AI call a specific tool and return the results to you without analysis. Ask it to 'call list_instruments on the open trace,' which maps to 'list all the schemas in the current trace'. You can, if you want, ask it either via direct API calls or by explaining what you want and see the raw results without analysis. The AI is infinitely patient and will help as much or as little as you want. Ask it to explain anything you don't understand, from a column's meaning to an individual row's data. 
+
 ## Opening an existing trace
 If you have an existing trace or want to create one yourself, you can also ask to open and analyze it.
 
