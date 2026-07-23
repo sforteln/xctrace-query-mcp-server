@@ -388,6 +388,21 @@ deliberately fixture-bounded scope to what's actually in live use:
    (74 fixture + 17), not the fixture 74.
 6. **Not verifiable from dbs**: kperf-bt multi-fragment loss (fragments are
    dropped at ingest; needs a raw-XML export check) — still open.
+7. **Schema-name long tail (TOC sweep over 28 of 29 on-disk traces, 30s
+   per-trace timeout; the 2.2GB 2026-07-12 animation-hitches trace's TOC
+   export alone exceeds 30s and was skipped): 99 distinct schemas are in live
+   use, and 57 of them — the MAJORITY — have neither a committed fixture nor
+   a roleHints pin.** Headliners by instance count: kdebug (413), tick (65),
+   kdebug-strings (52), os-signpost-arg (32), dyld-library-load (28),
+   life-cycle-period (23), and time-profile itself (23 — Time Profiler's
+   primary schema classifies purely through type heuristics, no pin).
+   Also in the tail: hitches-updates (11 traces — the exact discoverability
+   gap the 2026-07-22 field retro hit) and cpu-narrative (13 — a
+   narrative-bearing schema by name, prime landmark material). This is the
+   strongest quantitative argument yet for the project's core bet: per-schema
+   curation can never cover the tail (it's most of the population), so
+   type-derived generic behavior (roles, sentinel handling, gotchas,
+   landmarks) is what carries the majority of real schemas.
 
 ## Still open / blocked
 

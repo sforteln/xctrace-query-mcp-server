@@ -58,6 +58,7 @@ Lenses are iterated in the order they appear in the `LENSES` array in `src/index
 1. Create `src/lenses/<name>/index.ts` — copy `src/lenses/hangs/index.ts` as a template for the `nextActions`/`quickStart` shape (including its cross-schema correlation hint pattern), and `src/lenses/example.ts` for the registerTools pattern (base verb vs. direct scoped SQL, side by side)
 2. Add it to the `LENSES` array in `src/index.ts` — mind registration order if your schemas overlap with an existing lens (see below)
 3. Run `npm test` — the drift guard checks tool description format if you added any tools, and `lensActionsDrift.test.ts` validates every `nextActions`/`quickStart` `{tool, args}` payload against the LIVE tool registry's own zod schemas — a stale arg shape fails loudly instead of silently
+4. **Every schema/column your lens names is a curated claim — it must have a committed fixture exhibiting the claimed fact, landed in the same change** (see howFixturesWork.md's "Fixtures follow claims" rule). A lens hint asserting "group by X" for a schema with no fixture will silently rot when Apple changes the export, with no test to catch it.
 
 ## Discovery cost — what's cheap to call from a lens, what isn't
 

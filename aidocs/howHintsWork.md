@@ -32,6 +32,11 @@ Prefer this whenever the fact is structurally detectable. It's the default, not 
 
 The deeper reason this is the right tradeoff: **when a consuming AI hits an unfamiliar or surprising trace shape, the right move is to research it on the real trace in front of it** (the same way every gotcha documented in this codebase was actually discovered — not read from a pre-existing note, found live by inspecting real output). This doc's job, and `describe_schema`'s job, is to make that research cheap — good column-role introspection — not to try to make research unnecessary via an ever-larger pre-encoded database.
 
+**Curated claims require fixtures.** Any curated entry that names a specific
+schema or column must land with a committed fixture exhibiting the claimed
+fact, drift-guarded — see howFixturesWork.md's "Fixtures follow claims" rule.
+Auto-derived hints need none (they re-derive from the live trace).
+
 ## Two shapes: table-wide vs. per-row
 
 Most lens `nextActions` functions branch on whether `get_row` supplied a `row` (see `Lens.nextActions`'s signature in `src/lenses/types.ts` — `row?: Record<string, CellDetail | null>` is the last param):
