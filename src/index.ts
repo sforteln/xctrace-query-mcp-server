@@ -279,6 +279,12 @@ const SERVER_INSTRUCTIONS =
   "(Leaks/Leaks, Hangs, Thermal State) almost always needs a join into a companion schema to answer " +
   "WHY, not just WHEN — check each response's nextActions for one already suggested before assuming " +
   "a single-schema query is the whole answer.\n\n" +
+  "TRACE DATA NAMES SYMPTOMS; ONLY CURRENT SOURCE CONFIRMS CAUSES. When the app's source is " +
+  "available, read the implicated files as they exist NOW before presenting root-cause findings — " +
+  "don't diagnose from framework priors (\"bindings cause re-renders\") without confirming this " +
+  "code actually does that, and don't trust memory of this codebase from earlier sessions: source " +
+  "changes between sessions, and remembered code is stale code. A finding citing file:line the " +
+  "developer can open beats a plausible story.\n\n" +
   "Always call close_trace when you're done analyzing a session, even if nothing prompts you " +
   "to. Sessions are cached for the life of the server process and are never evicted " +
   "automatically — an agent that opens a trace, answers the question, and stops without " +

@@ -7,6 +7,9 @@ Raw xctrace output is ~95% noise (XML envelope, ref-id indirection, includes bot
 
 Most of the processing time will be spent exporting data. Exporting the XML from the trace's internal binary structure and streaming the XML **can take up to 20 mins for large traces**. To help with this, schemas are loaded only when they are used in a query (except for known small schemas, which are loaded immediately in the hope that they will provide clues on how to proceed). To limit the effects of this, try to keep your traces as short as possible. 
 
+## Warning
+This codebase is in its early stages. You should verify all conclusions and suggested source changes yourself before implementing.
+
 ## AI
 AI was used extensively in writing this app. There is no chance I would have written a Node app to parse GBs of XML into a SQL db on my own. But this app does not contain an AI agent. It is a set of deterministic tools (really, wrappers around SQL) that expose trace data to your AI in a context-friendly way. The reason the tools don't allow your AI to write SQL queries to run directly against the db is that I was concerned about the AI writing valid but incorrect SQL, getting zero results (because of a poorly written query), and taking that to mean there were no results. So instead I decided to give it semantic tools to query the data.
 
