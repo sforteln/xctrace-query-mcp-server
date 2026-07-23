@@ -299,6 +299,17 @@ const SERVER_INSTRUCTIONS =
   "delete any?\" Use the response's `summary` line for the real numbers (trace count, total size, " +
   "free space) rather than inventing your own.";
 
+// Orientation-time reinforcement of the read-the-source rule (twin of the
+// SERVER_INSTRUCTIONS paragraph). Attached to open_trace and stop_recording
+// responses — the surfaces with a perfect field-compliance record — because
+// while the behavior executes late (at findings time), it is goal-aligned:
+// reading source makes the analysis better, so a seed at orientation sticks.
+const SOURCE_NOTE =
+  "Trace data names symptoms; only current source confirms causes. When the app's source is " +
+  "available, read the implicated files before presenting root-cause findings — not framework " +
+  "priors, not memory of this codebase from earlier sessions (remembered code is stale code). " +
+  "Findings should cite file:line the developer can open.";
+
 export function createServer(): McpServer {
   const server = new McpServer(
     {
@@ -392,6 +403,7 @@ export function createServer(): McpServer {
           schemaInventory: sweep.inventory,
           ...(sweep.sweepNote ? { sweepNote: sweep.sweepNote } : {}),
           ...(diskNote ? { diskNote } : {}),
+          sourceNote: SOURCE_NOTE,
         };
         const response = envelope(payload, withRecommended(recommended, alternatives));
         return text(toMcpText(response));
@@ -1885,6 +1897,7 @@ export function createServer(): McpServer {
                   }
                 : {}),
               ...(diskNote ? { diskNote } : {}),
+              sourceNote: SOURCE_NOTE,
               nextAction: sessionId ? "list_instruments" : "open_trace",
               nextArgs: sessionId ? { sessionId } : { path: result.tracePath },
             },
