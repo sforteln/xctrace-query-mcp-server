@@ -169,9 +169,9 @@ reach us anyway.
 | SwiftTaskStateTable | `narrative` | "Ran for 5.44 ms on actor Main Actor (0x75550177c0) on thread Main Thread (0x2732bb) (TestApp, pid: 12345) with priority High/User Initiated (25) resuming in 0x229fdddbf _SwiftData_SwiftUI"; "Suspended for 1.28 s"; "Creating for 15.42 µs" (331 rows, 317 distinct) |
 | core-data-fault | `narrative` | "Fault: \"0xa9178bb8c6eca070 <x-coredata://166AEEB7…/Feature/p95>\" took: 525.08 µs" |
 | core-data-relationship-fault | `narrative` | "Relationship fault: \"…/Feature/p95\" with relationship: \"prompts\" took: 301.96 µs" |
-| detected-fs-antipattern | `description` | "PromptManager (34205) failed performing fgetattrlist on ( Unknown Path ) with: Bad file descriptor." (28×); "performed 32 physical writes within 1 second. This can put excessive strain on physical storage media…" |
+| detected-fs-antipattern | `description` | "TestApp (34205) failed performing fgetattrlist on ( Unknown Path ) with: Bad file descriptor." (28×); "performed 32 physical writes within 1 second. This can put excessive strain on physical storage media…" |
 | detected-fs-antipattern | `suggestion` | "Return values indicating an error can often be overlooked. Verify that your software can tolerate and respond well to this error." (28×); "A high rate of write activity often stems from involuntarily flushing to disk, usually in a loop." (13×); "Certain file descriptor properties, such as F_NOCACHE, can cause this to occur. Consider disabling any limitations…" |
-| fs-syscall | `narrative` | "PromptManager (34205) failed on stat64 with path /usr/share/icu/icudt78l/brkitr/word.brk. Error = No such file or directory" |
+| fs-syscall | `narrative` | "TestApp (34205) failed on stat64 with path /usr/share/icu/icudt78l/brkitr/word.brk. Error = No such file or directory" |
 | fs-syscall | `signature` | "stat64()" (all 10 rows) |
 | hang-risks | `message` | (0 rows in fixture — schema declares it) |
 | display-vsyncs-interval | `event-label` | "VSync Request 00:00.481.099" (one per row — timestamp echo, low value) |

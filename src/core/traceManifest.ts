@@ -2,11 +2,10 @@
  * Trace/db disk manifest — surfaced on close_trace so the user sees real
  * numbers (free space + what's accumulating) at a point that's already
  * happening, rather than the server guessing when disk usage is "worth"
- * mentioning. See FTR:ruddy-bluff / PMT:thin-crystal in PromptManager for
- * the full design discussion, including three alternatives (a free-space
- * auto-trigger, a user-configurable size cap, a start_recording threshold)
- * that were deliberately rejected in favor of this simpler always-show-it
- * approach — neither this server nor the AI driving it can ever proactively
+ * mentioning. Three alternatives were considered and deliberately rejected
+ * in favor of this simpler always-show-it approach: a free-space
+ * auto-trigger, a user-configurable size cap, and a start_recording
+ * threshold — neither this server nor the AI driving it can ever proactively
  * contact a user outside an active tool call, so picking the "right"
  * trigger condition was solving the wrong problem.
  */

@@ -7,9 +7,9 @@ that's exactly when a recording is most valuable and most likely to go wrong.
 
 ## Grounding case (PMT:onyx-spark)
 
-PromptManager ran a deliberate hang-induction session (Run Loops + SwiftUI, the pairing
+The test app ran a deliberate hang-induction session (Run Loops + SwiftUI, the pairing
 `PMT:steel-spruce` validated) to capture a severe main-thread hang on purpose. The hang was real
-and measured independently — a burst of 30 rapid `updatePrompt` calls showed median 103ms / max
+and measured independently — a burst of 30 rapid app-level calls showed median 103ms / max
 357ms latency on the embedded MCP path vs. single-digit-ms baseline, the same main-actor-congestion
 mechanism as earlier MCP-stall findings. But the trace itself could not be captured across 3
 attempts, and the reason is itself a real, generalizable finding: **the induced hang was severe

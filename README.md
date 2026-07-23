@@ -17,18 +17,18 @@ AI was used extensively in writing this app. There is no chance I would have wri
 This tool was built using Xcode 27 beta versions, as I needed it to work with the Foundation Model instrument. Once the final is out, I'll do a run-through of the traces to see if anything changed. I have not tested it with Xcode 26 and so don't know if the trace format for older Instruments has changed.  Even for a wrong version, it's likely this tool will still work; you just may not get the full usage of the lens() shortcuts that can help your AI find things faster by using specific SQL queries instead of having to navigate the whole dataset using the base tools.
 
 ## Example conversation
-**User:** I want to look for SwiftUI re-layout issues in the sidebar of PromptManager,
+**User:** I want to look for SwiftUI re-layout issues in the sidebar of MyApp,
 which is running from this Xcode instance.
 
-**AI:** I'll start by confirming the running PromptManager process, then record with SwiftUI instruments focused on layout.
+**AI:** I'll start by confirming the running MyApp process, then record with SwiftUI instruments focused on layout.
 
 >[Tool Call : List Devices]
 
-**AI:** Good, targeting the Mac. Let me check what processes are running to confirm PromptManager is live before attaching.
+**AI:** Good, targeting the Mac. Let me check what processes are running to confirm MyApp is live before attaching.
 
 >[Tool Call : List Processes]
 
-**AI:** PromptManager is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus PromptManager's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
+**AI:** MyApp is running at PID 16617. Starting a 30-second recording using the SwiftUI template (which bundles layout tracing, view body update tracking, Time Profiler, and hang detection) plus MyApp's custom signpost subsystems. While it records, please navigate around the sidebar — scroll, expand/collapse items, switch projects — to drive any layout churn.
 
 >[Tool Call : Start Recording]
 

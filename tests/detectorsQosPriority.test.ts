@@ -54,7 +54,7 @@ describe("qos-classes-mismatch (cheap: single-table label filter)", () => {
       {
         start: cell("start-time", 525_659_958),
         duration: cell("duration", 42),
-        process: cell("string", "PromptManager (48641)"),
+        process: cell("string", "TestApp (48641)"),
         thread: cell("string", "main-tid-1"),
         "requested-qo-s": cell("string", "Unspecified"),
         "effective-qo-s": cell("string", "Background"),
@@ -84,7 +84,7 @@ describe("qos-classes-mismatch (cheap: single-table label filter)", () => {
       {
         start: cell("start-time", 0),
         duration: cell("duration", 1000),
-        process: cell("string", "PromptManager (48641)"),
+        process: cell("string", "TestApp (48641)"),
         thread: cell("string", "worker-tid-2"),
         "requested-qo-s": cell("string", "Unspecified"),
         "effective-qo-s": cell("string", "Background"),
@@ -107,7 +107,7 @@ describe("qos-classes-mismatch (cheap: single-table label filter)", () => {
       {
         start: cell("start-time", 0),
         duration: cell("duration", 1000),
-        process: cell("string", "PromptManager (48641)"),
+        process: cell("string", "TestApp (48641)"),
         thread: cell("string", "main-tid-1"),
         "requested-qo-s": cell("string", "Unspecified"),
         "effective-qo-s": cell("string", "Unspecified"),
@@ -138,7 +138,7 @@ describe("thread-priority-inversion (cheap: single-table cross-column comparison
     return {
       start: cell("start-time", 0),
       duration: cell("duration", durationNs),
-      process: cell("string", "PromptManager (48641)"),
+      process: cell("string", "TestApp (48641)"),
       thread: cell("string", "worker-tid-3"),
       "scheduled-priority": cell("uint64", scheduled),
       "base-priority": cell("uint64", base),

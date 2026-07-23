@@ -16,7 +16,7 @@
  *   IDLE (row 150080, mach_msg2_trap, 41.5µs cpu / 1.92s wait) — the worst
  *   "hitch" (35.997, 83ms), a FALSE ALARM:
  *     mach_msg2_trap → … → __CFRunLoopServiceMachPort → __CFRunLoopRun →
- *     … → _DPSNextEvent → -[NSApplication run] → … → PromptManagerApp
+ *     … → _DPSNextEvent → -[NSApplication run] → … → the app's own @main App struct
  *   The run loop is parked waiting for the next UI event. Benign held-frame.
  *
  *   BLOCKED (row 24232, kevent_id, 411µs cpu / 61.71ms wait) — a REAL

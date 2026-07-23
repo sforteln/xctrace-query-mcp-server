@@ -12,14 +12,14 @@ import { isAppLaunchPath } from "../src/core/recordingSession.js";
 
 describe("isAppLaunchPath", () => {
   it("recognizes the .app bundle directory", () => {
-    expect(isAppLaunchPath("/Applications/PromptManager.app")).toBe(true);
-    expect(isAppLaunchPath("PromptManager.app")).toBe(true);
+    expect(isAppLaunchPath("/Applications/MyApp.app")).toBe(true);
+    expect(isAppLaunchPath("MyApp.app")).toBe(true);
   });
 
   it("recognizes the executable inside the bundle (the debug-build case)", () => {
     expect(
       isAppLaunchPath(
-        "/Users/me/Library/Developer/Xcode/DerivedData/PromptManager-abc/Build/Products/Debug/PromptManager.app/Contents/MacOS/PromptManager"
+        "/Users/me/Library/Developer/Xcode/DerivedData/MyApp-abc/Build/Products/Debug/MyApp.app/Contents/MacOS/MyApp"
       )
     ).toBe(true);
   });

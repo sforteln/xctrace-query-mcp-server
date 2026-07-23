@@ -76,7 +76,7 @@ If a hint's *pattern* could apply to any schema regardless of which lens claims 
 
 ## Verify before curating — don't guess a schema's shape
 
-Never add a curated fact (a column list, a "this schema has no backtrace" claim, a suggested companion instrument) from the name alone or from `--show-recording-options` output (that only shows *configurable option keys*, not schema/column shape). Record a real trace and read the actual TOC/export. This caught a real mistake: GCD Performance was assumed to be context-only like Thermal State (by analogy — no standalone template, seemed similar), but a live recording showed it carries its own resolved `backtrace` column and needs no companion at all. The wrong assumption would have shipped a misleading warning if it hadn't been checked. See `PMT:azure-forge`/`PMT:sage-weasel` in the project's PromptManager history for the full story.
+Never add a curated fact (a column list, a "this schema has no backtrace" claim, a suggested companion instrument) from the name alone or from `--show-recording-options` output (that only shows *configurable option keys*, not schema/column shape). Record a real trace and read the actual TOC/export. This caught a real mistake: GCD Performance was assumed to be context-only like Thermal State (by analogy — no standalone template, seemed similar), but a live recording showed it carries its own resolved `backtrace` column and needs no companion at all. The wrong assumption would have shipped a misleading warning if it hadn't been checked.
 
 ## Don't silently reinterpret an overloaded name — split the param instead
 

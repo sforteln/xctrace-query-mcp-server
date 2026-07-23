@@ -83,7 +83,7 @@ const SYNTHETIC_ROW: Record<string, CellDetail | null> = {
   duration: cell(50_000),
   address: cell("0x1000", "string"),
   path: cell("unknown (vnode 0x8d58a8f1bd01721f)", "string"),
-  process: cell("PromptManager (34205)", "string"),
+  process: cell("TestApp (34205)", "string"),
 };
 
 interface ActionLike {

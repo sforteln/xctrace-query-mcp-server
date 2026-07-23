@@ -28,7 +28,7 @@ const IDLE_STACK = [
   "specialized runApp(_:)",
   "runApp<A>(_:)",
   "static App.main()",
-  "static PromptManagerApp.$main()",
+  "static MyAppApp.$main()",
   "__debug_main_executable_dylib_entry_point",
   "start",
 ];
@@ -67,7 +67,7 @@ const BLOCKED_STACK = [
   "specialized runApp(_:)",
   "runApp<A>(_:)",
   "static App.main()",
-  "static PromptManagerApp.$main()",
+  "static MyAppApp.$main()",
   "__debug_main_executable_dylib_entry_point",
   "start",
 ];

@@ -1,6 +1,6 @@
 # Advice capture log
 
-This is NOT a `howXWorks.md` subsystem doc — it doesn't explain how any code works. It's a staging area for candidate `aiHelp()` content (see `PMT:clear-crow` in this project's PromptManager history), decoupled from the decision of where that content should eventually live.
+This is NOT a `howXWorks.md` subsystem doc — it doesn't explain how any code works. It's a staging area for candidate `aiHelp()` content, decoupled from the decision of where that content should eventually live.
 
 ## Why this exists
 

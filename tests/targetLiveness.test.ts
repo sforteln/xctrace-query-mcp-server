@@ -71,7 +71,7 @@ describe("checkTargetLiveness (real process states)", () => {
   });
 
   it("returns 'not-a-pid' for a name string (host-Mac attach-by-name), never guesses", async () => {
-    const result = await checkTargetLiveness("PromptManager");
+    const result = await checkTargetLiveness("MyApp");
     expect(result?.state).toBe("not-a-pid");
     expect(result?.note).toBeUndefined();
   });

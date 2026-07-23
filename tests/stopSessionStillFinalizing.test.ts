@@ -3,7 +3,7 @@
  * it also must NEVER act on that (no SIGKILL) without real data on what a
  * normal vs. stuck finalize actually looks like.
  *
- * Field evidence (real PromptManager File Activity audit session): the
+ * Field evidence (a real File Activity audit session on a production app): the
  * target app crashed mid-recording, xctrace got stuck past SIGINT with
  * nothing left to gracefully finalize toward, and there was no fallback —
  * the tool call (and the MCP server / Xcode session driving it) just hung

@@ -146,7 +146,7 @@ longer than anything tried before) still produced nothing. Whatever gates
 hang-risks is sourced from that os-log subsystem, not computed by Hangs directly),
 it isn't simply about how long the main thread was blocked.
 
-## RESOLVED — hang-risks is not triggerable from PromptManager app code at all (2026-07-14)
+## RESOLVED — hang-risks is not triggerable from the test app's code at all (2026-07-14)
 
 Three more runs (via debug-hang-harness.md) exhausted every plausible remaining
 trigger:
@@ -170,11 +170,11 @@ OS version, etc.) this test environment didn't meet.
 
 **Conclusion**: the `hang-risks` schema and this project's handling of it are both
 correct — it's real, present in every System Trace recording, and requires a
-genuine OS-generated runtime-issue event that PromptManager's own code surface
+genuine OS-generated runtime-issue event that the test app's own code surface
 doesn't produce (no real Contacts/CoreML/main-thread-CFNetwork-internal calls in this
 app). Nothing to fix here. The lens/lookup-table work planned in PMT:haze-eagle for
 `hang-risks`' severity enum and narrative content remains worth having for OTHER
-apps' traces, but can't be validated further against PromptManager specifically —
+apps' traces, but can't be validated further against this test app specifically —
 would need a real trace from a different app that actually exercises one of those
 three frameworks on the main thread.
 
@@ -407,7 +407,7 @@ deliberately fixture-bounded scope to what's actually in live use:
 ## Still open / blocked
 
 - Why `hang-risks` never populates regardless of hang severity (see the RESOLVED
-  section above for the PromptManager-specific dead end) — validating its
+  section above for the test-app-specific dead end) — validating its
   severity-enum/narrative handling needs a trace from an app that actually
   exercises CFNetwork/Contacts/CoreML on the main thread.
 - The 7 unmatched fixture mnemonics: confirmed absent from the reference, but not

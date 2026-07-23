@@ -42,7 +42,7 @@ const SCHEMA_KINDS: Record<string, SchemaKindEntry> = {
   "potential-hangs": { kind: "diagnosed" },
   "detected-fs-antipattern": {
     kind: "diagnosed",
-    note: "43 rows (synthetic fixture) / 83 rows (real PromptManager file-audit session) verified live — a curated Apple-side anomaly detector, bounded by nature like hitches",
+    note: "43 rows (synthetic fixture) / 83 rows (a real file-activity audit session on a production app) verified live — a curated Apple-side anomaly detector, bounded by nature like hitches",
   },
 
   // ── Firehoses — NEVER eager, regardless of what any single trace looks like ──
