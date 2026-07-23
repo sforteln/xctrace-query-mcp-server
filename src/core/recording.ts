@@ -895,7 +895,14 @@ export const TEMPLATE_NOTES: Record<string, string> = {
     "resolve: query fs-syscall in that row's window (same process) for a real vnode value, then " +
     "relate(schemaA: \"fs-syscall\", schemaB: \"vnode-to-path\", joinCondition: \"equality\", " +
     "on: [{fromCol: \"vnode\", toCol: \"vnode\"}]) against it — vnode-to-path is a real schema here but " +
-    "isn't ingested until queried. IMPORTANT: attach to an " +
+    "isn't ingested until queried; if that vnode reads exactly 0xffffffffffffffff, don't attempt the " +
+    "resolve at all — it's the documented sentinel for a kernel-guarded FD (below), which has no " +
+    "resolvable vnode, not missing data. If the dominant syscall in the write antipatterns is " +
+    "`guarded_pwrite_np`, that's standard SQLite WAL page-write behavior (any SwiftData/CoreData app), " +
+    "not a bug in itself — its vnode is always the 0xffffffffffffffff sentinel above (guarded FDs " +
+    "protect against accidental closure and don't expose a resolvable vnode); to find the actual file, " +
+    "look for the `.wal` suffix in the app's DB directory rather than the vnode column, and focus on " +
+    "the frequency/trigger of the writes rather than the syscall name. IMPORTANT: attach to an " +
     "ALREADY-RUNNING process only, never launch — matches the standard \"attach to a dev-started app\" " +
     "workflow. On this Xcode 27 beta specifically, do NOT compose Time Profiler or Hangs alongside " +
     "this template — corroborating evidence (see KNOWN_BROKEN_INSTRUMENTS' Network " +

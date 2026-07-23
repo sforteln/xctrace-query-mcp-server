@@ -17,12 +17,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { NextAction } from "../core/response.js";
 import { getDb, getSession, getTable, lastRun } from "../engine/session.js";
-import { hintFor } from "../engine/roleHints.js";
+import { hintFor, type SchemaHint } from "../engine/roleHints.js";
 import { quoteIdent } from "../engine/sqliteStore.js";
 import { DETECTORS } from "./index.js";
 import { runCheapDetectors, runDetectorsOverIngested } from "./framework.js";
 import { resolveFrameBudgetMs } from "./frameBudget.js";
-import { EAGER_ALLOWLIST, EAGER_SCHEMA_MAX, kindDescriptor, schemaKind, selectEagerSchemas, type SchemaKind } from "./eagerSchemas.js";
+import { EAGER_ALLOWLIST, EAGER_SCHEMA_MAX, isBoundedKind, kindDescriptor, schemaKind, selectEagerSchemas, type SchemaKind } from "./eagerSchemas.js";
 import type { Detector, DetectorContext, RankedFinding } from "./types.js";
 
 /** Verbs whose tool takes a single `schema` arg (vs relate/timeline's own schema params). */
@@ -75,8 +75,12 @@ export async function detectorNextActions(sessionId: string): Promise<NextAction
 
 /** One compact line per present schema — the annotated inventory returned by
  *  open_trace and stop_recording. Bounded by schema COUNT (dozens at most),
- *  never row count; no column lists or full finding detail (those stay
- *  behind describe_schema / the nextStep drill-down). */
+ *  never row count; no full finding detail (that stays behind the nextStep
+ *  drill-down). One narrow, deliberate exception: `topColumns` (below) — up
+ *  to 5 mnemonics, only for bounded-kind schemas with a pinned hint, a free
+ *  static lookup rather than a live describe_schema round-trip. Column lists
+ *  in general still stay out of the inventory; this is a name allowlist, not
+ *  the schema's full description. */
 export interface SchemaInventoryEntry {
   name: string;
   /** Ingested this session (a fresh fetch, or a zero-cost reuse of a
@@ -94,6 +98,15 @@ export interface SchemaInventoryEntry {
   /** No-silent-cap note for anything not warm — so "no finding" here never
    *  silently reads as "no problem" for a schema that was simply skipped. */
   scanNote?: string;
+  /** Up to 5 column mnemonics, present only for diagnosed/metadata (bounded)
+   *  schemas — a static lookup from the pinned roleHints map, zero query
+   *  cost. A curated "synthetic diagnosis table" schema (detected-fs-
+   *  antipattern, hitches, ...) has non-guessable column names, and a cold
+   *  analyst otherwise pays a full describe_schema round-trip just to learn
+   *  them before the first real query (field finding: PMT-review of a File
+   *  Activity audit session hit this exact friction). Omitted for anything
+   *  not bounded-kind or with no pinned hint — never a guess. */
+  topColumns?: string[];
 }
 
 /** correlateHint = a simplified, buildable-today check: a schema carries its
@@ -105,6 +118,17 @@ function correlateHintFor(schema: string): SchemaInventoryEntry["correlateHint"]
   const hint = hintFor(schema);
   const carriesBacktrace = hint ? Object.values(hint.columns).some((c) => c.role === "backtrace") : false;
   return carriesBacktrace ? "carries-own-backtrace" : "needs-join/correlate";
+}
+
+/** First 5 pinned column mnemonics for a bounded-kind (diagnosed/metadata)
+ *  schema, or undefined when there's no pinned hint to draw from (never
+ *  falls back to a guess). */
+function topColumnsFor(schema: string): string[] | undefined {
+  if (!isBoundedKind(schema)) return undefined;
+  const hint: SchemaHint | undefined = hintFor(schema);
+  if (!hint) return undefined;
+  const names = Object.keys(hint.columns).slice(0, 5);
+  return names.length > 0 ? names : undefined;
 }
 
 /** For every detector whose requiredSchemas are fully ingested, tally how
@@ -150,6 +174,7 @@ export function buildSchemaInventory(
     const kind = schemaKind(inst.schema);
     const warm = inst.rowCount !== null;
     const outcome = outcomes.get(inst.schema);
+    const topColumns = topColumnsFor(inst.schema);
 
     entries.push({
       name: inst.schema,
@@ -160,6 +185,7 @@ export function buildSchemaInventory(
       ...(outcome ? { detectorResult: outcome.fired > 0 ? `fired ${outcome.fired}` : "clean" } : {}),
       correlateHint: correlateHintFor(inst.schema),
       ...(warm ? {} : { scanNote: `present, not auto-scanned (${kindDescriptor(kind)}); open to run its detector.` }),
+      ...(topColumns ? { topColumns } : {}),
     });
   }
   return entries;

@@ -40,6 +40,10 @@ const SCHEMA_KINDS: Record<string, SchemaKindEntry> = {
   "displayed-surfaces-interval": { kind: "interval", note: "1,629 rows verified live" },
   "hang-risks": { kind: "diagnosed" },
   "potential-hangs": { kind: "diagnosed" },
+  "detected-fs-antipattern": {
+    kind: "diagnosed",
+    note: "43 rows (synthetic fixture) / 83 rows (real PromptManager file-audit session) verified live — a curated Apple-side anomaly detector, bounded by nature like hitches",
+  },
 
   // ── Firehoses — NEVER eager, regardless of what any single trace looks like ──
   "time-sample": { kind: "firehose" },
@@ -87,6 +91,16 @@ export function isBoundedKind(schema: string): boolean {
  * device-accurate on the very first sweep (validated live against a 120Hz
  * iPhone trace).
  *
+ * detected-fs-antipattern: File Activity's equivalent of hitches — Apple's
+ * own xctrace-side detector ships the classification pre-computed (`type` +
+ * `significance`), so there's no raw metric left for a bounded detector to
+ * threshold (see bands.ts's own note on why no File Activity band exists).
+ * Eager-ingesting it is still the right fix for a documented friction point
+ * (PMT-review of a real File Activity audit session): without this, the
+ * schema showed up as "present, not auto-scanned" and cost a
+ * describe_schema + aggregate round-trip before any content was visible —
+ * pure ingest-ordering friction, independent of whether a detector fires.
+ *
  * Deliberately NOT included — CANDIDATES pending row-shape verification:
  * ModelInferenceTable and SwiftActorQueueSize (the FM/concurrency cheap
  * detectors' own schemas). Adding an unverified schema here would repeat the
@@ -106,7 +120,12 @@ export function isBoundedKind(schema: string): boolean {
  * instead as a next-action note in the recording result (see
  * defaultPointsOfInterest's own note text) rather than eager-ingested.
  */
-export const EAGER_ALLOWLIST: readonly string[] = ["hitches", "hitches-renders", "device-display-info"];
+export const EAGER_ALLOWLIST: readonly string[] = [
+  "hitches",
+  "hitches-renders",
+  "device-display-info",
+  "detected-fs-antipattern",
+];
 
 /**
  * Worst-case latency cap. Each eager ingest costs ~5.5s fixed overhead

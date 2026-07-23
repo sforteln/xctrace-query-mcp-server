@@ -108,7 +108,14 @@ describe("schemaKind / isBoundedKind (PMT:ruddy-elk classifier)", () => {
 
 describe("selectEagerSchemas (PMT:ruddy-elk eager-set derivation)", () => {
   it("returns present ∩ EAGER_ALLOWLIST, excluding firehoses regardless of presence", () => {
-    const present = ["hitches", "hitches-renders", "device-display-info", "time-sample", "swiftui-updates"];
+    const present = [
+      "hitches",
+      "hitches-renders",
+      "device-display-info",
+      "detected-fs-antipattern",
+      "time-sample",
+      "swiftui-updates",
+    ];
     const eager = selectEagerSchemas(present);
     expect(new Set(eager)).toEqual(new Set(EAGER_ALLOWLIST));
     expect(eager).not.toContain("time-sample");
